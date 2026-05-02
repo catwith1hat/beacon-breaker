@@ -82,6 +82,97 @@ mode (`pip install -e consensus-specs[lint,test]`). Import paths look like
 - Cross-check a hypothesis against the canonical Python implementation.
 - Trace the exact predicate sequence in `process_*` functions.
 
+## Running fixtures against the clients
+
+Every fixture goes through `scripts/run_fixture.sh`. It walks
+`tools/runners/{prysm,lighthouse,teku,nimbus,lodestar,grandine}.sh` in
+order and prints a per-client PASS / FAIL / SKIP table.
+
+```
+./scripts/run_fixture.sh consensus-spec-tests/tests/mainnet/electra/sanity/blocks/pyspec_tests/attestation
+```
+
+A clean run looks like:
+
+```
+client       result
+------       ------
+prysm:       PASS  OK (TestMainnet_Electra_Sanity_Blocks/attestation)
+lighthouse:  PASS  OK 212bed418e76bcc39b403b7be4401f6d2dab4eb887ef198f019287c40f40f6b4
+teku:        PASS  OK 212bed418e76bcc39b403b7be4401f6d2dab4eb887ef198f019287c40f40f6b4
+nimbus:      PASS  OK 212bed418e76bcc39b403b7be4401f6d2dab4eb887ef198f019287c40f40f6b4
+lodestar:    PASS  OK (vitest: 1 passed for electra/sanity/blocks/pyspec_tests/attestation$)
+grandine:    PASS  OK (electra_mainnet_sanity/attestation)
+```
+
+Comparison method: lighthouse / teku / nimbus output a post-state to a
+temp file and the runner sha256s it against the snappy-decompressed
+`post.ssz_snappy`. prysm / grandine / lodestar pipe through their own
+spec-test runner (which compares structurally) and the runner just
+parses the pass/fail line. All paths converge on the same verdict.
+
+### Environmental requirements
+
+- **First-time build**: each client needs to be built once — see the
+  per-client wiring section below. Subsequent runs are fast.
+- **PATH / env that must be set for the fixture run**:
+  - `tools/cc-shim/` should be on `PATH` for any rebuild that touches a
+    C++ native dep (lighthouse `leveldb-sys`, lodestar `classic-level`).
+    The shim works around a nix gcc-wrapper bug — `<cstdlib>`'s
+    `#include_next <stdlib.h>` fails because glibc-dev/include is
+    placed before the C++ stdlib in the include search path. Stripping
+    the offending `-isystem` from `NIX_CFLAGS_COMPILE` fixes it.
+  - `pnpm` and `node 24` must be on `PATH` for the lodestar runner. The
+    sandbox provides them; if invoking outside, set
+    `PATH=/nix/store/*-pnpm-*/bin:/nix/store/*-nodejs-24*/bin:$PATH`
+    and `PNPM=pnpm`.
+  - Lodestar's runner expects the spec-tests at
+    `lodestar/packages/beacon-node/spec-tests` — the runner symlinks
+    this on first invocation. Don't commit the symlink; it's
+    gitignored.
+- **Custom fork config**: pyspec EF fixtures' pre-states have `slot=32`
+  but mainnet's real Electra fork epoch is 364032. The standalone CLI
+  runners (lcli, teku transition, ncli) all use
+  `tools/test-configs/electra-from-genesis/` to override fork epochs to
+  0. Future fork-targeted fixtures will need a parallel config dir.
+
+### Per-client build wiring
+
+Each runner builds (or expects pre-built) one binary. Build commands
+that have been validated in this sandbox:
+
+| Client | Build command | Output path |
+|---|---|---|
+| prysm | `(cd prysm && go test -count=0 -run TestMainnet_Electra_Sanity_Blocks ./testing/spectest/mainnet/)` to warm the module cache; runner uses `go test` directly | (no separate binary; `go test` recompiles) |
+| lighthouse | `(cd lighthouse && PATH=tools/cc-shim:$PATH CARGO_TARGET_DIR=/tmp/lighthouse-target cargo build --release --bin lcli)` | `/tmp/lighthouse-target/release/lcli` |
+| teku | `(cd teku && ./gradlew installDist --no-daemon -x test)` | `teku/build/install/teku/bin/teku` |
+| nimbus | `(cd nimbus && git submodule update --init --recursive --depth=1 && make ncli)` | `nimbus/build/ncli` |
+| lodestar | `(cd lodestar && PATH=tools/cc-shim:$PATH pnpm install --frozen-lockfile && pnpm build)` | TS in `packages/*/lib/`, harness uses `pnpm exec vitest` |
+| grandine | `(cd grandine && git submodule update --init --recursive && CARGO_TARGET_DIR=/tmp/grandine-target cargo test -p transition_functions --release --features bls/blst --no-run)` | `/tmp/grandine-target/release/deps/transition_functions-*` |
+
+prysm uses `go test` (not `bazel test`) because the outer nix sandbox
+prevents bazel from setting up its own sandbox; the runner spoofs
+`RUNFILES_DIR` so `bazel.Runfile()` resolves without bazel.
+
+### Debugging a single-client FAIL
+
+When `run_fixture.sh` shows one client failing:
+
+1. Re-invoke that client's runner directly:
+   `./tools/runners/<client>.sh <fixture-dir>`. The runner prints the
+   tail of the underlying tool's log on failure.
+2. For lighthouse/teku/nimbus mismatches: dump the post-state
+   side-by-side against `post.ssz_snappy` after snappy-decompressing
+   both with `tools/bin/snappy_codec d`. Compare via `cmp -l` or the
+   pyspec `state_summary.py` helper.
+3. For prysm/grandine/lodestar: their spec-test runner prints which
+   field diverges — quote that in the item README under "Findings".
+
+The state-root sha256 in the PASS line is the canonical fingerprint
+for that fixture. When you generate a new fixture, record the
+expected sha256 in the item README so future runs can detect drift
+without re-running all six clients.
+
 ## Reachability tiers (cheat sheet)
 
 - **C (canonical)** — reachable via well-formed blocks from honest
