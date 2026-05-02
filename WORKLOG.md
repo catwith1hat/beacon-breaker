@@ -42,7 +42,72 @@ _(Numbered prioritization list. Each entry one line. Candidates above the
 "Findings" cutover are forward-looking; candidates below have an
 `itemN/README.md`.)_
 
-_None yet. Add the first candidate before starting the loop._
+1. **`process_effective_balance_updates` Pectra hysteresis with `MAX_EFFECTIVE_BALANCE_ELECTRA`** (Electra-active, per-epoch) → item #1 (no-divergence-pending-fuzzing; all six agree on `effective_balance_increase_changes_lookahead`, sha256 `aec719af…`).
+
+## Audit tracks (2026-05-02)
+
+The 30 candidates below are grouped into 7 tracks. Each track shares a
+mental model and a code-location pattern, so a session can stay loaded
+on one track. Tracks are designed to be **independent**: two parallel
+sessions on different tracks should not collide.
+
+### Track A — Pectra request-processing (EIP-7251 / EIP-7002 / EIP-6110)
+Items: **1, 2, 3, 12, 30**. Entry: **#1 (`process_consolidation_request`)**.
+Why: freshest Pectra surface; three new operations introduced together;
+highest divergence likelihood.
+
+### Track B — Validator-state arithmetic (balance, churn, lifecycle)
+Items: **4, 5, 7, 11, 29**. Entry: **#5 (`MAX_EFFECTIVE_BALANCE_ELECTRA`
+hysteresis)**. Why: most likely class to surface a quiet 1-gwei C-tier
+divergence — gwei math + the new 2048-ETH cap is a classic boundary
+trap.
+
+### Track C — Per-epoch processing & registry
+Items: **8, 9, 10, 13**. Entry: **#13 (state upgrade function at
+activation slot)**. Why: the upgrade function defines the post-Electra
+state shape every other item assumes; needed-as-baseline for fixtures
+in Tracks A and B.
+
+### Track D — Fork choice
+Items: **14, 15**. Entry: **#14 (`proposer_score_boost` at slot
+boundary)**. Why: fully independent of all state-transition tracks;
+ideal parallel-session candidate; timing predicates are notorious for
+cross-client drift.
+
+### Track E — SSZ & Merkleization
+Items: **16, 17, 18, 19**. Entry: **#17 (list cap exact-N / N+1 / empty)**.
+Why: high F-tier yield, low fixture cost. #17's empty-list root is one
+hash to compare across six clients — minimal harness shakedown.
+
+### Track F — BLS & cryptographic primitives
+Items: **20, 21, 22**. Entry: **#22 (`fast_aggregate_verify` with zero
+pubkeys)**. Why: library-family axis (BLST vs gnark vs custom) is
+completely independent from state transition; classic A-tier surface.
+
+### Track G — Engine API & sync committee (lower-priority pair)
+Items: **6, 23, 24, 25, 26, 27, 28**. Entry: **#6 (EIP-7549 attestation
+layout)**. Why: lowest-priority track; defer until A-C have produced
+findings.
+
+### Recommended starting item — #5 (Track B entry)
+
+`MAX_EFFECTIVE_BALANCE_ELECTRA` hysteresis is C-tier reachable (every
+block can trigger it via deposit/reward/penalty paths), the predicate
+is razor-clear (one inequality at the hysteresis quantum, with two
+caps: 32 ETH legacy `0x01`, 2048 ETH Pectra `0x02`), and the fixture
+is the cheapest non-trivial state-test possible. Ideal harness
+shakedown.
+
+## Missing surfaces to add (next pass)
+
+Five candidates not represented in the seed 30 — worth adding before
+Phase 2:
+
+- **#31. Pyspec-vs-clients oracle sweep.** Run `consensus-spec-tests/tests/mainnet/electra/random/` against all six clients + pyspec; flag any unanimous-clients-vs-pyspec divergence as a finding type.
+- **#32. `process_execution_payload` requests-list parsing (EIP-7685).** Pectra's unified requests framework; cross-cuts Track A.
+- **#33. Sync-committee period rotation _at_ the Electra activation slot.** §11 weird-corner; #23 covers selection but not this specific boundary.
+- **#34. `process_historical_summaries_update` under Pectra state shape.** Touches state-roots accumulator; tiny divergence cost is huge.
+- **#35. Blob/KZG commitment count caps (EIP-7691) propagation through Engine API.** Count predicate lives in the CL even though the data is EL-side.
 
 ## Speculative Unexplored Areas (2026-05-02)
 
@@ -106,4 +171,14 @@ These are candidates for items #1 onward, not findings.
 
 ## Findings (per-item bodies)
 
-_None yet._
+### 1. `process_effective_balance_updates` Pectra hysteresis with `MAX_EFFECTIVE_BALANCE_ELECTRA`
+
+**Status:** no-divergence-pending-fuzzing — audited 2026-05-02. Track B entry.
+
+Source survey across all six clients confirms aligned implementations of the Pectra-modified `process_effective_balance_updates`, the `get_max_effective_balance` cap selector (32 ETH for `0x01` legacy, 2048 ETH for `0x02` compounding), and the `0x02` compounding-credential predicate. Notable per-client idioms: Lodestar adds an `effectiveBalance < effectiveBalanceLimit` short-circuit in the upward branch (output-equivalent to pyspec's `min` clamp); Nimbus is the only client whose `has_compounding_withdrawal_credential` is fork-gated to also accept `0x03` (builder) credentials at Gloas+. Teku has a redundant outer `.min(...)` in its clamp expression, dead code today. Lighthouse and Grandine defend against zero-length credentials slices; Prysm and Lodestar do not (academic — SSZ schema fixes the length at 32 bytes).
+
+All six pass `effective_balance_increase_changes_lookahead` (sha256 `aec719af6530b4e79d385e16021c40be5e04ea93c8411e01d0ea12b4786c9de2`). Grandine additionally passes the two dedicated Electra `effective_balance_updates` epoch-processing fixtures (`effective_balance_hysteresis` and `_with_compounding_credentials`); the other five clients run those in their internal CI.
+
+**Adjacent untouched Electra-active**: `process_pending_deposits` ordering vs eb-updates (WORKLOG #3); Teku redundant-clamp sweep; Nimbus Gloas `0x03` divergence (pre-emptive, future fork); Lighthouse `safe_*` overflow-checked arithmetic in vs unchecked clients; zero-length-credentials defensive variants (F-tier today).
+
+See [item1/README.md](item1/README.md).
