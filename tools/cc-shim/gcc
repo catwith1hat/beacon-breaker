@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+GLIBC_DEV=/nix/store/903kx9pwhyzswmx1caf7rc8idram9vdq-glibc-2.40-218-dev/include
+strip_isystem_glibc() {
+    if [[ -n "${1:-}" ]]; then
+        echo "${!1}" | sed "s|-isystem ${GLIBC_DEV}||g"
+    fi
+}
+for v in NIX_CFLAGS_COMPILE NIX_CFLAGS_COMPILE_FOR_TARGET NIX_CFLAGS_COMPILE_x86_64_unknown_linux_gnu; do
+    if [[ -n "$(eval echo \$$v)" ]]; then
+        new=$(strip_isystem_glibc "$v")
+        export "$v=$new"
+    fi
+done
+exec /nix/store/kilyfvfmh9x9rlaj47ph1916lbc1pnsr-gcc-wrapper-14.3.0/bin/gcc "$@"

@@ -1,0 +1,38 @@
+# Pyspec virtualenv (created by tools/pyspec/README setup)
+consensus-specs/.venv/
+tools/pyspec/.venv/
+
+# Per-item fixture build artifacts (the .ssz_snappy files themselves are
+# committed; intermediate Python state, logs, and per-run reports are not)
+item*/fixture/build/
+item*/fixture/run.log
+item*/fixture/*.tmp
+
+# Per-client build outputs when wiring runners
+tools/runners/build/
+tools/runners/*.tmp
+
+# extract_item.sh output
+out/
+
+# Built binary helpers (rebuilt via `cd tools/ssz && go build`)
+tools/bin/
+
+# Editor / OS noise
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Local-only nix wrapper artifacts (Claude Code sandbox env)
+*.nix*
+*.drv
+
+# pnpm local store (created by lodestar pnpm install when using node 24)
+.pnpm-store/
+
+# Symlinks pulled in by per-client runners; never commit
+lodestar/spec-tests
+lodestar/packages/beacon-node/spec-tests
+lighthouse/testing/ef_tests/consensus-spec-tests
+grandine/consensus-spec-tests

@@ -1,0 +1,27 @@
+[submodule "grandine"]
+	path = grandine
+	url = https://github.com/grandinetech/grandine
+[submodule "beacon-APIs"]
+	path = beacon-APIs
+	url = https://github.com/ethereum/beacon-APIs
+[submodule "consensus-specs"]
+	path = consensus-specs
+	url = https://github.com/ethereum/consensus-specs
+[submodule "nimbus"]
+	path = nimbus
+	url = https://github.com/status-im/nimbus-eth2
+[submodule "prysm"]
+	path = prysm
+	url = https://github.com/prysmaticlabs/prysm
+[submodule "consensus-spec-tests"]
+	path = consensus-spec-tests
+	url = https://github.com/ethereum/consensus-spec-tests
+[submodule "teku"]
+	path = teku
+	url = https://github.com/Consensys/teku
+[submodule "lodestar"]
+	path = lodestar
+	url = https://github.com/ChainSafe/lodestar
+[submodule "lighthouse"]
+	path = lighthouse
+	url = https://github.com/sigp/lighthouse
