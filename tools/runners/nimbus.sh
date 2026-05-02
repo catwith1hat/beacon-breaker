@@ -12,6 +12,24 @@ FIXTURE="${1:?usage: $0 <fixture-dir>}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+source "$SCRIPT_DIR/_lib.sh"
+
+ABS="$(cd "$FIXTURE" && pwd)"
+parse_fixture "$ABS" || { echo "unsupported fixture path: $ABS"; exit 2; }
+
+case "$BB_CATEGORY" in
+    sanity_blocks) ;;
+    epoch_processing)
+        # ncli transition applies a block; it has no per-helper hook.
+        # Nimbus's `tests/consensus_spec/test_fixture_state_transition_epoch.nim`
+        # could be compiled standalone and run with a filter, but no
+        # standalone binary ships. SKIP for now.
+        echo "SKIP nimbus ncli has no per-helper epoch_processing entrypoint"
+        exit 77
+        ;;
+    *)
+        echo "nimbus runner does not handle category: $BB_CATEGORY"; exit 2 ;;
+esac
 
 NCLI="${NCLI:-$ROOT_DIR/tools/runners/nimbus.bin/ncli}"
 if [[ ! -x "$NCLI" ]]; then

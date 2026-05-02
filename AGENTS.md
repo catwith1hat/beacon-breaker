@@ -86,11 +86,31 @@ mode (`pip install -e consensus-specs[lint,test]`). Import paths look like
 
 Every fixture goes through `scripts/run_fixture.sh`. It walks
 `tools/runners/{prysm,lighthouse,teku,nimbus,lodestar,grandine}.sh` in
-order and prints a per-client PASS / FAIL / SKIP table.
+order and prints a per-client PASS / FAIL / SKIP table. A runner exits
+77 when it doesn't handle the fixture's category (e.g. teku /
+nimbus on epoch_processing); the harness reports SKIP rather than FAIL.
 
 ```
 ./scripts/run_fixture.sh consensus-spec-tests/tests/mainnet/electra/sanity/blocks/pyspec_tests/attestation
+./scripts/run_fixture.sh consensus-spec-tests/tests/mainnet/electra/epoch_processing/effective_balance_updates/pyspec_tests/effective_balance_hysteresis
 ```
+
+Currently supported fixture categories:
+
+| Category | prysm | lighthouse | teku | nimbus | lodestar | grandine |
+|---|---|---|---|---|---|---|
+| `sanity/blocks` | ✓ go test | ✓ lcli | ✓ teku transition | ✓ ncli | ✓ vitest | ✓ test bin |
+| `epoch_processing/<helper>` | ✓ go test | ✓ ef_tests bin | SKIP | SKIP | ✓ vitest | ✓ test bin |
+
+(`tools/runners/_lib.sh` does the fixture-path parsing — `parse_fixture`
+sets `BB_CATEGORY`, `BB_FORK`, `BB_HELPER`, `BB_TEST_NAME`. Per-runner
+case statements dispatch on `BB_CATEGORY`.)
+
+To wire teku/nimbus for epoch_processing in the future: teku would need
+either a new `teku transition epoch-processing` subcommand or a per-call
+gradle invocation (~30s startup); nimbus would need a standalone build
+of `tests/consensus_spec/test_fixture_state_transition_epoch.nim` with
+a name-filter flag.
 
 A clean run looks like:
 

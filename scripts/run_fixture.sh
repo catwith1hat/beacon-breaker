@@ -45,6 +45,10 @@ for client in "${CLIENTS[@]}"; do
     rc=$?
     if [[ $rc -eq 0 ]]; then
         printf '%-12s %s\n' "$client:" "PASS  $output"
+    elif [[ $rc -eq 77 ]]; then
+        # POSIX-style "skipped" — runner declined the fixture (e.g.,
+        # category not yet wired). Don't fail the overall run.
+        printf '%-12s %s\n' "$client:" "SKIP  $output"
     else
         printf '%-12s %s\n' "$client:" "FAIL  $output"
         overall_rc=1

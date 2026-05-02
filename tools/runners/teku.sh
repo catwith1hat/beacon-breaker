@@ -11,6 +11,24 @@ FIXTURE="${1:?usage: $0 <fixture-dir>}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+source "$SCRIPT_DIR/_lib.sh"
+
+ABS="$(cd "$FIXTURE" && pwd)"
+parse_fixture "$ABS" || { echo "unsupported fixture path: $ABS"; exit 2; }
+
+case "$BB_CATEGORY" in
+    sanity_blocks) ;;
+    epoch_processing)
+        # `teku transition` only supports `blocks` and `slots`; there is
+        # no per-helper subcommand. Running the gradle reference-test
+        # suite with a filter is possible but slow (~30s per invocation).
+        # For now, SKIP and let the harness aggregate from the other 5.
+        echo "SKIP teku does not support per-helper epoch_processing without gradle"
+        exit 77
+        ;;
+    *)
+        echo "teku runner does not handle category: $BB_CATEGORY"; exit 2 ;;
+esac
 
 TEKU="${TEKU:-$ROOT_DIR/teku/build/install/teku/bin/teku}"
 if [[ ! -x "$TEKU" ]]; then
