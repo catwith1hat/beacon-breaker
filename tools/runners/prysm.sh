@@ -41,6 +41,18 @@ case "$BB_CATEGORY" in
         helper_camel="$(snake_to_camel "$BB_HELPER")"
         test_re="^TestMainnet_(${fork_cap}|${BB_FORK})_EpochProcessing_${helper_camel}\$/^${BB_TEST_NAME}\$"
         ;;
+    operations)
+        # Prysm's operation test names sometimes drop suffixes
+        # (consolidation_request -> Consolidation, execution_layer_withdrawals
+        # -> WithdrawalRequest). Use a per-op map; fall back to CamelCase.
+        case "$BB_HELPER" in
+            consolidation_request) op_camel=Consolidation ;;
+            execution_layer_withdrawals|withdrawal_request) op_camel=WithdrawalRequest ;;
+            deposit_request|deposit_requests) op_camel=DepositRequests ;;
+            *) op_camel="$(snake_to_camel "$BB_HELPER")" ;;
+        esac
+        test_re="^TestMainnet_${fork_cap}_Operations_${op_camel}\$/^${BB_TEST_NAME}\$"
+        ;;
     *)
         echo "prysm runner does not handle category: $BB_CATEGORY"; exit 2 ;;
 esac

@@ -18,12 +18,12 @@ parse_fixture "$ABS" || { echo "unsupported fixture path: $ABS"; exit 2; }
 
 case "$BB_CATEGORY" in
     sanity_blocks) ;;
-    epoch_processing)
+    epoch_processing|operations)
         # `teku transition` only supports `blocks` and `slots`; there is
-        # no per-helper subcommand. Running the gradle reference-test
-        # suite with a filter is possible but slow (~30s per invocation).
-        # For now, SKIP and let the harness aggregate from the other 5.
-        echo "SKIP teku does not support per-helper epoch_processing without gradle"
+        # no per-helper / per-operation subcommand. Running the gradle
+        # reference-test suite with a filter is possible but slow
+        # (~30s per invocation). For now, SKIP.
+        echo "SKIP teku does not support per-$BB_CATEGORY without gradle"
         exit 77
         ;;
     *)

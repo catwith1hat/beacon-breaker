@@ -33,13 +33,15 @@ fi
 case "$BB_CATEGORY" in
     sanity_blocks)
         spec_file="test/spec/presets/sanity.test.ts"
-        # Vitest test names: "<fork>/sanity/blocks/pyspec_tests/<name>"
         filter="${BB_FORK}/sanity/blocks/pyspec_tests/${BB_TEST_NAME}\$"
         ;;
     epoch_processing)
         spec_file="test/spec/presets/epoch_processing.test.ts"
-        # Vitest test names: "<fork>/epoch_processing/<helper>/pyspec_tests/<name>"
         filter="${BB_FORK}/epoch_processing/${BB_HELPER}/pyspec_tests/${BB_TEST_NAME}\$"
+        ;;
+    operations)
+        spec_file="test/spec/presets/operations.test.ts"
+        filter="${BB_FORK}/operations/${BB_HELPER}/pyspec_tests/${BB_TEST_NAME}\$"
         ;;
     *)
         echo "lodestar runner does not handle category: $BB_CATEGORY"; exit 2 ;;

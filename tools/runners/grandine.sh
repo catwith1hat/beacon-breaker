@@ -31,15 +31,7 @@ fi
 # Grandine's test names embed the full fixture path. The unique tail is
 # the test_name, so we filter on a unique substring.
 case "$BB_CATEGORY" in
-    sanity_blocks)
-        # e.g. electra::block_processing::spec_tests::electra_mainnet_sanity_..._<test_name>
-        # The test_name suffix is unique enough.
-        filter="_${BB_FORK}_${BB_PRESET}_sanity_.*_${BB_TEST_NAME}\$"
-        ;;
-    epoch_processing)
-        # e.g. electra::epoch_processing::spec_tests::mainnet_<helper>_..._<test_name>
-        filter="${BB_PRESET}_${BB_HELPER}_.*_${BB_TEST_NAME}\$"
-        ;;
+    sanity_blocks|epoch_processing|operations) ;;
     *)
         echo "grandine runner does not handle category: $BB_CATEGORY"; exit 2 ;;
 esac
@@ -52,15 +44,21 @@ WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 "$TEST_BIN" "${BB_TEST_NAME}" > "$WORK/run.log" 2>&1
 rc=$?
 
-# Look for the specific test that matched our category + fork.
+# Look for the specific test that matched our category + fork. Operations
+# share the block_processing module path with sanity_blocks but have a
+# `process_<op>` namespace, so we accept either path.
 case "$BB_CATEGORY" in
     sanity_blocks)
-        match_re="${BB_FORK}::block_processing::.*_${BB_TEST_NAME} \.\.\. ok\$"
-        fail_re="${BB_FORK}::block_processing::.*_${BB_TEST_NAME} \.\.\. FAILED\$"
+        match_re="${BB_FORK}::block_processing::spec_tests::.*_${BB_PRESET}_.*_${BB_TEST_NAME} \.\.\. ok\$"
+        fail_re="${BB_FORK}::block_processing::spec_tests::.*_${BB_PRESET}_.*_${BB_TEST_NAME} \.\.\. FAILED\$"
         ;;
     epoch_processing)
         match_re="${BB_FORK}::epoch_processing::.*_${BB_TEST_NAME} \.\.\. ok\$"
         fail_re="${BB_FORK}::epoch_processing::.*_${BB_TEST_NAME} \.\.\. FAILED\$"
+        ;;
+    operations)
+        match_re="${BB_FORK}::block_processing::spec_tests::process_${BB_HELPER}::.*_${BB_PRESET}_.*_${BB_TEST_NAME} \.\.\. ok\$"
+        fail_re="${BB_FORK}::block_processing::spec_tests::process_${BB_HELPER}::.*_${BB_PRESET}_.*_${BB_TEST_NAME} \.\.\. FAILED\$"
         ;;
 esac
 

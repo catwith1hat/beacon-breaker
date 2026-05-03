@@ -19,12 +19,12 @@ parse_fixture "$ABS" || { echo "unsupported fixture path: $ABS"; exit 2; }
 
 case "$BB_CATEGORY" in
     sanity_blocks) ;;
-    epoch_processing)
-        # ncli transition applies a block; it has no per-helper hook.
-        # Nimbus's `tests/consensus_spec/test_fixture_state_transition_epoch.nim`
-        # could be compiled standalone and run with a filter, but no
-        # standalone binary ships. SKIP for now.
-        echo "SKIP nimbus ncli has no per-helper epoch_processing entrypoint"
+    epoch_processing|operations)
+        # ncli transition applies a whole block; it has no per-helper /
+        # per-operation hook. The relevant nim spec-test files exist
+        # (tests/consensus_spec/test_fixture_state_transition_epoch.nim,
+        # test_fixture_operations.nim) but no standalone binary ships.
+        echo "SKIP nimbus ncli has no per-$BB_CATEGORY entrypoint"
         exit 77
         ;;
     *)

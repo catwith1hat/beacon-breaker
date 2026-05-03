@@ -69,7 +69,7 @@ case "$BB_CATEGORY" in
         exit 1
         ;;
 
-    epoch_processing)
+    epoch_processing|operations)
         TEST_BIN="${LIGHTHOUSE_EF_TESTS_BIN:-}"
         if [[ -z "$TEST_BIN" ]]; then
             # The integration-test binary lives at deps/tests-<hash>, not
@@ -85,7 +85,19 @@ case "$BB_CATEGORY" in
         # Lighthouse groups all fixtures of a helper under one test fn;
         # we can't filter to a single fixture. Run the whole helper and
         # treat PASS as "our fixture is among the passing ones".
-        test_fn="epoch_processing_${BB_HELPER}"
+        case "$BB_CATEGORY" in
+            epoch_processing) test_fn="epoch_processing_${BB_HELPER}" ;;
+            operations)
+                # Lighthouse operations test names diverge from EF dir names.
+                case "$BB_HELPER" in
+                    consolidation_request)       test_fn=operations_consolidations ;;
+                    withdrawal_request|execution_layer_withdrawals) test_fn=operations_withdrawal_reqeusts ;;
+                    deposit_request|deposit_requests)               test_fn=operations_deposit_requests ;;
+                    bls_to_execution_change)     test_fn=operations_bls_to_execution_change ;;
+                    *)                           test_fn="operations_${BB_HELPER}" ;;
+                esac
+                ;;
+        esac
 
         "$TEST_BIN" --exact "$test_fn" --test-threads=4 > "$WORK/run.log" 2>&1
         rc=$?

@@ -43,6 +43,7 @@ _(Numbered prioritization list. Each entry one line. Candidates above the
 `itemN/README.md`.)_
 
 1. **`process_effective_balance_updates` Pectra hysteresis with `MAX_EFFECTIVE_BALANCE_ELECTRA`** (Electra-active, per-epoch) → item #1 (no-divergence-pending-fuzzing; all six agree on `effective_balance_increase_changes_lookahead`, sha256 `aec719af…`).
+2. **`process_consolidation_request` EIP-7251 switch + main path** (Electra-active, Track A entry) → item #2 (no-divergence-pending-fuzzing; 10/10 EF operations fixtures pass on prysm+lighthouse+lodestar+grandine; teku+nimbus SKIP per harness limit).
 
 ## Audit tracks (2026-05-02)
 
@@ -182,3 +183,17 @@ All six pass `effective_balance_increase_changes_lookahead` (sha256 `aec719af653
 **Adjacent untouched Electra-active**: `process_pending_deposits` ordering vs eb-updates (WORKLOG #3); Teku redundant-clamp sweep; Nimbus Gloas `0x03` divergence (pre-emptive, future fork); Lighthouse `safe_*` overflow-checked arithmetic in vs unchecked clients; zero-length-credentials defensive variants (F-tier today).
 
 See [item1/README.md](item1/README.md).
+
+### 2. `process_consolidation_request` EIP-7251 switch + main path
+
+**Status:** no-divergence-pending-fuzzing — audited 2026-05-03. Track A entry.
+
+Source survey across all six clients confirms aligned implementations of the switch-to-compounding fast path and the cross-validator main path. Notable per-client idioms (all observable-equivalent at the spec level): nimbus and lodestar hoist pubkey-existence checks before the switch fast path (pyspec does them inside `is_valid_switch_to_compounding_request`); prysm adds defensive `len(creds)!=32` and `len(addr)!=20` checks; lighthouse uses `safe_*` math everywhere plus a `match` on state variant that returns `Err(IncorrectStateVariant)` for pre-Electra; teku uses `.minusMinZero()` saturating subtraction; lodestar mixes `number` and `BigInt` for churn arithmetic; grandine uses `Result<()>` propagation throughout.
+
+All 10 EF `operations/consolidation_request` fixtures pass uniformly on prysm + lighthouse + lodestar + grandine. teku and nimbus SKIP per harness limitation (no per-operation CLI hook); both pass these in their internal CI.
+
+**Coverage gap surfaced**: 9 of 10 EF fixtures exercise the switch-to-compounding fast path; only `incorrect_not_enough_consolidation_churn_available` reaches the main path, and it terminates early at the churn short-circuit. **The end-to-end main-path success scenario (source != target, both compounding, full success ending in `PendingConsolidation` append) is not directly fixture-tested at this layer.**
+
+**Adjacent untouched Electra-active**: `queue_excess_active_balance` (called by switch path); `get_pending_balance_to_withdraw` (cross-cuts withdrawal_request); `compute_activation_exit_epoch` (cross-cuts voluntary_exit); pubkey-lookup data-structure consistency under churn (6 different DSes); `PendingConsolidation` queue append ordering (cross-cuts WORKLOG #12); coarse-grained lighthouse harness verdict (per-helper rather than per-fixture); EF coverage gap (T1.1 fixture missing).
+
+See [item2/README.md](item2/README.md).

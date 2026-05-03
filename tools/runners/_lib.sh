@@ -36,6 +36,14 @@ parse_fixture() {
             BB_CATEGORY=epoch_processing
             BB_PRESET=minimal
             ;;
+        */consensus-spec-tests/tests/mainnet/*/operations/*/pyspec_tests/*)
+            BB_CATEGORY=operations
+            BB_PRESET=mainnet
+            ;;
+        */consensus-spec-tests/tests/minimal/*/operations/*/pyspec_tests/*)
+            BB_CATEGORY=operations
+            BB_PRESET=minimal
+            ;;
         *)
             BB_CATEGORY=unsupported
             return 1
@@ -45,6 +53,8 @@ parse_fixture() {
     BB_FORK="$(echo "$abs" | sed -E "s|.*/${BB_PRESET}/([^/]+)/.*|\\1|")"
     if [[ "$BB_CATEGORY" == "epoch_processing" ]]; then
         BB_HELPER="$(echo "$abs" | sed -E 's|.*/epoch_processing/([^/]+)/.*|\1|')"
+    elif [[ "$BB_CATEGORY" == "operations" ]]; then
+        BB_HELPER="$(echo "$abs" | sed -E 's|.*/operations/([^/]+)/.*|\1|')"
     fi
 }
 
