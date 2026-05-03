@@ -198,18 +198,23 @@ is nil (Deneb) or non-nil (Electra). Other clients have separate
 typed payload variants per fork. **prysm's pattern is more
 forward-compatible** but relies on the optional-field convention.
 
-## EF fixture results — partial run, 0 failures, runner patch applied
+## EF fixture results — 160/160 PASS
+
+```
+clients: prysm, lighthouse, lodestar, grandine
+fixtures: 40
+PASS: 160   FAIL: 0   SKIP: 0   total: 160
+```
 
 The first run had 21 lighthouse FAILs due to a runner test-name
 mapping issue: lighthouse exposes `operations_execution_payload_full`
 (NOT bare `operations_execution_payload`) for this category. **Patched
 `tools/runners/lighthouse.sh`** to map `BB_HELPER=execution_payload`
-→ `test_fn=operations_execution_payload_full`. Re-run is in progress
-at audit-write time with **0 failures** observed so far. The full
-40-fixture × 4-client run will be tallied in a follow-up commit.
+→ `test_fn=operations_execution_payload_full`. Post-patch run shows
+0 failures across all 160 invocations.
 
-(See `tools/runners/lighthouse.sh` diff in this commit for the
-runner patch.)
+(See `tools/runners/lighthouse.sh` diff in the parent commit for
+the runner patch.)
 
 The 40-fixture suite covers:
 
