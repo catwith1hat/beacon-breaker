@@ -46,6 +46,7 @@ _(Numbered prioritization list. Each entry one line. Candidates above the
 2. **`process_consolidation_request` EIP-7251 switch + main path** (Electra-active, Track A entry) → item #2 (no-divergence-pending-fuzzing; 10/10 EF operations fixtures pass on prysm+lighthouse+lodestar+grandine; teku+nimbus SKIP per harness limit).
 3. **`process_withdrawal_request` EIP-7002 full-exit + partial paths** (Electra-active, Track A) → item #3 (no-divergence-pending-fuzzing; 19/19 EF operations fixtures pass on prysm+lighthouse+lodestar+grandine; teku+nimbus SKIP).
 4. **`process_pending_deposits` EIP-6110 per-epoch drain** (Electra-active, Track A drain side) → item #4 (no-divergence-pending-fuzzing; 43/43 EF epoch-processing fixtures pass on prysm+lighthouse+lodestar+grandine; teku+nimbus SKIP).
+5. **`process_pending_consolidations` EIP-7251 drain side** (Electra-active, Track A drain side) → item #5 (no-divergence-pending-fuzzing; 13/13 EF epoch-processing fixtures pass on prysm+lighthouse+lodestar+grandine; teku+nimbus SKIP). Closes Track A's main drain side.
 
 ## Audit tracks (2026-05-02)
 
@@ -227,3 +228,19 @@ The richness of this fixture set (43 tests including every churn boundary, every
 **Adjacent untouched Electra-active**: `process_deposit_request` (producer side, trivial pyspec but `deposit_requests_start_index` init quirk); `add_validator_to_registry` standalone (Pectra-modified, two callers); `is_valid_deposit_signature` BLS library-family audit (Track F alignment); lodestar Gloas-fork branch as pre-emptive divergence; lighthouse `PendingDepositsContext` batched-mutation choreography; placeholder-signature top-up fixture (T1.1); `MAX_PENDING_DEPOSITS_PER_EPOCH=16` queue growth analysis under fork-driven mass entry; `deposit_balance_to_consume` shared churn pool with `process_voluntary_exit`; postpone-list ordering preservation; SSZ list cap (`PENDING_DEPOSITS_LIMIT=2^27`) and what happens when full.
 
 See [item4/README.md](item4/README.md).
+
+### 5. `process_pending_consolidations` EIP-7251 drain side
+
+**Status:** no-divergence-pending-fuzzing — audited 2026-05-03. Track A drain side; consumes the queue produced by item #2's main path. Closes Track A's main drain coverage.
+
+Source survey across all six clients confirms aligned implementations of the slashed-first / withdrawable-second predicate ordering, the `min(balance, effective_balance)` transfer formula, the cursor advance on slashed (skip) and not on break, the symmetric `decrease_balance + increase_balance` pair, and the slice-from-cursor queue mutation. All 13 EF `pending_consolidations` fixtures pass uniformly on prysm+lighthouse+lodestar+grandine. teku+nimbus SKIP per harness limit.
+
+The 13-fixture suite covers slashed-source skip, not-yet-withdrawable break, both source credential types (eth1 0x01 / compounding 0x02), both balance-vs-effective-balance orderings (less / greater than max), the cross-cut with pending deposits, and an "all cases together" rolled scenario. All-pass adds strong evidence to items #1 (`get_max_effective_balance` feeds `source.effective_balance` here), #2 (this drain consumes #2's queue), and #4 (`pending_consolidation_with_pending_deposit` exercises both drain functions in one epoch).
+
+**Notable per-client styles**: lighthouse integrates this into its single-pass epoch processor with an immediate effective-balance-update re-pass for affected validators (`perform_effective_balance_updates` flag) — same observable post-state but different mutation choreography; lighthouse uses `pop_front(N)` on a milhouse List instead of slice-and-replace; lodestar uses chunked iteration (100 at a time) AND dual-writes balances to both the SSZ tree AND `epochCtx.balances` cache for downstream consistency; lodestar is the only client with the `cachedBalances` array sync pattern; grandine clones the queue + `PersistentList::try_from_iter`; nimbus uses `asSeq[i..^1]` slice + HashList re-init; teku uses `subList`; teku retains the legacy variable name `nextPendingBalanceConsolidation` (parallel to lighthouse's pre-rename `pending_balance_deposits` test fn from item #4).
+
+**Cross-cut surfaced**: there is **no churn limit** on consolidations drainage (unlike `process_pending_deposits` from item #4) — drainage is pre-budgeted via `compute_consolidation_epoch_and_update_churn` at request time (item #2). Up to `PENDING_CONSOLIDATIONS_LIMIT = 64` entries could drain in one epoch in principle. Also, source's `effective_balance` may have drifted between request and drain (via item #1's eb-updates running in earlier epochs) — the `min(balance, effective_balance)` formula handles this drift implicitly.
+
+**Adjacent untouched Electra-active**: `process_epoch` per-fork ordering of helpers (deposits → consolidations → eb-updates — order matters); lighthouse `perform_effective_balance_updates` flag local-vs-global re-pass equivalence; self-consolidation `source_index == target_index` queue entry (defensive — not reachable from request validation today); `source.balance` over-budget residual cleanup via `process_withdrawals`; no per-epoch consolidation drainage limit (denial-of-throughput analysis under high source-slashing rates); lodestar `cachedBalances` dual-write coherence (any direct `state.balances.set` between two cache reads would diverge); teku legacy `nextPendingBalanceConsolidation` naming sweep; `PendingConsolidation` SSZ struct has no amount field — derived at drain time from `source.effective_balance`, susceptible to drift.
+
+See [item5/README.md](item5/README.md).
