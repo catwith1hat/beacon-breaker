@@ -49,8 +49,12 @@ rc=$?
 # `process_<op>` namespace, so we accept either path.
 case "$BB_CATEGORY" in
     sanity_blocks)
-        match_re="${BB_FORK}::block_processing::spec_tests::.*_${BB_PRESET}_.*_${BB_TEST_NAME} \.\.\. ok\$"
-        fail_re="${BB_FORK}::block_processing::spec_tests::.*_${BB_PRESET}_.*_${BB_TEST_NAME} \.\.\. FAILED\$"
+        # Sanity_blocks tests live under TWO modules in grandine:
+        #   - per-fork `<fork>::block_processing::spec_tests::*` (most tests)
+        #   - shared `combined::spec_tests::<fork>_<preset>_sanity_*` (deposit_transition__*
+        #     and other cross-fork-fixture sanity tests)
+        match_re="(${BB_FORK}::block_processing::spec_tests::.*_${BB_PRESET}_|combined::spec_tests::${BB_FORK}_${BB_PRESET}_sanity_).*_${BB_TEST_NAME} \.\.\. ok\$"
+        fail_re="(${BB_FORK}::block_processing::spec_tests::.*_${BB_PRESET}_|combined::spec_tests::${BB_FORK}_${BB_PRESET}_sanity_).*_${BB_TEST_NAME} \.\.\. FAILED\$"
         ;;
     epoch_processing)
         match_re="${BB_FORK}::epoch_processing::.*_${BB_TEST_NAME} \.\.\. ok\$"
