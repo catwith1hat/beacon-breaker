@@ -174,23 +174,23 @@ divergence-vector if underflow ever occurs (lighthouse uses
 total_withdrawn ≤ balance per is_eligible check` comment for
 auditability.
 
-## EF fixture results — partial run (43/80 fixtures × 4 clients), 0 failures
+## EF fixture results — 320/320 PASS
 
-Started a full 80 EF mainnet/electra/operations/withdrawals fixture
-run across the 4 wired clients via `scripts/run_fixture.sh`. The run
-is slow (~5 sec per fixture-client invocation due to lighthouse's
-single-test-fn integration binary spawn cost); 173 of 320 invocations
-completed at audit-write time, **all PASS, 0 FAIL**. Required a runner
-patch to `tools/runners/grandine.sh` to handle grandine's flat
+Ran all 80 EF mainnet/electra/operations/withdrawals fixtures across
+the 4 wired clients via `scripts/run_fixture.sh`:
+
+```
+clients: prysm, lighthouse, lodestar, grandine
+fixtures: 80
+PASS: 320   FAIL: 0   SKIP: 0   total: 320
+```
+
+Required a runner patch to `tools/runners/grandine.sh` to handle
+grandine's flat
 `<fork>::block_processing::spec_tests::<preset>_<helper>_...` test
 path layout for withdrawals (and execution_payload — same flat
 layout) — the original regex required a `process_<helper>::` namespace
 that withdrawals doesn't use.
-
-The full 80×4 = 320 run will be completed and recorded in the
-[WORKLOG.md](../WORKLOG.md) by the next item's commit. **All 173
-completed runs PASS uniformly** across the four wired clients —
-strong evidence-of-no-divergence.
 
 The 80-fixture suite is the **richest in the corpus** (item #7
 attestation has 45; item #4 deposits has 43; #10 slashings + reset has
