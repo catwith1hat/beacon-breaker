@@ -102,6 +102,9 @@ case "$BB_CATEGORY" in
                     deposit_request|deposit_requests)               test_fn=operations_deposit_requests ;;
                     bls_to_execution_change)     test_fn=operations_bls_to_execution_change ;;
                     voluntary_exit)              test_fn=operations_exit ;;
+                    # execution_payload tests split into _full (non-blinded) and _blinded
+                    # variants in lighthouse; the EF fixture corpus is the _full variant.
+                    execution_payload)           test_fn=operations_execution_payload_full ;;
                     *)                           test_fn="operations_${BB_HELPER}" ;;
                 esac
                 ;;
