@@ -44,6 +44,7 @@ _(Numbered prioritization list. Each entry one line. Candidates above the
 
 1. **`process_effective_balance_updates` Pectra hysteresis with `MAX_EFFECTIVE_BALANCE_ELECTRA`** (Electra-active, per-epoch) → item #1 (no-divergence-pending-fuzzing; all six agree on `effective_balance_increase_changes_lookahead`, sha256 `aec719af…`).
 2. **`process_consolidation_request` EIP-7251 switch + main path** (Electra-active, Track A entry) → item #2 (no-divergence-pending-fuzzing; 10/10 EF operations fixtures pass on prysm+lighthouse+lodestar+grandine; teku+nimbus SKIP per harness limit).
+3. **`process_withdrawal_request` EIP-7002 full-exit + partial paths** (Electra-active, Track A) → item #3 (no-divergence-pending-fuzzing; 19/19 EF operations fixtures pass on prysm+lighthouse+lodestar+grandine; teku+nimbus SKIP).
 
 ## Audit tracks (2026-05-02)
 
@@ -197,3 +198,15 @@ All 10 EF `operations/consolidation_request` fixtures pass uniformly on prysm + 
 **Adjacent untouched Electra-active**: `queue_excess_active_balance` (called by switch path); `get_pending_balance_to_withdraw` (cross-cuts withdrawal_request); `compute_activation_exit_epoch` (cross-cuts voluntary_exit); pubkey-lookup data-structure consistency under churn (6 different DSes); `PendingConsolidation` queue append ordering (cross-cuts WORKLOG #12); coarse-grained lighthouse harness verdict (per-helper rather than per-fixture); EF coverage gap (T1.1 fixture missing).
 
 See [item2/README.md](item2/README.md).
+
+### 3. `process_withdrawal_request` EIP-7002 full-exit + partial paths
+
+**Status:** no-divergence-pending-fuzzing — audited 2026-05-03. Track A.
+
+Source survey across all six clients confirms aligned implementations of the dual-mode (full-exit vs partial) entrypoint. Two divergence-prone bits both correctly enforced everywhere: (a) **partial withdrawals strictly require `has_compounding_withdrawal_credential` (0x02 only)** — a 0x01 validator can only do full exits via this path; (b) **partial-withdrawal balance flows through `compute_exit_epoch_and_update_churn` (which uses `get_activation_exit_churn_limit`), NOT `compute_consolidation_epoch_and_update_churn`** (smaller). All 19 EF `operations/withdrawal_request` fixtures pass uniformly on prysm+lighthouse+lodestar+grandine. teku+nimbus SKIP. Notable per-client styles: lodestar bundles eligibility checks 4-7 into a `isValidatorEligibleForWithdrawOrExit` helper shared with voluntary exit (single source of truth, but a regression there affects both paths); lodestar uses `>=` for the queue-full check where others use `==` (defensive); nimbus has a Gloas-ready branch in `get_pending_balance_to_withdraw` for builder withdrawals (dead at Pectra).
+
+This item shares 5 predicates with item #2 (consolidation_request); both passing strengthens evidence for the shared core (pubkey/creds/active/exiting/seasoned). Both items use `compute_exit_epoch_and_update_churn` infrastructure but with different churn-limit selectors.
+
+**Adjacent untouched Electra-active**: `compute_exit_epoch_and_update_churn` standalone audit (used by 4+ paths); `initiate_validator_exit` standalone audit (cross-cuts voluntary_exit); `get_pending_balance_to_withdraw` linear-scan complexity (F-tier OOM under adversarial queue growth); lodestar shared helper as single regression vector for two ops; canonical "lost partial" composed scenario (switch + partial in one block — fixture worth generating); `pending_partial_withdrawals` queue append ordering (cross-cuts drain side); nimbus Gloas-aware predicates (pre-emptive); 0x02 validator with effective_balance below MIN_ACTIVATION_BALANCE; FULL_EXIT_REQUEST_AMOUNT==0 spec quirk; EIP-7685 request ordering at the dispatcher.
+
+See [item3/README.md](item3/README.md).
