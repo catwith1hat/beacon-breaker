@@ -57,8 +57,12 @@ case "$BB_CATEGORY" in
         fail_re="${BB_FORK}::epoch_processing::.*_${BB_TEST_NAME} \.\.\. FAILED\$"
         ;;
     operations)
-        match_re="${BB_FORK}::block_processing::spec_tests::process_${BB_HELPER}::.*_${BB_PRESET}_.*_${BB_TEST_NAME} \.\.\. ok\$"
-        fail_re="${BB_FORK}::block_processing::spec_tests::process_${BB_HELPER}::.*_${BB_PRESET}_.*_${BB_TEST_NAME} \.\.\. FAILED\$"
+        # Most operations live under `process_<helper>::...`. Two
+        # exceptions (no inner namespace, fixture name embedded directly):
+        #   - withdrawals:        `<fork>::block_processing::spec_tests::mainnet_withdrawals_..._<test>`
+        #   - execution_payload:  similar flat layout.
+        match_re="${BB_FORK}::block_processing::spec_tests::(process_${BB_HELPER}::.*|${BB_PRESET}_${BB_HELPER}_).*_${BB_TEST_NAME} \.\.\. ok\$"
+        fail_re="${BB_FORK}::block_processing::spec_tests::(process_${BB_HELPER}::.*|${BB_PRESET}_${BB_HELPER}_).*_${BB_TEST_NAME} \.\.\. FAILED\$"
         ;;
 esac
 
