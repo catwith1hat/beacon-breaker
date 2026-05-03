@@ -101,6 +101,7 @@ case "$BB_CATEGORY" in
                     withdrawal_request|execution_layer_withdrawals) test_fn=operations_withdrawal_reqeusts ;;
                     deposit_request|deposit_requests)               test_fn=operations_deposit_requests ;;
                     bls_to_execution_change)     test_fn=operations_bls_to_execution_change ;;
+                    voluntary_exit)              test_fn=operations_exit ;;
                     *)                           test_fn="operations_${BB_HELPER}" ;;
                 esac
                 ;;
