@@ -45,6 +45,7 @@ _(Numbered prioritization list. Each entry one line. Candidates above the
 1. **`process_effective_balance_updates` Pectra hysteresis with `MAX_EFFECTIVE_BALANCE_ELECTRA`** (Electra-active, per-epoch) → item #1 (no-divergence-pending-fuzzing; all six agree on `effective_balance_increase_changes_lookahead`, sha256 `aec719af…`).
 2. **`process_consolidation_request` EIP-7251 switch + main path** (Electra-active, Track A entry) → item #2 (no-divergence-pending-fuzzing; 10/10 EF operations fixtures pass on prysm+lighthouse+lodestar+grandine; teku+nimbus SKIP per harness limit).
 3. **`process_withdrawal_request` EIP-7002 full-exit + partial paths** (Electra-active, Track A) → item #3 (no-divergence-pending-fuzzing; 19/19 EF operations fixtures pass on prysm+lighthouse+lodestar+grandine; teku+nimbus SKIP).
+4. **`process_pending_deposits` EIP-6110 per-epoch drain** (Electra-active, Track A drain side) → item #4 (no-divergence-pending-fuzzing; 43/43 EF epoch-processing fixtures pass on prysm+lighthouse+lodestar+grandine; teku+nimbus SKIP).
 
 ## Audit tracks (2026-05-02)
 
@@ -210,3 +211,19 @@ This item shares 5 predicates with item #2 (consolidation_request); both passing
 **Adjacent untouched Electra-active**: `compute_exit_epoch_and_update_churn` standalone audit (used by 4+ paths); `initiate_validator_exit` standalone audit (cross-cuts voluntary_exit); `get_pending_balance_to_withdraw` linear-scan complexity (F-tier OOM under adversarial queue growth); lodestar shared helper as single regression vector for two ops; canonical "lost partial" composed scenario (switch + partial in one block — fixture worth generating); `pending_partial_withdrawals` queue append ordering (cross-cuts drain side); nimbus Gloas-aware predicates (pre-emptive); 0x02 validator with effective_balance below MIN_ACTIVATION_BALANCE; FULL_EXIT_REQUEST_AMOUNT==0 spec quirk; EIP-7685 request ordering at the dispatcher.
 
 See [item3/README.md](item3/README.md).
+
+### 4. `process_pending_deposits` EIP-6110 per-epoch drain
+
+**Status:** no-divergence-pending-fuzzing — audited 2026-05-03. Track A drain side; consumes the queue produced by `process_deposit_request` and by item #2's `queue_excess_active_balance` (switch-to-compounding excess deposits).
+
+Source survey across all six clients confirms aligned implementations of the four-break-condition outer loop, the three-way per-deposit branch (withdrawn → apply-no-churn / exited → postpone-to-back / active → check-churn-then-apply), the queue mutation `pending_deposits[next_deposit_index:] + postponed`, the conditional `deposit_balance_to_consume` accumulator (`available − processed` if churn hit; `0` otherwise), and most importantly the **`GENESIS_FORK_VERSION` deposit-signature domain** (a common bug vector — using current fork version would silently reject every valid pre-Pectra-signed deposit). All 43 EF `pending_deposits` fixtures pass uniformly on prysm+lighthouse+lodestar+grandine. teku+nimbus SKIP per harness limit.
+
+The richness of this fixture set (43 tests including every churn boundary, every signature edge case, every postpone path, and the Eth1-bridge-transition cases) is the strongest evidence yet for cross-client agreement on this surface.
+
+**Notable per-client styles**: lighthouse defers actual balance/validator mutations to a `PendingDepositsContext` (batched application later in single-pass) — same observable post-state but a different mutation choreography; lighthouse uses the **legacy test-fn name `epoch_processing_pending_balance_deposits`** (from before `PendingBalanceDeposit` was renamed to `PendingDeposit`) — runner mapping added; lodestar processes the queue in chunks of 100 for SSZ batched reads, AND has a Gloas-fork-conditional branch using `getActivationChurnLimit` (vs `getActivationExitChurnLimit` pre-Gloas) — pre-emptive divergence vector at the next fork target; grandine clones the queue for borrow safety.
+
+**Cross-cut with item #2**: the switch-to-compounding fast path appends `PendingDeposit{slot=GENESIS_SLOT, signature=G2_POINT_AT_INFINITY}` placeholders. These are top-ups (validator already exists) so signature is never validated. Worth generating a dedicated T1.1 fixture exercising this placeholder.
+
+**Adjacent untouched Electra-active**: `process_deposit_request` (producer side, trivial pyspec but `deposit_requests_start_index` init quirk); `add_validator_to_registry` standalone (Pectra-modified, two callers); `is_valid_deposit_signature` BLS library-family audit (Track F alignment); lodestar Gloas-fork branch as pre-emptive divergence; lighthouse `PendingDepositsContext` batched-mutation choreography; placeholder-signature top-up fixture (T1.1); `MAX_PENDING_DEPOSITS_PER_EPOCH=16` queue growth analysis under fork-driven mass entry; `deposit_balance_to_consume` shared churn pool with `process_voluntary_exit`; postpone-list ordering preservation; SSZ list cap (`PENDING_DEPOSITS_LIMIT=2^27`) and what happens when full.
+
+See [item4/README.md](item4/README.md).

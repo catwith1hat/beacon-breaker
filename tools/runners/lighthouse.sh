@@ -86,7 +86,14 @@ case "$BB_CATEGORY" in
         # we can't filter to a single fixture. Run the whole helper and
         # treat PASS as "our fixture is among the passing ones".
         case "$BB_CATEGORY" in
-            epoch_processing) test_fn="epoch_processing_${BB_HELPER}" ;;
+            epoch_processing)
+                # Lighthouse retains the pre-rename name `pending_balance_deposits`
+                # for what the spec / EF dirs now call `pending_deposits`.
+                case "$BB_HELPER" in
+                    pending_deposits) test_fn=epoch_processing_pending_balance_deposits ;;
+                    *) test_fn="epoch_processing_${BB_HELPER}" ;;
+                esac
+                ;;
             operations)
                 # Lighthouse operations test names diverge from EF dir names.
                 case "$BB_HELPER" in
