@@ -1,10 +1,12 @@
 # beacon-breaker — LLM-driven CL cross-client audit
 
-An autonomous audit of the Ethereum consensus layer across six production clients at the Electra (Pectra) hard fork, driven entirely by a large language model.
+An autonomous audit of the Ethereum consensus layer across six production clients at the **Fulu** hard fork (active on mainnet since 2025-12-03, epoch 411392), driven entirely by a large language model.
 
 **Clients audited:** prysm · lighthouse · teku · nimbus · lodestar · grandine
 
-**Scope:** 29 items covering the Pectra state-transition function — request processing (EIP-7002 / 7251 / 6110), pending-deposit and pending-consolidation drains, registry updates, slashings, attestations and the EIP-7549 multi-committee aggregation, sync committee selection, withdrawals, execution-payload validation, the EIP-7685 execution-requests pipeline, BLS signature verification, and the foundational signing-domain primitives.
+**Scope:** 29 items completed at the Pectra (Electra) surface, of which 23 are inherited unchanged at Fulu and remain authoritative; 3 are Pectra-historical with Fulu follow-ups queued; 2 are cross-corpus meta-audits. **Fulu-NEW surfaces (PeerDAS / EIP-7594, deterministic proposer lookahead / EIP-7917, BPO hardforks / EIP-7892) are queued as items #30+ and not yet audited.**
+
+The completed Pectra surface covers: request processing (EIP-7002 / 7251 / 6110), pending-deposit and pending-consolidation drains, registry updates, slashings, attestations and the EIP-7549 multi-committee aggregation, sync committee selection, withdrawals, execution-payload validation, the EIP-7685 execution-requests pipeline, BLS signature verification, and the foundational signing-domain primitives.
 
 ---
 
@@ -18,9 +20,11 @@ Full methodology, prompt templates, and repository conventions: [METHODOLOGY.md]
 
 ## Findings
 
-**0 confirmed Pectra-fork divergences across 29 items.** ~1620 explicit fixture PASSes + ~6000 implicit PASSes through cross-cut helpers. The Pectra surface is consistent across all six clients at the algorithm level; observed differences are entirely in caching, dispatch idiom, source organization, and forward-compat patches.
+**0 confirmed Pectra-fork divergences across 29 items.** ~1620 explicit fixture PASSes + ~6000 implicit PASSes through cross-cut helpers. The Pectra surface — inherited unchanged at Fulu — is consistent across all six clients at the algorithm level; observed differences are entirely in caching, dispatch idiom, source organization, and forward-compat patches.
 
-What the audit *did* surface is a **forward-compat divergence catalogue** at the Pectra → Gloas → Heze boundary: code paths that are dead at Pectra but predict cross-client divergence at the next two forks.
+**Fulu-NEW surfaces are not yet covered**: PeerDAS (DataColumnSidecar, custody groups, KZG cell proofs, Reed-Solomon matrix recovery, column gossip), deterministic proposer lookahead (`proposer_lookahead` field, `process_proposer_lookahead`, modified `get_beacon_proposer_index`), and Blob Parameter Only / BPO hardforks (runtime per-epoch blob limit via `blob_schedule`, modified `process_execution_payload`, modified `compute_fork_digest` with XOR masking). Mainnet has already executed two BPO transitions: 9 → 15 blobs at epoch 412672 (2025-12-09), then → 21 at epoch 419072 (2026-01-07). See [WORKLOG.md](WORKLOG.md) re-scope status table for the full classification of items #1–#29 and the queued Fulu items #30+.
+
+What the audit *did* surface, beyond Pectra-surface conformance, is a **forward-compat divergence catalogue** at the Pectra → Gloas → Heze boundary: code paths that are dead today but predict cross-client divergence at the next two forks.
 
 ### Forward-compat divergence vectors at Gloas
 
@@ -44,16 +48,16 @@ Full catalogue with per-pattern source refs: [item28/README.md](item28/README.md
 
 ### Per-client forward-compat readiness
 
-Updated post-#29 with the Heze surprise (see Cross-cutting observations).
+Updated post-#29 with the Heze surprise (see Cross-cutting observations). **Fulu column not yet audited**; all six clients run Fulu on mainnet today, so the column is presumed ✅ at the integration level but pending source-level audit.
 
-| Client | Pectra | Gloas | Heze |
-|---|---|---|---|
-| nimbus | ✅ | leader (11+ surfaces) | none |
-| grandine | ✅ | leader (9+ surfaces) | none |
-| lighthouse | ✅ | active (6+ surfaces) | none |
-| prysm | ✅ | active (5+ surfaces) | constants only (`.ethspecify.yml`) |
-| lodestar | ✅ | active (6+ surfaces) | none |
-| teku | ✅ | minimal in core | **leader** (full `HezeStateUpgrade.java`) |
+| Client | Pectra | Fulu | Gloas | Heze |
+|---|---|---|---|---|
+| nimbus | ✅ | (mainnet ✅, source-audit pending) | leader (11+ surfaces) | none |
+| grandine | ✅ | (mainnet ✅, source-audit pending) | leader (9+ surfaces) | none |
+| lighthouse | ✅ | (mainnet ✅, source-audit pending) | active (6+ surfaces) | none |
+| prysm | ✅ | (mainnet ✅, source-audit pending) | active (5+ surfaces) | constants only (`.ethspecify.yml`) |
+| lodestar | ✅ | (mainnet ✅, source-audit pending) | active (6+ surfaces) | none |
+| teku | ✅ | (mainnet ✅, source-audit pending) | minimal in core | **leader** (full `HezeStateUpgrade.java`) |
 
 ### Cross-cutting observations
 
@@ -83,9 +87,9 @@ Updated post-#29 with the Heze surprise (see Cross-cutting observations).
 ## Repository layout
 
 ```
-itemNN/             per-item audit (29 items)
+itemNN/             per-item audit (29 items at Pectra surface; Fulu items #30+ queued)
   README.md         hypotheses, per-client cross-reference, findings, future research
-WORKLOG.md          full sequential audit log (29 items, prioritization + per-item bodies)
+WORKLOG.md          full sequential audit log (Goal + Fork Target + Re-scope status + per-item bodies)
 BEACONBREAKER.md    project mission, scope, tracks, methodology rationale
 METHODOLOGY.md      audit loop and prompt templates
 AGENTS.md           agent instructions
