@@ -2,9 +2,16 @@
 
 ## Goal
 
-Cross-client audit of CL implementations at the **Electra/Pectra** fork
-target on mainnet, finding consensus-relevant divergences and producing
-fixtures suitable for upstream EF state-tests.
+Cross-client audit of CL implementations at the **Fulu** fork target on
+mainnet (active since 2025-12-03, epoch 411392), finding
+consensus-relevant divergences and producing fixtures suitable for
+upstream EF state-tests.
+
+**Re-scoped 2026-05-04**: items #1–#29 were originally scoped to
+Electra/Pectra. Pectra activated on mainnet 2025-05-07 (epoch 364032);
+Fulu activated 7 months later. Most Pectra-NEW surfaces inherit
+unchanged at Fulu and remain valid; a few items are now stale or
+incomplete and have Fulu follow-ups queued (see "Re-scope status" below).
 
 ## Clients & Versions
 
@@ -26,15 +33,56 @@ fixtures.
 
 ## Fork Target
 
-**Electra/Pectra** on mainnet. Active EIPs in scope:
+**Fulu** on mainnet (active since 2025-12-03, epoch 411392).
+`FULU_FORK_VERSION = 0x06000000`. Fulu inherits all Pectra surfaces and
+adds:
+
+**Fulu-NEW EIPs (not yet audited as primary target — items #30+ queue)**:
+- EIP-7594 (PeerDAS — Peer Data Availability Sampling): DataColumnSidecar,
+  custody groups, Reed-Solomon matrix extension/recovery, KZG cell
+  proofs, column-based gossip subnets, `is_data_available` rewrite for
+  fork choice
+- EIP-7917 (Deterministic proposer lookahead): new `proposer_lookahead`
+  field in BeaconState, `initialize_proposer_lookahead`,
+  `process_proposer_lookahead`, modified `get_beacon_proposer_index`
+- EIP-7892 (Blob Parameter Only / BPO hardforks): runtime per-epoch
+  blob limit via `blob_schedule` + `get_blob_parameters(epoch)`,
+  modified `process_execution_payload`, modified `compute_fork_digest`
+  with XOR masking. **Active mainnet schedule**: 9 blobs (Fulu) → 15 at
+  epoch 412672 (2025-12-09) → 21 at epoch 419072 (2026-01-07)
+
+**Pectra-inherited EIPs (covered by items #1–#29, valid at Fulu)**:
 - EIP-6110 (in-protocol deposits)
 - EIP-7002 (EL-triggered exits)
 - EIP-7251 (MAX_EFFECTIVE_BALANCE = 2048 ETH, consolidations,
   `0x02` withdrawal-credentials prefix)
 - EIP-7549 (move committee index outside attestation signing data)
 - EIP-7685 (general execution-layer requests framework)
-- EIP-7691 (blob throughput increase) — interacts via Engine API only
+- EIP-7691 (blob throughput increase) — superseded by EIP-7892 BPO
 - EIP-7623 (calldata cost increase) — EL-side, no direct CL surface
+
+## Re-scope status (2026-05-04)
+
+Items #1–#29 were originally audited at Electra/Pectra. Re-scope
+verdicts:
+
+| Status | Items | Notes |
+|---|---|---|
+| **Pectra-inherited (valid at Fulu)** | #1, #2, #3, #4, #5, #6, #7, #8, #9, #10, #12, #14, #16, #17, #18, #20, #21, #22, #23, #24, #25, #26, #27 | Pectra-NEW surfaces unchanged at Fulu — audits remain authoritative |
+| **Pectra-historical (Fulu follow-up queued)** | #11 (`upgrade_to_electra`), #15 (`get_execution_requests_list` / Engine API V4), #19 (`process_execution_payload` Pectra-MODIFIED with hardcoded `MAX_BLOBS_PER_BLOCK_ELECTRA = 9`) | Function called once at the Pectra activation slot or replaced/modified at Fulu — audits remain valid for the Pectra→Fulu transition window but must be paralleled by Fulu equivalents |
+| **Cross-corpus meta (valid)** | #28 (Gloas tracking), #29 (signing-domain primitives) | Forward-compat surfaces unchanged; #29's Heze surprise still applies |
+
+**Critical missing audits** identified during re-scope (queued as items #30+):
+1. `upgrade_to_fulu` — paralleling item #11 for the active mainnet upgrade
+2. `get_beacon_proposer_index` (Fulu-modified) + `process_proposer_lookahead` (EIP-7917)
+3. `get_blob_parameters(epoch)` + `blob_schedule` schema (EIP-7892 BPO)
+4. `process_execution_payload` Fulu-modified — corrects item #19 for mainnet target
+5. `DataColumnSidecar` + custody helpers (`get_custody_groups`, `compute_columns_for_custody_group`) — EIP-7594 PeerDAS entry
+6. `verify_data_column_sidecar_kzg_proofs` — KZG cell-proof verification
+7. `compute_fork_digest` post-Fulu — XOR with blob-parameters hash for BPO transitions (touched in item #29 adjacent-untouched, never audited)
+8. `is_data_available` Fulu rewrite — fork-choice DAS
+9. `compute_matrix` / `recover_matrix` — Reed-Solomon extension and recovery
+10. `engine_newPayloadV5` standalone audit — touched at items #15/#19, never primary
 
 ## Areas Investigated
 
