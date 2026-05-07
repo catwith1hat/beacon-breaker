@@ -8,7 +8,7 @@
 
 ## Question
 
-EIP-6110 replaces eth1-bridge polling with in-protocol pending deposits. Pyspec (`consensus-specs/specs/electra/beacon-chain.md:990–1057`):
+EIP-6110 replaces eth1-bridge polling with in-protocol pending deposits. Pyspec (`vendor/consensus-specs/specs/electra/beacon-chain.md:990–1057`):
 
 ```python
 def process_pending_deposits(state):

@@ -8,7 +8,7 @@
 
 ## Question
 
-EIP-7002 entrypoint with two semantic flows. Pyspec (`consensus-specs/specs/electra/beacon-chain.md:1735–1800`):
+EIP-7002 entrypoint with two semantic flows. Pyspec (`vendor/consensus-specs/specs/electra/beacon-chain.md:1735–1800`):
 
 ```python
 def process_withdrawal_request(state, req):

@@ -143,7 +143,7 @@ deposit-handling restructure.
 ### grandine has TWO `process_deposit_request` definitions
 
 ```
-grandine/transition_functions/src/electra/block_processing.rs:1155     pub fn process_deposit_request<P>(...)  // Pectra: simple, no verification
+vendor/grandine/transition_functions/src/electra/block_processing.rs:1155     pub fn process_deposit_request<P>(...)  // Pectra: simple, no verification
 grandine/transition_functions/src/gloas/execution_payload_processing.rs:290  pub fn process_deposit_request<P>(...)  // Gloas: complex with builder logic + signature verification
 ```
 

@@ -30,9 +30,9 @@ case "$BB_CATEGORY" in
         echo "teku runner does not handle category: $BB_CATEGORY"; exit 2 ;;
 esac
 
-TEKU="${TEKU:-$ROOT_DIR/teku/build/install/teku/bin/teku}"
+TEKU="${TEKU:-$ROOT_DIR/vendor/teku/build/install/teku/bin/teku}"
 if [[ ! -x "$TEKU" ]]; then
-    echo "teku binary not found; build with: cd teku && ./gradlew installDist"
+    echo "teku binary not found; build with: cd vendor/teku && ./gradlew installDist"
     exit 2
 fi
 

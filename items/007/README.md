@@ -8,7 +8,7 @@
 
 ## Question
 
-EIP-7549 SSZ change (`consensus-specs/specs/electra/beacon-chain.md:353-360`):
+EIP-7549 SSZ change (`vendor/consensus-specs/specs/electra/beacon-chain.md:353-360`):
 
 ```python
 class Attestation(Container):

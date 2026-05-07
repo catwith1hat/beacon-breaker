@@ -25,7 +25,7 @@ parse_fixture "$ABS" || { echo "unsupported fixture path: $ABS"; exit 2; }
 RUNFILES_DIR="${BB_PRYSM_RUNFILES_DIR:-/tmp/prysm-runfiles}"
 mkdir -p "$RUNFILES_DIR/__main__"
 [[ -e "$RUNFILES_DIR/__main__/tests" ]] || \
-    ln -sfn "$ROOT_DIR/consensus-spec-tests/tests" "$RUNFILES_DIR/__main__/tests"
+    ln -sfn "$ROOT_DIR/vendor/consensus-spec-tests/tests" "$RUNFILES_DIR/__main__/tests"
 
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 

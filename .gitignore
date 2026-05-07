@@ -1,5 +1,5 @@
 # Pyspec virtualenv (created by tools/pyspec/README setup)
-consensus-specs/.venv/
+vendor/consensus-specs/.venv/
 tools/pyspec/.venv/
 
 # Per-item fixture build artifacts (the .ssz_snappy files themselves are
@@ -24,15 +24,11 @@ tools/bin/
 *.swp
 .DS_Store
 
-# Local-only nix wrapper artifacts (Claude Code sandbox env)
-*.nix*
-*.drv
-
 # pnpm local store (created by lodestar pnpm install when using node 24)
 .pnpm-store/
 
 # Symlinks pulled in by per-client runners; never commit
-lodestar/spec-tests
-lodestar/packages/beacon-node/spec-tests
-lighthouse/testing/ef_tests/consensus-spec-tests
-grandine/consensus-spec-tests
+vendor/lodestar/spec-tests
+vendor/lodestar/packages/beacon-node/spec-tests
+vendor/lighthouse/testing/ef_tests/consensus-spec-tests
+vendor/grandine/consensus-spec-tests

@@ -50,7 +50,7 @@ Out: `compute_matrix` / `recover_matrix` (item #39 covered); `verify_data_column
 
 ### CRITICAL — grandine manual inclusion-proof construction (Pattern V NEW for item #28)
 
-`grandine/helper_functions/src/misc.rs:649`:
+`vendor/grandine/helper_functions/src/misc.rs:649`:
 
 ```rust
 pub fn kzg_commitments_inclusion_proof<P: Preset, B>(body: &B) -> BlobCommitmentsInclusionProof<P>

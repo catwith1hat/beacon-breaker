@@ -57,11 +57,11 @@ prioritization line and the per-item body), and commit. One item per commit.
 - `scripts/run_fixture.sh` — run a fixture against all six clients.
 - `scripts/new_item.sh` — scaffold the next `itemN/` directory.
 - `scripts/extract_item.sh` — bundle an item directory as a self-contained patch.
-- `prysm/`, `lighthouse/`, `teku/`, `nimbus/`, `lodestar/`, `grandine/` —
+- `vendor/prysm/`, `vendor/lighthouse/`, `vendor/teku/`, `vendor/nimbus/`, `vendor/lodestar/`, `vendor/grandine/` —
   client submodules (pinned).
-- `consensus-specs/` — spec + pyspec reference implementation.
-- `consensus-spec-tests/` — EF reference fixtures (shallow clone; large).
-- `beacon-APIs/` — beacon-API spec (out of scope but useful context).
+- `vendor/consensus-specs/` — spec + pyspec reference implementation.
+- `vendor/consensus-spec-tests/` — EF reference fixtures (shallow clone; large).
+- `vendor/beacon-APIs/` — beacon-API spec (out of scope but useful context).
 
 ## Working in submodules
 
@@ -71,7 +71,7 @@ given finding. If you need to bump a submodule, do it in a separate commit
 and re-run any affected fixtures.
 
 When citing code, use the path inside the submodule, e.g.
-`prysm/beacon-chain/state/state-native/setters_validator.go:142-168`.
+`vendor/prysm/beacon-chain/state/state-native/setters_validator.go:142-168`.
 
 ## Working with pyspec
 

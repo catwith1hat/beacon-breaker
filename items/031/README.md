@@ -42,7 +42,7 @@ Out: `process_execution_payload` Fulu-modified blob-limit assertion (downstream 
 
 ### prysm pre-computes ALL fork digests at config initialization
 
-`prysm/config/params/fork.go:18 ForkDigest(epoch)` returns a digest from `networkSchedule.forEpoch(epoch).ForkDigest` — a 4-byte field PRE-COMPUTED at `InitializeForkSchedule()`. The schedule merges forks AND BPOs into a single `NetworkSchedule` with per-entry `ForkDigest` computed once at startup.
+`vendor/prysm/config/params/fork.go:18 ForkDigest(epoch)` returns a digest from `networkSchedule.forEpoch(epoch).ForkDigest` — a 4-byte field PRE-COMPUTED at `InitializeForkSchedule()`. The schedule merges forks AND BPOs into a single `NetworkSchedule` with per-entry `ForkDigest` computed once at startup.
 
 ```go
 type NetworkScheduleEntry struct {

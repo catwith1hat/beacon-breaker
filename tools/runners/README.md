@@ -23,7 +23,7 @@ per-client PASS/FAIL table.
   `ncli/ncli_transition.nim`).
 - **lodestar** — there's a CLI runner in `packages/cli/test/utils`. May
   need a small ts-node wrapper.
-- **grandine** — similar pattern; see `grandine/eth2-cache` and the
+- **grandine** — similar pattern; see `vendor/grandine/eth2-cache` and the
   state-transition crate for the entry point.
 
 Budget 30-60 minutes per client to wire the harness the first time.

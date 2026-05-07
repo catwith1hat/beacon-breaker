@@ -3,7 +3,7 @@
 # running pyspec EF state-transition fixtures, which are generated under
 # the assumption that the test's named fork is active at slot 0.
 #
-# Generated from consensus-spec-tests/configs/mainnet.yaml by setting all
+# Generated from vendor/consensus-spec-tests/configs/mainnet.yaml by setting all
 # *_FORK_EPOCH values for Phase0..Electra to 0 and leaving later forks at
 # their unreachable sentinel (2^64-1).
 PRESET_BASE: 'mainnet'

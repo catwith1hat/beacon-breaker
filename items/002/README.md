@@ -8,7 +8,7 @@
 
 ## Question
 
-EIP-7251 introduces two semantically distinct flows under one entrypoint. Pyspec (`consensus-specs/specs/electra/beacon-chain.md:1869–1960`):
+EIP-7251 introduces two semantically distinct flows under one entrypoint. Pyspec (`vendor/consensus-specs/specs/electra/beacon-chain.md:1869–1960`):
 
 ```python
 def process_consolidation_request(state, req):

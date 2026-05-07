@@ -52,7 +52,7 @@ domain follows that slot's epoch.
 ## Source-organization risk surfaced — grandine has FOUR `slash_validator`s
 
 ```
-grandine/helper_functions/src/phase0.rs:81     pub fn slash_validator<P: Preset>(...)
+vendor/grandine/helper_functions/src/phase0.rs:81     pub fn slash_validator<P: Preset>(...)
 grandine/helper_functions/src/altair.rs:20     pub fn slash_validator<P: Preset>(...)
 grandine/helper_functions/src/bellatrix.rs:18  pub fn slash_validator<P: Preset>(...)
 grandine/helper_functions/src/electra.rs:153   pub fn slash_validator<P: Preset>(...)

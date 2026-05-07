@@ -8,7 +8,7 @@
 
 ## Question
 
-Pyspec `process_voluntary_exit` (`consensus-specs/specs/electra/beacon-chain.md:1706`):
+Pyspec `process_voluntary_exit` (`vendor/consensus-specs/specs/electra/beacon-chain.md:1706`):
 
 ```python
 def process_voluntary_exit(state, signed_voluntary_exit):

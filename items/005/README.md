@@ -8,7 +8,7 @@
 
 ## Question
 
-Pyspec (`consensus-specs/specs/electra/beacon-chain.md` ~lines 1057–1080):
+Pyspec (`vendor/consensus-specs/specs/electra/beacon-chain.md` ~lines 1057–1080):
 
 ```python
 def process_pending_consolidations(state):

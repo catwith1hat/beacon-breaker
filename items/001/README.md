@@ -8,7 +8,7 @@
 
 ## Question
 
-Pectra (EIP-7251) replaces the constant ceiling in `process_effective_balance_updates` with a credential-dependent ceiling. Pyspec (`consensus-specs/specs/electra/beacon-chain.md:1090-1107`):
+Pectra (EIP-7251) replaces the constant ceiling in `process_effective_balance_updates` with a credential-dependent ceiling. Pyspec (`vendor/consensus-specs/specs/electra/beacon-chain.md:1090-1107`):
 
 ```python
 def process_effective_balance_updates(state: BeaconState) -> None:

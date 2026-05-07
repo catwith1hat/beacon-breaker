@@ -53,7 +53,7 @@ Out: ENR `cgc` field (item #41); `compute_fork_digest` algorithm (item #29 cover
 
 ### CRITICAL — prysm STRICTEST connection-time enforcement (NEW Pattern X candidate)
 
-`prysm/beacon-chain/p2p/fork.go:117-127`:
+`vendor/prysm/beacon-chain/p2p/fork.go:117-127`:
 
 ```go
 // Because this is a new in-bound connection, we lean into the pre-fulu point that clients

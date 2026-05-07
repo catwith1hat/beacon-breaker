@@ -33,10 +33,10 @@ esac
 
 NCLI="${NCLI:-$ROOT_DIR/tools/runners/nimbus.bin/ncli}"
 if [[ ! -x "$NCLI" ]]; then
-    NCLI="$ROOT_DIR/nimbus/build/ncli"
+    NCLI="$ROOT_DIR/vendor/nimbus/build/ncli"
 fi
 if [[ ! -x "$NCLI" ]]; then
-    echo "ncli binary not found; build with: cd nimbus && make ncli"
+    echo "ncli binary not found; build with: cd vendor/nimbus && make ncli"
     exit 2
 fi
 

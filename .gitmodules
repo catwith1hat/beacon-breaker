@@ -1,27 +1,27 @@
 [submodule "grandine"]
-	path = grandine
+	path = vendor/grandine
 	url = https://github.com/grandinetech/grandine
 [submodule "beacon-APIs"]
-	path = beacon-APIs
+	path = vendor/beacon-APIs
 	url = https://github.com/ethereum/beacon-APIs
 [submodule "consensus-specs"]
-	path = consensus-specs
+	path = vendor/consensus-specs
 	url = https://github.com/ethereum/consensus-specs
 [submodule "nimbus"]
-	path = nimbus
+	path = vendor/nimbus
 	url = https://github.com/status-im/nimbus-eth2
 [submodule "prysm"]
-	path = prysm
+	path = vendor/prysm
 	url = https://github.com/prysmaticlabs/prysm
 [submodule "consensus-spec-tests"]
-	path = consensus-spec-tests
+	path = vendor/consensus-spec-tests
 	url = https://github.com/ethereum/consensus-spec-tests
 [submodule "teku"]
-	path = teku
+	path = vendor/teku
 	url = https://github.com/Consensys/teku
 [submodule "lodestar"]
-	path = lodestar
+	path = vendor/lodestar
 	url = https://github.com/ChainSafe/lodestar
 [submodule "lighthouse"]
-	path = lighthouse
+	path = vendor/lighthouse
 	url = https://github.com/sigp/lighthouse

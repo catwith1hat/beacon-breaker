@@ -17,7 +17,7 @@ Use sites across spec:
 7. **`DataColumnSidecarsByRoot v1`** request list cap of `DataColumnsByRootIdentifier` (Fulu-NEW per `fulu/p2p-interface.md:777`)
 8. **`ExecutionPayloadEnvelopesByRange`** cap (Gloas-NEW; lodestar `executionPayloadEnvelopesByRange.ts:94`)
 
-**Major finding**: **nimbus has UNIQUE compile-time-constant + load-time-formula-validation pattern**. `MAX_REQUEST_BLOCKS_DENEB` is HARDCODED as `uint64 = 128` in the binary at `nimbus/beacon_chain/spec/datatypes/constants.nim:80` with TODO comment `# TODO Make use of in request code`. Cannot be overridden via YAML — `checkCompatibility MAX_REQUEST_BLOCKS_DENEB` (`presets.nim:1072`) **throws `PresetFileError`** if YAML attempts to override.
+**Major finding**: **nimbus has UNIQUE compile-time-constant + load-time-formula-validation pattern**. `MAX_REQUEST_BLOCKS_DENEB` is HARDCODED as `uint64 = 128` in the binary at `vendor/nimbus/beacon_chain/spec/datatypes/constants.nim:80` with TODO comment `# TODO Make use of in request code`. Cannot be overridden via YAML — `checkCompatibility MAX_REQUEST_BLOCKS_DENEB` (`presets.nim:1072`) **throws `PresetFileError`** if YAML attempts to override.
 
 **RETROACTIVE CORRECTION to items #49 + #50**: nimbus has `checkCompatibility MAX_REQUEST_BLOCKS_DENEB * cfg.MAX_BLOBS_PER_BLOCK_ELECTRA, "MAX_REQUEST_BLOB_SIDECARS_ELECTRA"` (`presets.nim:1203-1204`) — **FORMULA VALIDATION** at YAML load time. **Nimbus is a 3rd category in Pattern DD** that I missed at items #49 + #50:
 - **Computed formula** (teku + grandine): formula computes the value

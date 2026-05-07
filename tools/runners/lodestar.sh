@@ -19,9 +19,9 @@ parse_fixture "$ABS" || { echo "unsupported fixture path: $ABS"; exit 2; }
 
 # Lodestar's spec runner expects spec tests at packages/beacon-node/spec-tests/
 # (per test/spec-tests-version.json's outputDirBase). Symlink whole dir.
-LODESTAR_SPEC_DIR="$ROOT_DIR/lodestar/packages/beacon-node/spec-tests"
+LODESTAR_SPEC_DIR="$ROOT_DIR/vendor/lodestar/packages/beacon-node/spec-tests"
 if [[ ! -e "$LODESTAR_SPEC_DIR" ]]; then
-    ln -sfn "$ROOT_DIR/consensus-spec-tests" "$LODESTAR_SPEC_DIR"
+    ln -sfn "$ROOT_DIR/vendor/consensus-spec-tests" "$LODESTAR_SPEC_DIR"
 fi
 
 PNPM="${PNPM:-pnpm}"
@@ -52,7 +52,7 @@ project="spec-${BB_PRESET}"
 
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 
-( cd "$ROOT_DIR/lodestar/packages/beacon-node" && \
+( cd "$ROOT_DIR/vendor/lodestar/packages/beacon-node" && \
   "$PNPM" exec vitest run --project "$project" \
     --testNamePattern "$filter" \
     "$spec_file" 2>&1 ) > "$WORK/vitest.log"
