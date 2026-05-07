@@ -294,7 +294,7 @@ All six pass `effective_balance_increase_changes_lookahead` (sha256 `aec719af653
 
 **Adjacent untouched Electra-active**: `process_pending_deposits` ordering vs eb-updates (WORKLOG #3); Teku redundant-clamp sweep; Nimbus Gloas `0x03` divergence (pre-emptive, future fork); Lighthouse `safe_*` overflow-checked arithmetic in vs unchecked clients; zero-length-credentials defensive variants (F-tier today).
 
-See [item1/README.md](item1/README.md).
+See [items/001/README.md](items/001/README.md).
 
 ### 2. `process_consolidation_request` EIP-7251 switch + main path
 
@@ -308,7 +308,7 @@ All 10 EF `operations/consolidation_request` fixtures pass uniformly on prysm + 
 
 **Adjacent untouched Electra-active**: `queue_excess_active_balance` (called by switch path); `get_pending_balance_to_withdraw` (cross-cuts withdrawal_request); `compute_activation_exit_epoch` (cross-cuts voluntary_exit); pubkey-lookup data-structure consistency under churn (6 different DSes); `PendingConsolidation` queue append ordering (cross-cuts WORKLOG #12); coarse-grained lighthouse harness verdict (per-helper rather than per-fixture); EF coverage gap (T1.1 fixture missing).
 
-See [item2/README.md](item2/README.md).
+See [items/002/README.md](items/002/README.md).
 
 ### 3. `process_withdrawal_request` EIP-7002 full-exit + partial paths
 
@@ -320,7 +320,7 @@ This item shares 5 predicates with item #2 (consolidation_request); both passing
 
 **Adjacent untouched Electra-active**: `compute_exit_epoch_and_update_churn` standalone audit (used by 4+ paths); `initiate_validator_exit` standalone audit (cross-cuts voluntary_exit); `get_pending_balance_to_withdraw` linear-scan complexity (F-tier OOM under adversarial queue growth); lodestar shared helper as single regression vector for two ops; canonical "lost partial" composed scenario (switch + partial in one block — fixture worth generating); `pending_partial_withdrawals` queue append ordering (cross-cuts drain side); nimbus Gloas-aware predicates (pre-emptive); 0x02 validator with effective_balance below MIN_ACTIVATION_BALANCE; FULL_EXIT_REQUEST_AMOUNT==0 spec quirk; EIP-7685 request ordering at the dispatcher.
 
-See [item3/README.md](item3/README.md).
+See [items/003/README.md](items/003/README.md).
 
 ### 4. `process_pending_deposits` EIP-6110 per-epoch drain
 
@@ -336,7 +336,7 @@ The richness of this fixture set (43 tests including every churn boundary, every
 
 **Adjacent untouched Electra-active**: `process_deposit_request` (producer side, trivial pyspec but `deposit_requests_start_index` init quirk); `add_validator_to_registry` standalone (Pectra-modified, two callers); `is_valid_deposit_signature` BLS library-family audit (Track F alignment); lodestar Gloas-fork branch as pre-emptive divergence; lighthouse `PendingDepositsContext` batched-mutation choreography; placeholder-signature top-up fixture (T1.1); `MAX_PENDING_DEPOSITS_PER_EPOCH=16` queue growth analysis under fork-driven mass entry; `deposit_balance_to_consume` shared churn pool with `process_voluntary_exit`; postpone-list ordering preservation; SSZ list cap (`PENDING_DEPOSITS_LIMIT=2^27`) and what happens when full.
 
-See [item4/README.md](item4/README.md).
+See [items/004/README.md](items/004/README.md).
 
 ### 5. `process_pending_consolidations` EIP-7251 drain side
 
@@ -352,7 +352,7 @@ The 13-fixture suite covers slashed-source skip, not-yet-withdrawable break, bot
 
 **Adjacent untouched Electra-active**: `process_epoch` per-fork ordering of helpers (deposits → consolidations → eb-updates — order matters); lighthouse `perform_effective_balance_updates` flag local-vs-global re-pass equivalence; self-consolidation `source_index == target_index` queue entry (defensive — not reachable from request validation today); `source.balance` over-budget residual cleanup via `process_withdrawals`; no per-epoch consolidation drainage limit (denial-of-throughput analysis under high source-slashing rates); lodestar `cachedBalances` dual-write coherence (any direct `state.balances.set` between two cache reads would diverge); teku legacy `nextPendingBalanceConsolidation` naming sweep; `PendingConsolidation` SSZ struct has no amount field — derived at drain time from `source.effective_balance`, susceptible to drift.
 
-See [item5/README.md](item5/README.md).
+See [items/005/README.md](items/005/README.md).
 
 ### 6. `process_voluntary_exit` + `initiate_validator_exit` Pectra
 
@@ -368,7 +368,7 @@ Source survey across all six clients confirms aligned implementations of the sev
 
 **Adjacent untouched Electra-active**: `compute_exit_epoch_and_update_churn` standalone audit (highest-leverage primitive, used by 3+ items now); EIP-7044 fork-version selection per-client (subtle regression possible at future forks); multiple voluntary exits in one block sharing churn (T2.1 stateful sanity_blocks fixture not in EF coverage); lighthouse `state.build_exit_cache(spec)?` perf optimization; lodestar voluntary-exit NOT reusing `isValidatorEligibleForWithdrawOrExit` (intentional but flag-worthy); `exit_balance_to_consume` per-block accumulator shared across voluntary_exit + EL full-exit + consolidation source exit; cross-path validator-already-exited semantics; grandine's two `initiate_validator_exit` definitions discriminated by import path.
 
-See [item6/README.md](item6/README.md).
+See [items/006/README.md](items/006/README.md).
 
 ### 7. `process_attestation` EIP-7549 multi-committee aggregation
 
@@ -384,7 +384,7 @@ Source survey across all six clients confirms aligned implementations of the fou
 
 **Adjacent untouched Electra-active**: `Attestation` SSZ container ser/de cross-client (Track E — Pectra layout change must round-trip identically for gossip); `is_valid_indexed_attestation` BLS aggregate verification with expanded list capacity (MAX_VALIDATORS_PER_COMMITTEE × MAX_COMMITTEES_PER_SLOT = 131,072); cross-committee duplicate-validator dedup (T2.7 — pyspec uses Set[ValidatorIndex]; each client's collection mechanism must dedupe; not exhaustively in EF set); prysm's pre-emptive Gloas-ready `ci < 2` branch; lodestar's `intersectValues` ordering (preserves bit-position order, not sorted by validator index — BLS aggregation is commutative so OK, but downstream code dependent on sorted order would have subtle bugs); shuffling cache cross-client coherence; participation flag update ordering within a single block (proposer_reward_numerator accumulation); SSZ bitlist size at the new bound (131,072 max bits); legacy `AttestationData.index` field as semi-permanent technical debt; `get_committee_count_per_slot` consistency.
 
-See [item7/README.md](item7/README.md).
+See [items/007/README.md](items/007/README.md).
 
 ### 8. `process_attester_slashing` (EIP-7549 + EIP-7251)
 
@@ -398,7 +398,7 @@ See [item7/README.md](item7/README.md).
 
 **Adjacent untouched Electra-active**: `process_proposer_slashing` (same `slash_validator` primitive — natural next item); `process_slashings` per-epoch (reads state.slashings vector this item writes; Pectra changed multiplier — WORKLOG #10); `MAX_ATTESTER_SLASHINGS_ELECTRA` per-block limit; `is_double_vote` / `is_surround_vote` separate methods in lighthouse (precedence verification); `slash_validator` whistleblower==proposer same-address edge case; grandine's `merge_join_by` correctness assumes sorted attesting_indices upstream; lodestar 5-deep ternary as Gloas pre-emptive divergence vector; prysm's `SlashingParamsPerVersion` Gloas-readiness; teku's subclass-override extension to Gloas.
 
-See [item8/README.md](item8/README.md).
+See [items/008/README.md](items/008/README.md).
 
 ### 9. `process_proposer_slashing` (Pectra-affected via `slash_validator`)
 
@@ -414,7 +414,7 @@ See [item8/README.md](item8/README.md).
 
 **Adjacent untouched Electra-active**: `process_slashings` per-epoch (WORKLOG #10) — reads `state.slashings` vector that #9 writes; cross-fork slashing fixture (proposer signs two block headers straddling a fork epoch — domain computation should pick different fork versions per header); MAX_PROPOSER_SLASHINGS over-the-wire test (block with 17 slashings — SSZ should reject); header inequality fuzz (5 field × diff/same matrix, ~32 cases); whistleblower==proposer==slashed self-slash reward math edge case; prysm's `ExitInformation` cache-vs-fresh-read parity with multiple slashings sharing churn budget in one block; lighthouse `BlockSignatureVerifier` block-level batch path (currently bypassed by per-fixture operations runner); `PROPOSER_WEIGHT/WEIGHT_DENOMINATOR` Altair+ reward split (lighthouse's `altair_enabled()` branch — pre-Altair dead code in some clients).
 
-See [item9/README.md](item9/README.md).
+See [items/009/README.md](items/009/README.md).
 
 ### 10. `process_slashings` per-epoch + `process_slashings_reset` (EIP-7251 algorithm restructure)
 
@@ -428,7 +428,7 @@ EIP-7251 modified `process_slashings` to **restructure the per-validator penalty
 
 **Adjacent untouched Electra-active**: cross-fork slashings drain straddling Pectra activation (formula-choice on state's current fork, not slashing's recording fork); MAX_EFFECTIVE_BALANCE_ELECTRA (2048 ETH) compounding-validator slashing penalty case (penalty scales with 64× increments); `process_slashings` ordering within `process_epoch` (lighthouse's single-pass collapses pyspec sequential ordering); lodestar's penalty-by-increment Map memoization correctness assumption; prysm's `math.Add64` defensive-but-dead overflow check (sum bounded by 8192 × 2048e9 ≪ u64 max); grandine's `LazyCell` for `adjusted_total_slashing_balance` (subtle observability — total_balance computed lazily only with matched validators); multiplier fork-transition correctness (1 → 2 → 3 across Phase0/Altair/Bellatrix+ — multiplier NOT stamped into the slashings vector); reset-after-slashings ordering (reset zeroes (epoch+1), not epoch — current-epoch writes survive the drain); `PROPORTIONAL_SLASHING_MULTIPLIER` Gloas-readiness audit.
 
-See [item10/README.md](item10/README.md).
+See [items/010/README.md](items/010/README.md).
 
 ### 11. `upgrade_to_electra` state-upgrade function (Track C #13, foundational)
 
@@ -444,7 +444,7 @@ See [item10/README.md](item10/README.md).
 
 **Adjacent untouched Electra-active**: wire fork category in BeaconBreaker harness (highest-priority follow-up); cross-fork sequence `upgrade_to_deneb → upgrade_to_electra` round-trip; pre-activation deposit drain FIFO order (item #4 cross-cut); `fork_inactive_compounding_validator_with_excess_balance` cross-cut H6+H7 ordering; `MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT` clamp at upgrade time; `UNSET_DEPOSIT_REQUESTS_START_INDEX` sentinel transition on first deposit_request; re-upgrade idempotency (programmer-error case); schema-version guard at upgrade entry; pubkey_cache/proposer_cache invalidation choreography; nimbus's `discard post.pending_deposits.add ...` (silent on at-capacity overflow — F-tier today); prysm's pre-state churn-limit deviation forward-compat audit; grandine's `SignatureBytes::empty()` vs explicit `G2_POINT_AT_INFINITY` strict-spec compliance.
 
-See [item11/README.md](item11/README.md).
+See [items/011/README.md](items/011/README.md).
 
 ### 12. `process_withdrawals` Pectra-modified (EIP-7251 partial-queue drain)
 
@@ -460,7 +460,7 @@ All six clients align on the ten divergence-prone bits: two-phase ordering (H1),
 
 **Adjacent untouched Electra-active**: lighthouse + grandine `== 8` vs spec `>= min(prior + 8, 15)` forward-compat audit at Gloas activation (Gloas adds `processBuilderWithdrawals` BEFORE the partial drain — non-empty `prior_withdrawals` would expose the divergence; nimbus's Gloas path already uses the spec formula); `update_next_withdrawal_validator_index` cross-cut with two-phase drain (last partial validator's index wins); `withdrawals_root` SSZ Merkleization across mixed partial+sweep withdrawals (cross-client root must match exactly); withdrawal-index continuity gap (ineligible queue entries advance processed_count but not withdrawal_index); MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP = 2 minimal preset; lodestar's `validatorBalanceAfterWithdrawals` Map dual-write coherence (same single-source-of-truth concern as items #4/#5); `get_pending_balance_to_withdraw` correctness after queue slice (sliced entries shouldn't leak into the sum used by items #2/#6); prysm's `mathutil.Sub64` defensive-error vs grandine's `saturating_sub` returning 0 vs lighthouse's `safe_sub` panicking — three failure modes for the same dead-code path; Gloas builder-payment withdrawal interaction (forward-compat); `exit_balance_to_consume` shared per-block budget across item #6 (voluntary exit) and item #3 (partial-withdrawal request) — stateful fixture worth generating; `pending_partial_withdrawals` queue cap (`PENDING_PARTIAL_WITHDRAWALS_LIMIT = 2^27 = 134M`) drain-rate analysis (~232 days at max input rate to fill).
 
-See [item12/README.md](item12/README.md).
+See [items/012/README.md](items/012/README.md).
 
 ### 13. `process_operations` Pectra dispatcher (EIP-6110 cutover + EIP-7685 requests routing)
 
@@ -476,7 +476,7 @@ See [item12/README.md](item12/README.md).
 
 **Adjacent untouched Electra-active**: audit `process_deposit_request` (EIP-6110 — only major Pectra operation not yet a standalone item; sets `deposit_requests_start_index` sentinel transition); audit `requestsHash = sha256(get_execution_requests_list(...))` passed to EL via NewPayloadV4 (high-priority — divergence would cause EL fork at the boundary); audit `get_execution_requests_list` SSZ encoding helper (type-byte prefix + serialize, filtering empty lists); generate stateful fixture spanning EIP-6110 cutover (block N sentinel → block N+1 first DepositRequest → block N+2 `len(body.deposits) == 0`); run the 8 deposit_transition__* sanity_blocks fixtures via existing harness; lighthouse `unwrap_or(u64::MAX)` defensive default → `debug_assert!`; lodestar BigInt→number coercion fuzz target; grandine `custom_process_block` separation forward-compat audit; prysm per-element nil-checks equivalence test; `MAX_DEPOSIT_REQUESTS_PER_PAYLOAD = 8192` over-the-wire SSZ rejection test (block with 8193 should reject); Gloas (EIP-7732) dispatcher relocation cross-client audit (prysm + lodestar excluded explicitly; verify other 4 handle correctly); multi-request-same-validator-same-block ordering test.
 
-See [item13/README.md](item13/README.md).
+See [items/013/README.md](items/013/README.md).
 
 ### 14. `process_deposit_request` (EIP-6110, Pectra-NEW)
 
@@ -490,7 +490,7 @@ See [item13/README.md](item13/README.md).
 
 **Adjacent untouched Electra-active**: audit `requestsHash = sha256(get_execution_requests_list(...))` passed to EL via NewPayloadV4 (highest-priority — EL boundary divergence vector); audit `get_execution_requests_list` SSZ encoding (companion to requestsHash); generate stateful EIP-6110 cutover fixture spanning pre/transition/post blocks; lodestar's `applyDepositForBuilder` Gloas-fork on-the-fly BLS verify (diverges from Pectra design); grandine's Gloas `process_deposit_request` definition cross-audit; run 8 `deposit_transition__*` sanity_blocks fixtures (end-to-end cutover); `MAX_DEPOSIT_REQUESTS_PER_PAYLOAD = 8192` SSZ over-the-wire test; `add_validator_to_registry` Pectra-modified helper standalone audit; `bytesutil.SafeCopyBytes` necessity equivalence test (prysm-only); deposit_request_index out-of-order semantics; first-request-late vs first-block semantics; defensive nil-check equivalence (5 distinct failure modes); PendingDeposit slot semantics contract test (no producer should ever use fake-but-non-GENESIS slot).
 
-See [item14/README.md](item14/README.md).
+See [items/014/README.md](items/014/README.md).
 
 ### 15. `get_execution_requests_list` + `requestsHash` (EIP-7685, CL-EL boundary)
 
@@ -506,7 +506,7 @@ EIP-7685 introduces a unified framework for the EL to receive CL-aggregated requ
 
 **Adjacent untouched Electra-active**: generate dedicated EIP-7685 encoding fixture set (pre-state + known ExecutionRequests → expected bytes-list + expected `requestsHash` — high-priority gap closure); cross-client byte-for-byte encoding equivalence test; cross-client EIP-7685 `requestsHash` equivalence between lighthouse + nimbus (both compute spec hash); decoder rejection contract test (out-of-order/empty/duplicate/type>0x02); MAX_DEPOSIT_REQUESTS_PER_PAYLOAD = 8192 over-the-wire stress (1.6+ MB encoding); nimbus index-based encoder static-assert codification; prysm/nimbus iota → explicit `= 0x00` for spec-traceability; grandine's two-method type-byte mapping consolidation; lodestar's `hashTreeRoot()` semantic disambiguation (NOT the EIP-7685 hash); Gloas `engine_newPayloadV5` cross-client audit; fork-transition Engine API version switch (Deneb V3 → Electra V4 → Gloas V5); JSON-RPC hex encoding wire-format consistency.
 
-See [item15/README.md](item15/README.md).
+See [items/015/README.md](items/015/README.md).
 
 ### 16. `compute_exit_epoch_and_update_churn` + `compute_consolidation_epoch_and_update_churn` (Pectra-NEW per-block churn primitives)
 
@@ -522,7 +522,7 @@ Pectra introduces churn-paced exit and consolidation to replace Phase0's per-val
 
 **Adjacent untouched Electra-active**: generate dedicated EF fixture set for the two primitives (highest priority); cross-client byte-for-byte equivalence test for post-state computation; edge case `exit_balance == exit_balance_to_consume` (strict `>` boundary); edge case `exit_balance == 0` no-op; extreme exit_balance overflow test; **lodestar Gloas-fork `getConsolidationChurnLimit` cross-client audit** (independent quotient at Gloas vs residual model — other clients may not yet have the Gloas fix); teku's `minusMinZero` underflow-masking contract test; prysm asymmetric file placement documentation; lodestar BigInt-Number coercion fuzz target; `MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA` floor never-triggered formal verification; `MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT` consolidation-asymmetry implications; `compute_activation_exit_epoch` standalone audit (called by every Pectra exit/consolidation/activation path); `get_total_active_balance(state)` cache coherence audit across all 6 clients; multi-call-same-block stateful fixture (3 voluntary exits + 1 consolidation + 1 partial withdrawal sharing churn budget); cross-cut with item #11 upgrade-time seeding.
 
-See [item16/README.md](item16/README.md).
+See [items/016/README.md](items/016/README.md).
 
 ### 17. `process_registry_updates` Pectra-modified (single-pass restructure + EIP-7251 eligibility predicate)
 
@@ -538,7 +538,7 @@ Pectra makes two major changes: **(a)** `is_eligible_for_activation_queue` now u
 
 **Adjacent untouched Electra-active**: `add_validator_to_registry` Pectra-modified helper (called by item #4's drain — only major Pectra-modified helper not yet a standalone item); `compute_activation_exit_epoch` standalone audit (called by every Pectra exit/consolidation/activation path); cross-fork eligibility transition stateful fixture; prysm Pattern B re-read contract test (mutual exclusivity invariant); lodestar two-stage cache filter consolidation; nimbus two-pass equivalence comment codification; lighthouse pre-Electra fast path dead-code annotation at mainnet Electra activation; grandine source-organization audit (one-line assertion of correct module imports across all per-fork dispatch sites — items #6/#9/#10/#12/#14/#15/#17 share this concern); EJECTION_BALANCE Pectra-compounding interaction; `current_epoch + 1` eligibility-set timing cross-client; activation_queue_sorting pre-Electra no-op verification at Pectra; multi-validator stress fixture (1000 validators eligible same epoch); cross-cut with item #16 (ejections consume per-block exit churn budget); cross-cut with item #4 (two-epoch round-trip from deposit to activation eligibility); **lodestar runner patch** to detect internal vitest-skip pattern and report SKIP instead of FAIL.
 
-See [item17/README.md](item17/README.md).
+See [items/017/README.md](items/017/README.md).
 
 ### 18. `add_validator_to_registry` + `get_validator_from_deposit` Pectra-modified
 
@@ -556,7 +556,7 @@ Pectra's compounding-credentials (EIP-7251) requires that a new validator's `eff
 
 **Adjacent untouched Electra-active**: generate dedicated EF fixture set for `get_validator_from_deposit` (highest priority); cross-client byte-for-byte Validator equivalence test; teku 2-field vs 5-field init equivalence audit (verify participation/inactivity init); `amount = 0` deferral pattern contract assertion; lighthouse safe-math comment cross-client codification; grandine SINGLE-definition consistency check at Gloas; pubkey cache update timing contract test (cache lookups immediately after registry push); lodestar inlined-construction design rationale; zero-EB validator race condition (drain MUST run before activation); compounding `amount > 2048 ETH` excess preservation; `amount < MIN_ACTIVATION_BALANCE` for new validator cross-cut with item #17; **`get_max_effective_balance(validator)` cross-cut audit** (item #1's helper is the Pectra change chokepoint — verify cross-client byte-for-byte equivalence).
 
-See [item18/README.md](item18/README.md).
+See [items/018/README.md](items/018/README.md).
 
 ### 19. `process_execution_payload` Pectra-modified (EIP-7691 blob limit + EIP-7685 requests pass-through)
 
@@ -574,7 +574,7 @@ The function gates 6 invariants per block: parent-hash chain (`payload.parent_ha
 
 **Adjacent untouched Electra-active**: wire fork category in BeaconBreaker harness (turns item #11 into first-class fixture-verified); cross-fork blob-limit transition stateful fixture (Deneb→Electra boundary with 7 blobs); `compute_timestamp_at_slot` standalone audit (per-block helper); `kzg_commitment_to_versioned_hash` cross-client byte-for-byte equivalence (`sha256(commitment) with first byte = 0x01`); EIP-7691 mainnet activation timing verification (exact slot transition); Engine API method routing cross-client cross-test (V3 → V4 → V5 transitions); lighthouse `partially_verify_execution_payload` gossip-time optimization documentation; nimbus's 3-function-per-fork forward-compat audit at Fulu activation; grandine 11-definition pre-commit check codification; teku Bellatrix-base sharing documentation; lodestar payload-then-requests separation contract test; prysm nil-check + Deneb-payload-shared-with-Electra pattern equivalence tests; `MAX_BLOB_COMMITMENTS_PER_BLOCK = 4096` hard cap interaction with Pectra's increased per-block limit; block-without-blobs at Pectra edge case verification.
 
-See [item19/README.md](item19/README.md).
+See [items/019/README.md](items/019/README.md).
 
 ### 20. `apply_pending_deposit` + `is_valid_deposit_signature` (Pectra-NEW per-deposit application + EIP-7044-style fork-version pinning)
 
@@ -590,7 +590,7 @@ See [item19/README.md](item19/README.md).
 
 **Adjacent untouched Electra-active**: generate dedicated EF fixture set for `is_valid_deposit_signature` (pure-function cross-client BLS-output equivalence test); cross-client BLS library version compatibility audit; GENESIS_FORK_VERSION per-network constant verification (mainnet/sepolia/holesky); prysm batch-vs-individual signature path equivalence test; lodestar `pendingValidatorPubkeysCache` correctness fuzz (same pubkey + different creds/amounts); nimbus pubkey decompression failure cross-client equivalence; teku `BLSSignatureVerifier` mock-injection fuzzing harness; grandine pubkey cache eviction policy under adversarial input; DepositMessage SSZ root cross-client byte-for-byte equivalence; `bls.Verify` identity-pubkey edge case rejection contract; **subgroup check enforcement audit** (lodestar passes `true` explicitly to enable subgroup checks — security-critical against small-subgroup attacks; verify other clients enforce identically); pre-emptive Gloas-fork audit (lodestar `applyDepositForBuilder` on-the-fly sig verification pattern); `compute_signing_root` vs `hash_tree_root + mix_in(domain)` equivalence; EF fixture coverage gap audit (items #15/#16/#18/#20 all lack dedicated EF coverage).
 
-See [item20/README.md](item20/README.md).
+See [items/020/README.md](items/020/README.md).
 
 ### 21. `queue_excess_active_balance` (Pectra-NEW placeholder-PendingDeposit producer)
 
@@ -614,7 +614,7 @@ The trait method is named misleadingly but produces the **canonical 0xc0-prefixe
 
 **Adjacent untouched Electra-active**: generate dedicated EF fixture set for `queue_excess_active_balance` (pure-function cross-client equivalence test); cross-client signature-placeholder byte equivalence test (verify all 6 produce identical 96 bytes); update items #11 and #18 documentation to retract the incorrect grandine characterization; audit closure on item #4's `slot == GENESIS_SLOT` strict-equality placeholder skip; top-up vs new-validator routing for placeholders (verify placeholders always take the top-up path); excess rounding semantics (balance with sub-1-ETH dust → queue → top-up → eb-updates → rounded); multi-call edge case stateful fixture (upgrade + switch in adjacent epochs); PENDING_DEPOSITS_LIMIT (2^27) capacity stress; `switch_to_compounding_validator` standalone audit (the function that calls THIS one from item #2's fast path); cross-cut with item #20 SILENT DROP defense-in-depth (if a placeholder deposit somehow took the new-validator path, sig verify would fail and silent-drop).
 
-See [item21/README.md](item21/README.md).
+See [items/021/README.md](items/021/README.md).
 
 ### 22. Compounding/credential subsystem helpers (predicates + `switch_to_compounding_validator`)
 
@@ -628,7 +628,7 @@ Pectra introduces the `0x02` (compounding) withdrawal-credential prefix alongsid
 
 **Adjacent untouched Electra-active**: generate dedicated EF fixture set for predicates + switch mutator (pure-function fuzzing); prysm code duplication contract test (assert both `switchToCompoundingValidator` implementations produce identical mutations; consider deduplication); prysm + nimbus pre-emptive Gloas `0x03` treatment audit (verify NOT treated as "execution withdrawable" at Pectra); cross-client Gloas-aware predicate audit at Gloas activation (other clients may need to add 0x03 acceptance — only nimbus currently has it); lighthouse defensive `.first().unwrap_or(false)` rationale codification; lodestar Uint8Array slice-copy SSZ-cache-invalidation cross-client equivalence test; constants centralization documentation; `has_execution_withdrawal_credential = false` for 0x00 defense-in-depth verification (BLS validators must NOT be withdrawable); `switch_to_compounding_validator` precondition documentation (helper assumes source 0x01, enforced by item #2's `is_valid_switch_to_compounding_request`); `is_compounding_withdrawal_credential` standalone form cross-client API consistency (add to prysm).
 
-See [item22/README.md](item22/README.md).
+See [items/022/README.md](items/022/README.md).
 
 ### 23. `get_pending_balance_to_withdraw` (Pectra-NEW exit-gating accessor) + EIP-6110 `deposit_transition__*` end-to-end validation
 
@@ -644,7 +644,7 @@ See [item22/README.md](item22/README.md).
 
 **Adjacent untouched Electra-active**: wire fork category in BeaconBreaker harness (highest priority remaining); generate dedicated EF fixture set for `get_pending_balance_to_withdraw`; prysm `HasPendingBalanceToWithdraw` early-exit `amount > 0` filter divergence test; nimbus Gloas-aware variant cross-client tracking; caching opportunity for O(N) scan; lcli upstream issue for `pre_state.all_caches_built()` panic; grandine `combined::spec_tests` namespace documentation; teku + nimbus sanity_blocks CLI hooks; cross-fork deposit_transition stateful fixture spanning Capella → Deneb → Electra; `get_pending_balance_to_withdraw_for_builder` Gloas-fork standalone audit; teku two-variant deduplication; `amount > 0` defensive filter audit.
 
-See [item23/README.md](item23/README.md).
+See [items/023/README.md](items/023/README.md).
 
 ### 24. `is_valid_switch_to_compounding_request` (Pectra-NEW security gate for switch path)
 
@@ -658,7 +658,7 @@ When a validator wants to convert its 0x01 (eth1 address) credentials to 0x02 (c
 
 **Adjacent untouched Electra-active**: generate dedicated EF fixture set (7 boundary cases + all-pass); prysm code duplication contract test (same concern as item #22); lodestar reordered-check observable-equivalence verification; nimbus + lodestar pubkey-hoist invariant assertion (parent's pubkey check must match the predicate's precondition); grandine `compute_source_address` helper documentation; teku `Predicates.getExecutionAddressUnchecked` safety audit (unchecked = caller must validate creds[0]); prysm `bytes.HasSuffix` correctness equivalence with explicit slice; lighthouse `Address::from_slice` panic safety under unusual input; cross-fork upgrade interaction stateful fixture (switch request immediately after Pectra activation); already-0x02 source rejection (Check 4 fails); 0x00 BLS source rejection (Checks 3 + 4 both fail).
 
-See [item24/README.md](item24/README.md).
+See [items/024/README.md](items/024/README.md).
 
 ### 25. `is_valid_indexed_attestation` (Pectra-MODIFIED via SSZ-type capacity expansion)
 
@@ -674,7 +674,7 @@ The function performs: (1) non-empty check on attesting_indices; (2) sorted+uniq
 
 **Adjacent untouched Electra-active**: generate dedicated EF fixture set (empty/sorted/unique/sig boundary cases); teku Light vs SSZ contract test (assert sorted+unique invariant for any Light producer); lodestar Bigint variant audit; grandine constructed-vs-received contract test (assert sorted+unique by construction in callers); nimbus TrustedSig skip audit; 131,073-index over-the-wire SSZ rejection test; 64-committee attestation BLS verify stress test; pubkey-cache invalidation across blocks cross-client audit; `FastAggregateVerify` zero-pubkeys defensive test (defense-in-depth if Check 1 bypassed); `compute_signing_root` cross-client byte-for-byte equivalence test (cross-cut with item #20's deposit signing-root concern); single BLS-library version-pinning consolidation audit (items #20 + #25 both confirm BLST family); pre-emptive Gloas audit if any client extends IndexedAttestation capacity further.
 
-See [item25/README.md](item25/README.md).
+See [items/025/README.md](items/025/README.md).
 
 ### 26. `get_attesting_indices` + `get_committee_indices` (Pectra-MODIFIED + Pectra-NEW for EIP-7549 multi-committee aggregation)
 
@@ -690,7 +690,7 @@ Pectra's EIP-7549 modifies `Attestation` to include a `committee_bits: Bitvector
 
 **Adjacent untouched Electra-active**: generate dedicated EF fixture set (pure function (state, Attestation) → Set[ValidatorIndex]); **cross-client dedup-strategy contract test** with manually-constructed overlapping committees (verify 3 dedup, 3 don't, downstream catches both); `get_beacon_committee` cross-cut audit; lodestar `intersectValues` ordering semantics; nimbus iterator vs func performance audit; grandine "no committee attesters" error equivalence test against other 5 clients; cross-fork transition stateful fixture (first multi-committee attestation post-Electra); bit-position iteration ordering contract test; MAX_COMMITTEES_PER_SLOT = 64 over-the-wire SSZ cap test; **documentation of the "unique by construction" invariant** (formal code-comment in teku/nimbus/lodestar); pre-emptive Gloas audit (EIP-7732 PBS may change attestation structure); architectural cleanup (`get_committee_indices` is purely SSZ-bit-iteration — could move to bls/ssz utility).
 
-See [item26/README.md](item26/README.md).
+See [items/026/README.md](items/026/README.md).
 
 ### 27. `get_next_sync_committee_indices` (Pectra-MODIFIED for EIP-7251 compounding-weighted sync committee selection)
 
@@ -706,7 +706,7 @@ The sync committee is a randomly-selected subset of `SYNC_COMMITTEE_SIZE = 512` 
 
 **Adjacent untouched Electra-active**: wire `sync` category in BeaconBreaker harness; generate dedicated EF fixture set (pure function `state -> indices`); **lighthouse + grandine Gloas-aware code paths** tracking for cross-client divergence at Gloas activation; hash optimization equivalence test (teku + lodestar cache vs others recompute); selection probability statistical validation (property test); cross-fork transition stateful fixture at Pectra activation; `compute_shuffled_index` cross-cut audit; `get_seed(state, epoch, DOMAIN_SYNC_COMMITTEE)` cross-client byte-for-byte equivalence test; active validator count performance audit at mainnet scale; `SYNC_COMMITTEE_SIZE = 512` cap consistency check; **pre-emptive Gloas-fork divergence consolidated audit** (items #1/#18/#20/#21/#22/#23/#26/#27 all have Gloas-aware code in subset of clients — consolidated tracking document worthwhile); `MAX_RANDOM_VALUE` naming convention cross-client style consistency.
 
-See [item27/README.md](item27/README.md).
+See [items/027/README.md](items/027/README.md).
 
 ### 28. Cross-corpus pre-emptive Gloas-fork divergence consolidated tracking audit
 
@@ -726,7 +726,7 @@ The Pectra audit corpus repeatedly surfaced code paths that are dead at Pectra b
 
 **Adjacent untouched Electra-active**: Track G — sync committee beyond item #27 (`process_sync_committee_updates`, `process_sync_aggregate`, `compute_sync_committee_period`, `get_sync_committee` — these are Phase0/Altair-heritage but interact with item #27's selection at the period boundary); Track D — fork choice (Gloas EIP-7732 PBS may add new fork-choice rules); Track E — SSZ schema changes at Gloas not yet audited (Attestation, IndexedAttestation, ExecutionPayload, ExecutionRequests); Track F — BLS (Gloas may add new BLS surfaces, e.g., builder-payment signatures with PROOF_OF_POSSESSION); per-network `gloas_fork_version` constant verification; cross-client `engine_newPayloadV5` request/response schema audit; `process_builder_withdrawals` standalone audit at Gloas activation; `process_builder_payment` cross-client audit; compile-time vs runtime fork dispatch performance audit at Gloas (nimbus's compile-time dispatch may have a measurable advantage at deep fork stacks).
 
-See [item28/README.md](item28/README.md).
+See [items/028/README.md](items/028/README.md).
 
 ### 29. `compute_signing_root` / `compute_domain` / `compute_fork_data_root` / `get_domain` cross-client byte-for-byte equivalence audit
 
@@ -744,7 +744,7 @@ These four primitives form the signature-domain layer of every consensus-relevan
 
 **Adjacent untouched Electra-active**: `compute_fork_digest` cross-client byte-for-byte (p2p layer, partially audited at items #15/#19); `compute_fork_digest_post_fulu` Fulu blob-parameter masking via XOR; DomainType registry consistency (DOMAIN_BEACON_PROPOSER through DOMAIN_INCLUSION_LIST_COMMITTEE) cross-client byte-value verification; SigningData/ForkData SSZ schema layout cross-client equivalence (Track E); Heze post-Gloas fork cross-client tracking (teku full + prysm constants + 4 lag); cache eviction policies (prysm digestMap unbounded); `Domain` type representation across 6 clients ([]byte vs [u8; 32] vs Eth2Domain vs Bytes32 vs Uint8Array); teku `computeSigningRoot(Bytes, domain)` overload cross-client; prysm `forkVersionArray [4]byte` defensive truncation; lighthouse `SignedRoot` per-type implementation audit.
 
-See [item29/README.md](item29/README.md).
+See [items/029/README.md](items/029/README.md).
 
 ### 30. `get_beacon_proposer_index` (Fulu-modified) + `process_proposer_lookahead` + `initialize_proposer_lookahead` + `compute_proposer_indices` + `get_beacon_proposer_indices` (EIP-7917 deterministic proposer lookahead)
 
@@ -762,7 +762,7 @@ The migration from on-demand to pre-computed proposer indices opens a new class 
 
 **Adjacent untouched Fulu-active**: `initialize_proposer_lookahead` at exact `FULU_FORK_EPOCH` boundary; cross-fork transition stateful fixture Pectra→Fulu with non-trivial pending_deposits / churn budget; `process_proposer_lookahead` ordering within `process_epoch` (last step after `process_sync_committee_updates`); empty-validator-set edge case (nimbus's `Opt.none` retention vs others); lighthouse `Insufficient/ExcessiveLookahead` error consistency at the API layer; lodestar `this.proposers` cache invalidation audit; pre-Fulu fallback consistency at exact FULU_FORK_EPOCH (prysm checks BOTH state version AND epoch); performance benchmark (in-place vs allocation-per-epoch); teku `canCalculateProposerIndexAtSlot` 2-epoch window matching the Fulu lookahead size; validator-client proposer-duty API consistency; nimbus `debugGloasComment "temporary workaround for Gloas"` investigation; PROPOSER_REWARD_QUOTIENT denominator sanity check at Fulu.
 
-See [item30/README.md](item30/README.md).
+See [items/030/README.md](items/030/README.md).
 
 ### 31. `get_blob_parameters(epoch)` + `blob_schedule` schema + Fulu-modified `compute_fork_digest` (EIP-7892 BPO hardforks)
 
@@ -782,7 +782,7 @@ The audit covers three primitives: (1) `get_blob_parameters(epoch) -> BlobParame
 
 **Adjacent untouched Fulu-active**: `process_execution_payload` Fulu-modified (item #19 follow-up) — verify all 6 read blob limit from `get_blob_parameters(get_current_epoch(state)).max_blobs_per_block`; `engine_newPayloadV5` Engine API; BPO transition stateful fixture at exact epoch 412672/419072; pre-FULU_FORK_EPOCH blob_schedule entries (spec MUST reject); duplicate-epoch entries (spec MUST reject); `MAX_BLOBS_PER_BLOCK > MAX_BLOB_COMMITMENTS_PER_BLOCK` cap; BPO with `max_blobs = 0`; prysm pre-computed digest cache invalidation on config reload; teku `getMaxBlobsPerBlock()` at SpecConfigFulu level (confirm = 9, not 6); lodestar pre-Fulu throw caller audit; grandine per-call sort performance benchmark; `compute_fork_digest` 4-byte collision audit.
 
-See [item31/README.md](item31/README.md).
+See [items/031/README.md](items/031/README.md).
 
 ### 32. `process_execution_payload` Fulu-modified (item #19 Fulu equivalent)
 
@@ -802,7 +802,7 @@ All 6 use `<=` (not `<`) for the blob limit assertion — critical for accepting
 
 **Adjacent untouched Fulu-active**: `engine_newPayloadV5` standalone audit (item #15 follow-up); BPO transition stateful fixture at exactly epoch 412671→412672 and 419071→419072; ExecutionPayloadHeader caching consistency; `compute_timestamp_at_slot` cross-client byte-for-byte equivalence; pre-Deneb blob limit gating consistency; `notify_new_payload` failure mode; BPO + Engine API V5 interaction; cross-fork transition stateful fixture Pectra→Fulu at FULU_FORK_EPOCH; excessive-blob negative test (22 blobs at epoch 419073); empty `blob_kzg_commitments` boundary; cross-network blob limit consistency (mainnet/sepolia/holesky); `process_execution_payload_for_gossip` cross-client audit (lighthouse + grandine factor; verify other 4 don't redundantly verify); Gloas-NEW `process_execution_payload_bid` PBS surface (separate item).
 
-See [item32/README.md](item32/README.md).
+See [items/032/README.md](items/032/README.md).
 
 ### 33. `get_custody_groups` + `compute_columns_for_custody_group` (EIP-7594 PeerDAS custody foundation)
 
@@ -818,7 +818,7 @@ The audit confirms: iterative algorithm `hash(uint_to_bytes_LE(current_id))[0:8]
 
 **Adjacent untouched Fulu-active**: `compute_subnets_from_custody_group` gossip subnet derivation; `get_validators_custody_requirement` validator-balance-scaled custody; ENR `cgc` field encoding/decoding; `DataColumnSidecar` SSZ container schema (Track E); `verify_data_column_sidecar` validation pipeline; `verify_data_column_sidecar_kzg_proofs` (Track F); `verify_data_column_sidecar_inclusion_proof` Merkle inclusion; `compute_matrix` / `recover_matrix` Reed-Solomon; `is_data_available` Fulu fork-choice rewrite; `MAX_REQUEST_DATA_COLUMN_SIDECARS` wire limits; cross-network custody assignment consistency; super-node advertisement consistency; validator-balance-scaled custody (teku-only standalone observed).
 
-See [item33/README.md](item33/README.md).
+See [items/033/README.md](items/033/README.md).
 
 ### 34. `verify_data_column_sidecar` + `verify_data_column_sidecar_kzg_proofs` + `verify_data_column_sidecar_inclusion_proof` (EIP-7594 PeerDAS sidecar validation pipeline)
 
@@ -841,7 +841,7 @@ Other 5 clients dynamically resolve via `get_subtree_index(get_generalized_index
 
 **Adjacent untouched Fulu-active**: `verify_partial_data_column_header_inclusion_proof` and `verify_partial_data_column_sidecar_kzg_proofs` (PartialDataColumnSidecar variants); `compute_subnet_for_data_column_sidecar` gossip subnet derivation; `verify_cell_kzg_proof_batch` KZG cell-proof primitive (Track F); `is_data_available` Fulu fork-choice integration (uses these verifications upstream); `KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH` constant cross-network consistency; `BeaconBlockBody.blob_kzg_commitments` field offset stability across forks (Fulu/Gloas/Heze); `MAX_REQUEST_DATA_COLUMN_SIDECARS` wire limits; DataColumnSidecar SSZ container schema (Track E); cross-fork transition Fulu→Gloas where DataColumnSidecar processing changes; per-client gossip rate-limiting / scoring on sidecar validation failures.
 
-See [item34/README.md](item34/README.md).
+See [items/034/README.md](items/034/README.md).
 
 ### 35. `is_data_available` Fulu fork-choice rewrite (EIP-7594 PeerDAS column-based DAS in fork choice)
 
@@ -863,7 +863,7 @@ The audit confirms: sampled = local node's custody columns; sampling size = `MAX
 
 **Adjacent untouched Fulu-active**: `compute_matrix` / `recover_matrix` Reed-Solomon implementation (Track F follow-up; consumed by reconstruction); `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS` constant cross-network consistency; reconstruction threshold (`NUMBER_OF_COLUMNS / 2`) cross-client verification; sample-vs-custody size cross-client (verify all 6 use `max(SAMPLES_PER_SLOT, custody_group_count)`); BLOB_AVAILABILITY_TIMEOUT cross-client consistency; async timeout strategy (channel/notification/LRU/promise); `retrieve_column_sidecars` storage abstraction; ENR `cgc` field for peer custody discovery; cross-fork transition pre-Fulu → Fulu DA at FULU_FORK_EPOCH; `on_block` handler integration ordering (DA check before state_transition); nimbus implementation location; sync-time vs steady-state availability semantics (grandine explicit; others uniform).
 
-See [item35/README.md](item35/README.md).
+See [items/035/README.md](items/035/README.md).
 
 ### 36. `upgrade_to_fulu` standalone audit (item #11 Fulu equivalent)
 
@@ -895,7 +895,7 @@ The audit confirms: all 36 Electra fields copied verbatim; fork version bumped (
 
 **Adjacent untouched Fulu-active**: `compute_matrix` / `recover_matrix` Reed-Solomon (Track F follow-up); `compute_subnet_for_data_column_sidecar` gossip subnet derivation (cross-cuts item #33); `engine_newPayloadV5` standalone audit (closes item #15's V4/V5 follow-up); `verify_data_column_sidecar_inclusion_proof` separate audit (item #34 grandine hardcoded gindex 11 = Pattern P forward-fragility); `verify_partial_data_column_*` PartialDataColumnSidecar variants; `BeaconBlockBody` schema cross-fork field-ordering audit (Heze pre-emptive); `latest_execution_payload_header.upgrade_to_fulu` lighthouse type-method audit; `BeaconStateFields.copyCommonFieldsFromSource` teku helper cross-version verification; cache reuse correctness at fork boundary (lodestar audit); prysm `ConvertToFulu` standalone caller audit; cross-fork transition stateful fixture Pectra→Fulu at FULU_FORK_EPOCH = 411392; nimbus `upgrade_to_next` Fulu→Gloas overload pre-audit; teku `HezeStateUpgrade.java` (item #29 finding) architecture verification.
 
-See [item36/README.md](item36/README.md).
+See [items/036/README.md](items/036/README.md).
 
 ### 37. `compute_subnet_for_data_column_sidecar` + `DATA_COLUMN_SIDECAR_SUBNET_COUNT` (EIP-7594 PeerDAS gossip subnet derivation)
 
@@ -915,7 +915,7 @@ The function is trivially small (1-line modulo): `compute_subnet_for_data_column
 
 **With this audit, the PeerDAS audit corpus now spans 4 items**: custody (#33) → sidecar verification (#34) → fork-choice DA (#35) → subnet derivation (#37) — four-item arc covering the consensus-critical PeerDAS surface end-to-end. Remaining PeerDAS items: `compute_matrix` / `recover_matrix` Reed-Solomon (Track F follow-up); PartialDataColumnSidecar variants; ENR `cgc` field encoding.
 
-See [item37/README.md](item37/README.md).
+See [items/037/README.md](items/037/README.md).
 
 ### 38. `get_validators_custody_requirement` (EIP-7594 PeerDAS validator-balance-scaled custody)
 
@@ -952,7 +952,7 @@ Other 5 return `VALIDATOR_CUSTODY_REQUIREMENT = 8` via the `max(0, 8) = 8` clamp
 
 **With this audit, the PeerDAS custody-derivation surface is complete**: items #33 (custody groups → columns) → #37 (columns → subnets) → #38 (validator balance → custody count) — three-item arc covering custody-derivation end-to-end. **PeerDAS audit corpus now spans 5 items** (#33, #34, #35, #37, #38). Remaining PeerDAS items: `compute_matrix` / `recover_matrix` Reed-Solomon (Track F follow-up); PartialDataColumnSidecar variants; ENR `cgc` field encoding.
 
-See [item38/README.md](item38/README.md).
+See [items/038/README.md](items/038/README.md).
 
 ### 39. `compute_matrix` + `recover_matrix` (EIP-7594 PeerDAS Reed-Solomon extension/recovery)
 
@@ -994,7 +994,7 @@ Both library families use BLST for arithmetic under the hood (cross-cuts items #
 
 **Total Fulu-NEW items: 10** (#30–#39). Foundational Fulu state-transition surface (state-upgrade + per-epoch + per-block + BPO + EL boundary) and PeerDAS surface (custody + verify + DA + subnet + validator custody + math) are now exhaustively audited.
 
-See [item39/README.md](item39/README.md).
+See [items/039/README.md](items/039/README.md).
 
 ### 40. `get_data_column_sidecars` (EIP-7594 PeerDAS validator-side sidecar construction)
 
@@ -1045,7 +1045,7 @@ Other 5 clients use generic `compute_merkle_proof(body, get_generalized_index(Be
 
 **With this audit, the PeerDAS production/consumption loop is closed**: items #34 (verify) + #39 (Reed-Solomon math) + #40 (proposer construction). **PeerDAS audit corpus now spans 7 items**: #33 custody → #34 verify → #35 DA → #37 subnet → #38 validator custody → #39 math → #40 proposer construction. **Seven-item arc covering the consensus-critical PeerDAS surface end-to-end**. Total Fulu-NEW items: 11 (#30–#40).
 
-See [item40/README.md](item40/README.md).
+See [items/040/README.md](items/040/README.md).
 
 ### 41. ENR `cgc` (custody group count) field encoding/decoding (EIP-7594 PeerDAS peer discovery)
 
@@ -1090,7 +1090,7 @@ Per-client encoding:
 
 **Total Fulu-NEW items: 12 (#30–#41).**
 
-See [item41/README.md](item41/README.md).
+See [items/041/README.md](items/041/README.md).
 
 ### 42. ENR `nfd` (next fork digest) field encoding/decoding (EIP-7594/EIP-7892 PeerDAS peer discovery)
 
@@ -1134,7 +1134,7 @@ if peerNFD != selfNFD {
 
 **Total Fulu-NEW items: 13 (#30–#42).**
 
-See [item42/README.md](item42/README.md).
+See [items/042/README.md](items/042/README.md).
 
 ### 43. Fulu Engine API surface audit (`engine_getPayloadV5` + `engine_getBlobsV2`) + CORRECTION of items #15/#19/#32/#36 (V5 is GLOAS-NEW, not Fulu-NEW)
 
@@ -1188,7 +1188,7 @@ See [item42/README.md](item42/README.md).
 
 **Total Fulu-NEW items: 14 (#30-#43). Item #28 catalogue Patterns A-Y (25 patterns).**
 
-See [item43/README.md](item43/README.md).
+See [items/043/README.md](items/043/README.md).
 
 ### 44. `PartialDataColumnSidecar` family (`verify_partial_data_column_header_inclusion_proof` + `verify_partial_data_column_sidecar_kzg_proofs`) — Fulu p2p extension for distributed blob publishing
 
@@ -1235,7 +1235,7 @@ Per spec: "The cell index is the column index for all cells in this column" → 
 
 **Forward-research priority**: nimbus bug verification + file consensus-specs ambiguity report on partial-column mandatory/optional status.
 
-See [item44/README.md](item44/README.md).
+See [items/044/README.md](items/044/README.md).
 
 ### 45. MetaData v3 SSZ container + GetMetaData v3 RPC method (EIP-7594 PeerDAS metadata layer)
 
@@ -1269,7 +1269,7 @@ Same forward-fragility class as Pattern J/N/P/Q/R/S/T/U/V/W/X/Y/Z. Cross-team co
 
 **Total Fulu-NEW items: 16 (#30–#45)**. Item #28 catalogue Patterns A–AA (27 patterns).
 
-See [item45/README.md](item45/README.md).
+See [items/045/README.md](items/045/README.md).
 
 ### 46. `DataColumnSidecarsByRange v1` + `DataColumnSidecarsByRoot v1` RPC handlers (EIP-7594 PeerDAS RPC layer)
 
@@ -1309,7 +1309,7 @@ Same forward-fragility class as Pattern J/N/P/Q/R/S/T/U/V/W/X/Y/Z/AA.
 
 **Total Fulu-NEW items: 17 (#30–#46)**. Item #28 catalogue **Patterns A–BB (28 patterns)**.
 
-See [item46/README.md](item46/README.md).
+See [items/046/README.md](items/046/README.md).
 
 ### 47. Status v2 RPC handshake (EIP-7594 PeerDAS handshake extension with `earliest_available_slot`)
 
@@ -1347,7 +1347,7 @@ Same forward-fragility class as Pattern T (lodestar empty-set in item #38). **Fo
 
 **Total Fulu-NEW items: 18 (#30–#47)**. Item #28 catalogue **Patterns A–CC (29 patterns)**.
 
-See [item47/README.md](item47/README.md).
+See [items/047/README.md](items/047/README.md).
 
 ### 48. Cross-corpus forward-fragility pattern catalogue REFRESH (extends item #28; covers Patterns A–CC across 47 audits)
 
@@ -1408,7 +1408,7 @@ The refresh provides:
 
 **Status**: 47 audits committed, 29 forward-fragility patterns catalogued, comprehensive roadmap into Gloas + Heze + remaining unaudited surfaces. **Total item count: 48 (#1-#48)**. The catalogue is now the central forward-fragility tracking document for the corpus and should be re-refreshed every ~10 audits or when major new patterns surface.
 
-See [item48/README.md](item48/README.md).
+See [items/048/README.md](items/048/README.md).
 
 ### 49. `compute_max_request_data_column_sidecars()` formula consistency (EIP-7594 PeerDAS RPC response cap)
 
@@ -1451,7 +1451,7 @@ Per-client implementation strategy:
 
 **Total Fulu-NEW items: 19 (#30–#49)**. Item #28 catalogue **Patterns A–DD (30 patterns)**.
 
-See [item49/README.md](item49/README.md).
+See [items/049/README.md](items/049/README.md).
 
 ### 50. `MAX_REQUEST_BLOB_SIDECARS` formula consistency (Electra-modified cap) + Fulu deprecation handling for BlobSidecarsByRange/Root v1 RPCs
 
@@ -1520,7 +1520,7 @@ pub fn max_request_blob_sidecars(&self, fork_name: ForkName) -> usize {
 
 **Total Fulu-NEW-relevant items: 20 (#30–#50)**. Item #28 catalogue **Patterns A–FF (32 patterns)**.
 
-See [item50/README.md](item50/README.md).
+See [items/050/README.md](items/050/README.md).
 
 ### 51. `blob_sidecar_{subnet_id}` gossip topic Fulu deprecation handling
 
@@ -1580,7 +1580,7 @@ spec.forMilestone(specMilestone)
 
 **Total Fulu-NEW-relevant items: 21 (#30–#51)**. Item #28 catalogue **Patterns A–GG (33 patterns)**.
 
-See [item51/README.md](item51/README.md).
+See [items/051/README.md](items/051/README.md).
 
 ### 52. `MAX_REQUEST_BLOCKS_DENEB` foundational cap audit (Deneb-heritage; flows into items #49 + #50 + 6 other use sites; consensus-critical block sync cap)
 
@@ -1648,7 +1648,7 @@ Nimbus VALIDATES at YAML load time:
 
 **Total Fulu-NEW-relevant items: 22 (#30–#52)**. Item #28 catalogue **Patterns A–HH (34 patterns)**. Pattern DD revised to 3-category split.
 
-See [item52/README.md](item52/README.md).
+See [items/052/README.md](items/052/README.md).
 
 ### 53. `DataColumnsByRootIdentifier` SSZ container audit (Fulu-NEW; consumed by `DataColumnSidecarsByRoot v1` RPC item #46)
 
@@ -1707,7 +1707,7 @@ Spec (`fulu/p2p-interface.md`): 2-field SSZ container `(block_root: Root, column
 
 **Total Fulu-NEW items: 23 (#30–#53)**. Item #28 catalogue **Patterns A–HH (34 patterns)** + Pattern AA + FF scope expansions.
 
-See [item53/README.md](item53/README.md).
+See [items/053/README.md](items/053/README.md).
 
 ### 54. `DataColumnSidecar` SSZ container detail audit (Fulu-NEW; FOUNDATIONAL PeerDAS container; cross-cuts items #34/#37/#44/#46/#53)
 
@@ -1768,7 +1768,7 @@ Depth derived from `floorlog2(get_generalized_index(BeaconBlockBody, 'blob_kzg_c
 
 **Total Fulu-NEW items: 24 (#30–#54)**. Item #28 catalogue **Patterns A–HH (34 patterns)** + Pattern HH scope expansion + Pattern P+V Heze triple-fragility expansion.
 
-See [item54/README.md](item54/README.md).
+See [items/054/README.md](items/054/README.md).
 
 ### 55. `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS` retention period audit (Fulu-NEW; sister to `MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS` from item #50)
 
@@ -1840,7 +1840,7 @@ pub fn min_epochs_for_data_column_sidecars_requests(self, config: &Config) -> u6
 
 **Total Fulu-NEW items: 25 (#30–#55)**. Item #28 catalogue **Patterns A–HH (34 patterns)** + Pattern AA scope expansion (Go field naming) + Pattern FF candidate (nimbus gnosis preset stale) + Pattern HH refinement (wire-protocol vs operator-tunable distinction).
 
-See [item55/README.md](item55/README.md).
+See [items/055/README.md](items/055/README.md).
 
 ### 56. Fulu fork choice modifications: `is_data_available` (PeerDAS-modified) + `on_block` (signature change) — FIRST TRACK D AUDIT
 
@@ -1894,4 +1894,4 @@ Pattern T-style spec-undefined edge cases (timeout values, eviction policies, re
 
 **Total Fulu-NEW items: 26 (#30–#56)**. Item #28 catalogue **Patterns A–II (35 patterns)** with NEW Pattern II (Fork choice DA architecture divergence) + Pattern J extension to fork choice + Pattern P extension to fork choice + Gloas readiness scoreboard refinement.
 
-See [item56/README.md](item56/README.md).
+See [items/056/README.md](items/056/README.md).

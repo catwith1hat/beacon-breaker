@@ -4,9 +4,11 @@ An autonomous audit of the Ethereum consensus layer across six production client
 
 **Clients audited:** prysm · lighthouse · teku · nimbus · lodestar · grandine
 
-**Scope:** 29 items completed at the Pectra (Electra) surface, of which 23 are inherited unchanged at Fulu and remain authoritative; 3 are Pectra-historical with Fulu follow-ups queued; 2 are cross-corpus meta-audits. **Fulu-NEW surfaces (PeerDAS / EIP-7594, deterministic proposer lookahead / EIP-7917, BPO hardforks / EIP-7892) are queued as items #30+ and not yet audited.**
+**Scope:** 56 items completed — 29 at the Pectra (Electra) surface, 26 Fulu-NEW (items #30–#56), and 1 cross-corpus meta-audit catalogue refresh (item #48). Coverage spans PeerDAS (EIP-7594) end-to-end, deterministic proposer lookahead (EIP-7917), BPO hardforks (EIP-7892), retention periods, RPC + gossip layers, SSZ container detail, and Track D fork choice.
 
 The completed Pectra surface covers: request processing (EIP-7002 / 7251 / 6110), pending-deposit and pending-consolidation drains, registry updates, slashings, attestations and the EIP-7549 multi-committee aggregation, sync committee selection, withdrawals, execution-payload validation, the EIP-7685 execution-requests pipeline, BLS signature verification, and the foundational signing-domain primitives.
+
+The Fulu-NEW surface (items #30–#56) covers: PeerDAS DataColumnSidecar end-to-end (validation, gossip, RPC, custody, ENR, MetaData, Status), Reed-Solomon recovery math, KZG cell proofs, BPO mainnet transitions (9 → 15 → 21 blobs), `upgrade_to_fulu` state transition, deterministic proposer lookahead, deprecated RPC/gossip handling, foundational caps (`MAX_REQUEST_BLOCKS_DENEB`, `MAX_REQUEST_BLOB_SIDECARS`, `MAX_REQUEST_DATA_COLUMN_SIDECARS`), 4 Fulu-NEW SSZ container schemas, retention period, and Track D fork choice (`is_data_available`, `on_block`).
 
 ---
 
@@ -20,74 +22,88 @@ Full methodology, prompt templates, and repository conventions: [METHODOLOGY.md]
 
 ## Findings
 
-**0 confirmed Pectra-fork divergences across 29 items.** ~1620 explicit fixture PASSes + ~6000 implicit PASSes through cross-cut helpers. The Pectra surface — inherited unchanged at Fulu — is consistent across all six clients at the algorithm level; observed differences are entirely in caching, dispatch idiom, source organization, and forward-compat patches.
+**0 confirmed Pectra or Fulu mainnet divergences across 56 items.** All 6 clients have run Fulu mainnet for 5+ months without observed consensus divergence. Observed differences are entirely in caching, dispatch idiom, source organization, forward-compat patches, and naming conventions.
 
-**Fulu-NEW surfaces are not yet covered**: PeerDAS (DataColumnSidecar, custody groups, KZG cell proofs, Reed-Solomon matrix recovery, column gossip), deterministic proposer lookahead (`proposer_lookahead` field, `process_proposer_lookahead`, modified `get_beacon_proposer_index`), and Blob Parameter Only / BPO hardforks (runtime per-epoch blob limit via `blob_schedule`, modified `process_execution_payload`, modified `compute_fork_digest` with XOR masking). Mainnet has already executed two BPO transitions: 9 → 15 blobs at epoch 412672 (2025-12-09), then → 21 at epoch 419072 (2026-01-07). See [WORKLOG.md](WORKLOG.md) re-scope status table for the full classification of items #1–#29 and the queued Fulu items #30+.
+**35 forward-fragility patterns catalogued (A–II)** — code paths that are observable-equivalent today but predict cross-client divergence at future forks (Gloas, Heze) or at adversarial inputs (cgc=0, empty validator set, malicious peer publishing to deprecated topic).
 
-What the audit *did* surface, beyond Pectra-surface conformance, is a **forward-compat divergence catalogue** at the Pectra → Gloas → Heze boundary: code paths that are dead today but predict cross-client divergence at the next two forks.
+**Multiple bug-fix opportunities identified** across nimbus, teku, prysm, grandine — none are active divergences, all are forward-fragility or naming/casing inconsistencies.
 
-### Forward-compat divergence vectors at Gloas
+### Audit corpus structure
 
-11 distinct pre-emptive patterns observed across 22 of 27 prior items, condensed to **9 forward-compat divergence vectors at Gloas activation** (item #28):
+| Surface | Items | Notes |
+|---|---|---|
+| Pectra (Electra) state-transition core | #1–#27 | All confirmed conformant; 23 inherited unchanged at Fulu |
+| Cross-corpus catalogue (Pattern A–L → A–II) | #28, #48 | Meta-audits; refreshed at #48 covering Patterns A–CC; extended to A–II by #56 |
+| Heze surprise (teku leadership) | #29 | Discovered teku has full `HezeStateUpgrade.java`; flipped Gloas-laggard ranking |
+| Fulu state-transition / proposer lookahead / BPO | #30–#36, #43 | EIP-7917 + EIP-7892; retroactively corrected V4/V5 Engine API ambiguity |
+| PeerDAS — custody, gossip, KZG, Reed-Solomon | #33–#42, #44 | DataColumnSidecar end-to-end + ENR cgc/nfd |
+| PeerDAS — metadata, RPC, handshake, caps | #45–#47, #49, #52 | MetaData v3, Status v2, RPC handlers, response cap, MAX_REQUEST_BLOCKS_DENEB |
+| Heritage-deprecation tracking | #50, #51 | RPC layer (BlobSidecarsByRange/Root v1) + gossip layer (`blob_sidecar_{subnet_id}`) |
+| Fulu-NEW SSZ container detail | #45, #47, #53, #54 | MetaData v3, Status v2, DataColumnsByRootIdentifier, DataColumnSidecar |
+| Retention period | #55 | `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS` |
+| Track D fork choice (FIRST audit) | #56 | `is_data_available` + `on_block` |
 
-| Tier | Vector | Permissive / pre-emptive client(s) | Reach at Gloas |
-|---|---|---|---|
-| **A** | committee index `< 2` post-Gloas | prysm | A-tier fork on first multi-committee attestation |
-| **A** | sync committee selection (`compute_balance_weighted_selection`) | lighthouse + grandine | A-tier — different sync aggregate signers |
-| **A** | builder deposit handling (`applyDepositForBuilder`, on-the-fly BLS) | lodestar + grandine + nimbus | A-tier — different validator set after first builder deposit |
-| **A** | dispatcher exclusion gates (`fork < ForkSeq.gloas`) | lodestar + prysm | A-tier — double-process of execution requests |
-| **A** | Engine API V5 (`engine_newPayloadV5`) | prysm + lighthouse + lodestar | A-tier — EL rejection at the boundary |
-| **C** | `getActivationChurnLimit` Gloas branch | lodestar | different deposit-drain throughput |
-| **C** | `CONSOLIDATION_CHURN_LIMIT_QUOTIENT` independent quotient | lodestar | different consolidation throughput |
-| **C** | `0x03` BUILDER credential prefix | nimbus + prysm | different `effective_balance` for builder validators |
-| **C** | builder pending-withdrawals accumulator | nimbus + grandine | different exit-eligibility verdicts |
+### Pattern catalogue (35 patterns, A–II)
 
-Tier definitions: **A** = immediate fork on the first Gloas block matching the trigger; **C** = throughput / limit math that diverges over time.
+The catalogue is the central forward-fragility tracking document. Selected highlights:
 
-Full catalogue with per-pattern source refs: [item28/README.md](item28/README.md).
+- **Pattern E/F/M (Gloas A-tier triad)** — committee index, sync committee selection, proposer indices via `compute_balance_weighted_selection`. 3-leader / 3-laggard split.
+- **Pattern P + V (grandine hardcoded gindex 11)** — symmetric consumer + producer divergence at Heze. Triple-fragility extended at #54: gindex 11 verify + gindex 11 produce + compile-time-baked depth 4.
+- **Pattern Y (lighthouse Gloas V5 readiness gap)** — pre-emptive fix candidate.
+- **Pattern Z (PartialDataColumnSidecar)** — implementation gap; only nimbus implements; nimbus has apparent bug in `verify_partial_data_column_sidecar_kzg_proofs`.
+- **Pattern AA (per-client SSZ container divergence)** — version numbering (V2 vs V3), field naming (nimbus `indices` vs spec `columns`), casing (lodestar camelCase), internal class-vs-SSZ-name inconsistency (teku), Go field naming (prysm singular Request vs plural REQUESTS).
+- **Pattern DD (3-category split)** — computed formula vs hardcoded YAML with formula validation vs hardcoded YAML without validation (caps for sidecar RPC responses).
+- **Pattern EE/GG (heritage-deprecation handling)** — RPC + gossip deprecation. INVERTED DEFENSE on teku: most defensive on RPC deprecation (item #50), least defensive on gossip deprecation (item #51).
+- **Pattern HH (compile-time constant baked into binary)** — nimbus + grandine for wire-protocol invariants (gindex depth, request caps); refined to NOT apply to operator-tunable parameters (retention windows).
+- **Pattern II (fork choice DA architecture divergence)** — 6 distinct architectures (most diverse finding); A-tier sampling-vs-custody divergence at high blob loads.
+
+Full catalogue with per-pattern source refs: [items/028/README.md](items/028/README.md) (original A–L) and [items/048/README.md](items/048/README.md) (refresh A–CC). Patterns DD–II added in items #49–#56.
+
+### Active interop risks today
+
+3 patterns have observable cross-client divergence today (none manifested in mainnet operation):
+
+| Risk | Pattern | Trigger |
+|---|---|---|
+| nimbus SSZ uint8 cgc encoding | W | A peer setting `cgc=0` (empty bytes) |
+| lodestar empty-validator-set returns 4 | T | Empty validator set during testing |
+| teku subscribes to deprecated `blob_sidecar` at Fulu fork digest | GG | Malicious peer publishing BlobSidecars at Fulu fork digest |
 
 ### Per-client forward-compat readiness
 
-Updated post-#29 with the Heze surprise (see Cross-cutting observations). **Fulu column not yet audited**; all six clients run Fulu on mainnet today, so the column is presumed ✅ at the integration level but pending source-level audit.
-
-| Client | Pectra | Fulu | Gloas | Heze |
+| Client | Pectra | Fulu mainnet | Gloas | Heze |
 |---|---|---|---|---|
-| nimbus | ✅ | (mainnet ✅, source-audit pending) | leader (11+ surfaces) | none |
-| grandine | ✅ | (mainnet ✅, source-audit pending) | leader (9+ surfaces) | none |
-| lighthouse | ✅ | (mainnet ✅, source-audit pending) | active (6+ surfaces) | none |
-| prysm | ✅ | (mainnet ✅, source-audit pending) | active (5+ surfaces) | constants only (`.ethspecify.yml`) |
-| lodestar | ✅ | (mainnet ✅, source-audit pending) | active (6+ surfaces) | none |
-| teku | ✅ | (mainnet ✅, source-audit pending) | minimal in core | **leader** (full `HezeStateUpgrade.java`) |
+| nimbus | ✅ | ✅ (5+ months) | **leader** (incl. `gloasColumnQuarantine` pre-implemented) | none |
+| grandine | ✅ | ✅ (5+ months) | leader | none |
+| lighthouse | ✅ | ✅ (5+ months) | active | none |
+| prysm | ✅ | ✅ (5+ months) | active | constants only (`.ethspecify.yml`) |
+| lodestar | ✅ | ✅ (5+ months) | active | none |
+| teku | ✅ | ✅ (5+ months) | minimal in core | **leader** (full `HezeStateUpgrade.java`) |
+
+### Notable per-client divergences (selected)
+
+- **prysm** — most defensive request-side validation (dual error types for cap exceeded, item #49); singular Go field name `MinEpochsForDataColumnSidecarsRequest` vs plural spec (item #55).
+- **lighthouse** — cleanest cross-fork derivation (`max_blocks_by_root_request_common(self.max_request_blocks_deneb)`, item #52); `#[superstruct(variants(Fulu, Gloas))]` hints at DataColumnSidecar Gloas variant (item #54).
+- **teku** — CONSISTENT HYBRID pattern (compute formula + YAML override) across items #49/#50/#52; **Pattern J** separate `AvailabilityChecker` classes per fork (item #56); INVERTED DEFENSE on heritage deprecation (most defensive RPC, least defensive gossip).
+- **nimbus** — most spec-faithful comments (`fulu_preset.nim:15` derives gindex from BeaconBlockBody; `nimbus_beacon_node.nim:1473` "Deliberately don't handle blobs"); compile-time-baked constants via `checkCompatibility` (Pattern HH); 3-quarantine architecture (item #56); Gloas pre-implementation leader.
+- **lodestar** — systematic camelCase across all SSZ containers (Pattern AA); Pattern R DAType enum union dispatch (item #56); CLI exposes retention extension.
+- **grandine** — `saturating_mul` for overflow safety; type-level `U4` for KZG depth (Pattern HH); Pattern P + V symmetric (gindex 11 verify + produce); storage-mode-aware retention accessor (item #55); BlobReconstructionPool for fork-choice DA (item #56).
 
 ### Cross-cutting observations
 
-**Multi-fork-definition source-organization pattern** (items #6/#9/#10/#12/#14/#15/#17/#19): nimbus and grandine ship separate function bodies per fork. Forward-fragile for cross-fork refactors that touch the Electra body.
-
-**Six distinct per-fork dispatch idioms** observed end-to-end: prysm runtime version check; lighthouse superstruct enum; teku subclass override; nimbus type-union compile-time; lodestar numeric `ForkSeq`; grandine module-namespace.
-
-**All six clients use BLST or BLST-based wrappers** (confirmed at items #20 and #25). No BLS-library-family divergence at the verification surface.
-
-**3 of 6 clients explicitly deduplicate the attesting-indices set** (item #26): prysm, lighthouse, grandine. teku, nimbus, lodestar rely on "unique by construction" through committee shuffling — observable-equivalent today, forward-fragile if shuffling ever changes.
-
-**Heze leadership inversion** (item #29 surprise): item #28 ranked teku as the Gloas-readiness laggard based on its sparse Gloas surface in state-transition core. Reading teku's `MiscHelpers.computeForkVersion` while auditing the signing-domain primitives surfaced a **full Heze (post-Gloas, EIP-7805 inclusion lists) implementation** in teku — `HezeStateUpgrade.java`, `SpecMilestone.HEZE`, `getHezeForkEpoch()` / `getHezeForkVersion()`. prysm has Heze constants in `.ethspecify.yml`. The other four clients have no Heze references. **teku is in fact the LEADER on the post-Gloas Heze surface.**
-
-**grandine EIP-7044 4-fork OR-list is forward-fragile at Heze** (item #29): grandine's voluntary-exit signing-domain pin enumerates `deneb || electra || fulu || gloas`. Without an explicit Heze extension, voluntary exits signed under Heze fork version will FAIL grandine BLS verification at Heze activation. High-priority pre-emptive fix.
-
-### Selected non-divergences
-
-- **prysm `BatchVerifyPendingDepositsSignatures`** — appeared to deviate from the per-deposit verification path; confirmed observable-equivalent (item #20).
-- **lodestar `pendingValidatorPubkeysCache`** — batched-sig avoidance pattern; confirmed correct caching invariants (item #20).
-- **lodestar BigInt-vs-u64 overflow gap in `invalid_large_withdrawable_epoch`** — deliberate documented skip with spec-linked TODO; not a real divergence (item #17).
-- **lighthouse lcli `pre_state.all_caches_built()` panic on transition fixtures** — runner limitation; lighthouse internal CI passes the same fixtures (item #23).
-- **grandine `SignatureBytes::empty()` placeholder PendingDeposit signature** — initially flagged as differing from canonical G2_POINT_AT_INFINITY across items #11/#18; correction in item #21 confirmed it sets `bytes[0] = 0xc0` to produce the byte-equivalent canonical infinity point.
-- **teku `IndexedAttestationLight` internal record without sorted check** — uniqueness is guaranteed by construction; observable-equivalent to the wire-format `IndexedAttestation` sorted check (item #25).
+- **6 distinct fork-dispatch idioms** observed end-to-end: prysm runtime version check; lighthouse superstruct enum; teku subclass override; nimbus 3-quarantine type-union; lodestar numeric `ForkSeq`; grandine module-namespace.
+- **All six clients use BLST or BLST-based wrappers** (items #20, #25). No BLS-library-family divergence at the verification surface.
+- **Spec-undefined edge cases (Pattern T family)**: empty validator sets, empty list validation, duplicate index handling, deprecated-RPC behavior, V1↔V2 default values, DA timeout policies. Each client interprets differently.
+- **Heritage-deprecation tracking spans 2 layers**: RPC (item #50) + gossip (item #51). teku has INVERTED DEFENSE (most defensive RPC, least defensive gossip).
+- **Triple-fragility for grandine at Heze**: gindex 11 verify (Pattern P) + gindex 11 produce (Pattern V) + compile-time-baked depth 4 (Pattern HH). A-tier pre-emptive fix priority.
+- **Sampling-vs-custody A-tier divergence at fork choice DA** (item #56): 3-3 split. At hypothetical 100+ blobs per block, sampling-aware (prysm, teku, lodestar) MAY accept blocks that custody-aware (lighthouse, nimbus, grandine) reject.
 
 ---
 
 ## Repository layout
 
 ```
-itemNN/             per-item audit (29 items at Pectra surface; Fulu items #30+ queued)
+itemNN/             per-item audit (56 items: #1–#29 Pectra, #30–#56 Fulu-NEW + meta)
   README.md         hypotheses, per-client cross-reference, findings, future research
 WORKLOG.md          full sequential audit log (Goal + Fork Target + Re-scope status + per-item bodies)
 BEACONBREAKER.md    project mission, scope, tracks, methodology rationale
@@ -107,3 +123,13 @@ beacon-APIs/        beacon-API spec submodule
 ```
 
 Submodule pins, fork target, and active EIPs in scope: [WORKLOG.md](WORKLOG.md) header.
+
+---
+
+## Status snapshot (2026-05-04)
+
+- **56 items committed**, **35 patterns catalogued** (A–II), **0 active mainnet divergences**
+- **Fulu mainnet**: all 6 clients, 5+ months stable, 2 BPO transitions executed (9 → 15 → 21 blobs)
+- **Heritage-RPC + gossip deprecation tracking**: BlobSidecarsByRange/Root v1 (4.5 months past cutoff); `blob_sidecar_{subnet_id}` gossip (deprecated at Fulu)
+- **Track D opened** at item #56: many fork choice cross-client audits pending (tie-breaking, proposer boost, LMD GHOST, score calculation)
+- **Forward-research priorities**: lighthouse Gloas V5 readiness (Pattern Y); grandine Heze triple-fragility (Patterns P + V + HH-depth); nimbus PartialDataColumnSidecar bug (item #44); cross-client interop fixtures for active risks (Patterns W/T/CC/GG); pre-emptive Gloas DA layer audit (only nimbus has gloasColumnQuarantine)

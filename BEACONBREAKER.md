@@ -123,16 +123,16 @@ beaconbreaker/
 ├── consensus-specs/        # submodule
 ├── consensus-spec-tests/   # submodule
 │
-├── item1/
+├── items/001/
 │   └── README.md           # finding details (template below)
-├── item2/
+├── items/002/
 │   ├── README.md
 │   └── fixture/            # generated SSZ + YAML fixture for this finding
 │       ├── pre.ssz
 │       ├── post.ssz
 │       ├── meta.yaml
 │       └── README.md
-├── item3/
+├── items/003/
 │   └── README.md
 │   ...
 │
@@ -571,13 +571,13 @@ These are candidates for items #N onward, not findings.
 
 ### 1. <Title>
 
-**Status:** ... (See item1/README.md for full body.)
+**Status:** ... (See items/001/README.md for full body.)
 
 <3-6 sentences summarizing finding, files, conclusion, cross-cuts.>
 
 **Adjacent untouched <fork>-active**: <list>.
 
-See [item1/README.md](item1/README.md).
+See [items/001/README.md](items/001/README.md).
 
 ### 2. <Title>
 ...
@@ -761,4 +761,4 @@ probes, and adversarial-input fixtures.
 
 End of `BEACONBREAKER.md`. Copy this file as the seed of a new project,
 populate `.gitmodules` with the six (or more) CL clients, scaffold
-`item1/README.md` with the template above, and start the loop.
+`items/001/README.md` with the template above, and start the loop.
