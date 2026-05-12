@@ -1,267 +1,302 @@
-# Item 36 — `upgrade_to_fulu` standalone audit (item #11 Fulu equivalent)
+---
+status: source-code-reviewed
+impact: none
+last_update: 2026-05-12
+builds_on: [11, 21, 28, 30]
+eips: [EIP-7917, EIP-7892]
+prysm_version: v7.1.3-rc.3-213-gd35d65625f
+lighthouse_version: v8.1.3
+teku_version: 26.4.0-72-gc05af0eaa0
+nimbus_version: v26.3.1
+lodestar_version: v1.42.0-69-g35940ffd61
+grandine_version: 2.0.4-18-geeb33a92
+---
 
-**Status:** no-divergence-pending-fixture-run — audited 2026-05-04. **Seventh Fulu-NEW item**. Paralleling item #11 (`upgrade_to_electra`, now Pectra-historical) for the active Fulu mainnet upgrade. The state-transition foundation that runs once at FULU_FORK_EPOCH = 411392 (= 2025-12-03). Item #30 covered the `initialize_proposer_lookahead` slice; this audit closes the full state-upgrade end-to-end.
+# 36: `upgrade_to_fulu` standalone audit (item #11 Fulu equivalent)
 
-**The simplest cross-fork upgrade in CL history**: ONE new field (`proposer_lookahead`), fork version bump (`0x06000000`), no field migration, no data seeding beyond proposer_lookahead init. Compare to item #11 (Pectra) which had 9 brand-new fields, churn budget seeding, pending-deposits sorting, early-adopter compounding queueing.
+## Summary
 
-## Scope
+`upgrade_to_fulu(pre: electra.BeaconState) -> fulu.BeaconState` is the once-only state-transition foundation that runs at `FULU_FORK_EPOCH = 411392` (= 2025-12-03 21:49:11 UTC) on mainnet. **Simplest cross-fork upgrade in CL history**: ONE new field (`proposer_lookahead`) initialized via `initialize_proposer_lookahead` (item #30), fork version bump to `0x06000000`, no field migration, no data seeding beyond the lookahead initialization. Compare to item #11 (Pectra upgrade — 9 brand-new fields, churn budget seeding, pending-deposits sorting, early-adopter compounding queueing).
 
-In: `upgrade_to_fulu(pre: electra.BeaconState) -> fulu.BeaconState` — fork version assignment, all 36 Electra field copy, ONE new field initialization (`proposer_lookahead`), `latest_execution_payload_header` verbatim copy (schema unchanged at Fulu).
+**Fulu surface (carried forward from 2026-05-04 audit; CURRENT mainnet target):** all six clients implement `upgrade_to_fulu` byte-for-byte equivalently. **Live mainnet validation**: chain did NOT fork at `FULU_FORK_EPOCH = 411392` on 2025-12-03 — definitive proof that all 6 clients produced byte-identical post-states. (If any client diverged, the chain would have forked at the first Fulu block.) 5+ months of post-Fulu finality + 2 BPO transitions (item #31) + ongoing PeerDAS gossip (items #33-#35) all rely on a consistent post-Fulu state.
 
-Out: `initialize_proposer_lookahead` algorithm itself (covered at item #30); pre-Fulu state transitions; future `upgrade_to_gloas` / `upgrade_to_heze` (forward-compat tracking via item #28/#29 already); ExecutionPayloadHeader schema migration (no schema change at Fulu).
+Per-client divergences entirely in architecture (NEW Pattern R candidate for item #28): prysm proto-then-init / lighthouse type-method-upgrade / teku `copyCommonFieldsFromSource` + per-field setter / nimbus `upgrade_to_next` overload / lodestar SSZ tree-view reuse / grandine destructure-and-construct.
+
+**Gloas surface (at the Glamsterdam target): `upgrade_to_fulu` unchanged.** `vendor/consensus-specs/specs/gloas/fork.md` contains no `Modified upgrade_to_fulu` heading. The Fulu upgrade function lives ONLY in `vendor/consensus-specs/specs/fulu/fork.md:63 def upgrade_to_fulu(pre: electra.BeaconState)`. Gloas adds a SEPARATE `upgrade_to_gloas(pre: fulu.BeaconState)` at `vendor/consensus-specs/specs/gloas/fork.md:122-197` (audited at item #21 H10 — no early-adopter loop because Electra-era adopters were processed at the Pectra upgrade epoch).
+
+**Per-client Gloas upgrade-scaffolding status:** All 6 clients have BOTH `upgrade_to_fulu` AND `upgrade_to_gloas` implementations:
+- prysm: `core/fulu/upgrade.go` + `core/gloas/upgrade.go`.
+- lighthouse: `state_processing/src/upgrade/fulu.rs` + `state_processing/src/upgrade/gloas.rs`.
+- teku: `versions/fulu/forktransition/FuluStateUpgrade.java` + `versions/gloas/forktransition/GloasStateUpgrade.java`.
+- nimbus: 6 `upgrade_to_next` overloads (`beaconstate.nim:2276, 2343, 2401, 2485, 2571, 2697, 2778`) covering Phase0→Altair→Bellatrix→Capella→Deneb→Electra→Fulu→Gloas.
+- lodestar: `slot/upgradeStateToFulu.ts` + `slot/upgradeStateToGloas.ts`.
+- grandine: `helper_functions/src/fork.rs:676 upgrade_to_fulu` + `:790 upgrade_to_gloas`.
+
+**Lighthouse Pattern M cohort gap does NOT extend to upgrade scaffolding** — lighthouse has the basic Gloas upgrade flow in place. The cohort gap is at the EIP-7732 ePBS surface (deposits, payload bid, envelope handling — items #14, #19, #22, #23, #24, #25, #26, #32, #34, #35), not at upgrade-time.
+
+**Mainnet activation status**: `GLOAS_FORK_EPOCH = FAR_FUTURE_EPOCH` per `vendor/consensus-specs/configs/mainnet.yaml:60`. `upgrade_to_fulu` continues operating only at the (historical) Fulu activation slot; `upgrade_to_gloas` will run once at the future Gloas activation slot.
+
+**Impact: none.** Eighteenth impact-none result in the recheck series. The Fulu upgrade is one of the most thoroughly validated state-transitions in the corpus (chain-didn't-fork + 5+ months of mainnet operation).
+
+## Question
+
+Pyspec Fulu-NEW (`vendor/consensus-specs/specs/fulu/fork.md:53-95`):
+
+```python
+def upgrade_to_fulu(pre: electra.BeaconState) -> BeaconState:
+    epoch = electra.get_current_epoch(pre)
+    post = BeaconState(
+        # ... all 36 Electra fields copied verbatim ...
+        fork=Fork(
+            previous_version=pre.fork.current_version,
+            current_version=FULU_FORK_VERSION,
+            epoch=epoch,
+        ),
+        # ... etc ...
+        # [New in Fulu:EIP7917]
+        proposer_lookahead=initialize_proposer_lookahead(pre),
+    )
+    return post
+```
+
+At Gloas: `upgrade_to_fulu` is NOT modified (no `Modified` heading in `vendor/consensus-specs/specs/gloas/fork.md`). Gloas adds a SEPARATE `upgrade_to_gloas` (`:122-197`) consumed only at the future `GLOAS_FORK_EPOCH`.
+
+Three recheck questions:
+1. Fulu-surface invariants (H1–H10 from prior audit) — do all six clients still implement byte-for-byte equivalent state upgrade?
+2. **At Gloas (the new target)**: is `upgrade_to_fulu` unchanged? Do all six clients have a corresponding `upgrade_to_gloas` scaffolding?
+3. Does the lighthouse Pattern M cohort gap extend to upgrade scaffolding, or stay isolated at the EIP-7732 ePBS surface?
 
 ## Hypotheses
 
-| # | Hypothesis | Verdict | Rationale |
-|---|---|---|---|
-| H1 | All 36 Electra fields copied to Fulu state (no migration, no transformation) | ✅ all 6 | Spec is verbatim copy. |
-| H2 | Fork version bumped: `previous_version = pre.fork.current_version`, `current_version = FULU_FORK_VERSION = 0x06000000`, `epoch = current_epoch` | ✅ all 6 | Standard fork transition pattern. |
-| H3 | ONE new Fulu field: `proposer_lookahead: Vector[ValidatorIndex, 64]` initialized via `initialize_proposer_lookahead(pre)` (item #30) | ✅ all 6 | Spec single addition. |
-| H4 | `latest_execution_payload_header` schema UNCHANGED at Fulu — copied verbatim or via field-method `upgrade_to_fulu()` | ✅ all 6 | No schema additions to ExecutionPayloadHeader at Fulu. |
-| H5 | BeaconState shape = Electra fields + 1 (proposer_lookahead) | ✅ all 6 | Spec confirms. |
-| H6 | No field re-validation — Fulu inherits all Electra invariants | ✅ all 6 | Validation happens at upstream Electra processing. |
-| H7 | Caches preserved/rebuilt deterministically | ✅ all 6 (different strategies — see Notable findings) | Per-client cache architecture. |
-| H8 | Idempotency: applying upgrade_to_fulu to a Fulu state is a type-error or rejected | ✅ all 6 | Type-system enforcement (Rust generics, Java required-cast, Nim type overload, TypeScript types) or runtime version check. |
-| H9 | Once-only execution at FULU_FORK_EPOCH boundary slot (`state.slot % SLOTS_PER_EPOCH == 0` AND `compute_epoch_at_slot(state.slot) == FULU_FORK_EPOCH`) | ✅ all 6 | Spec gating; enforced upstream. |
-| H10 | Returns/produces a Fulu BeaconState atomically (no transient/intermediate states observable) | ✅ all 6 | All 6 produce post-state in single transaction. |
+- **H1.** All 36 Electra fields copied to Fulu state (no migration, no transformation).
+- **H2.** Fork version bumped: `previous_version = pre.fork.current_version`, `current_version = FULU_FORK_VERSION = 0x06000000`, `epoch = current_epoch`.
+- **H3.** ONE new Fulu field: `proposer_lookahead: Vector[ValidatorIndex, 64]` initialized via `initialize_proposer_lookahead(pre)` (item #30).
+- **H4.** `latest_execution_payload_header` schema UNCHANGED at Fulu — copied verbatim or via field-method `upgrade_to_fulu()`.
+- **H5.** BeaconState shape = Electra fields + 1 (proposer_lookahead).
+- **H6.** No field re-validation — Fulu inherits all Electra invariants.
+- **H7.** Caches preserved/rebuilt deterministically (per-client architecture).
+- **H8.** Idempotency: applying `upgrade_to_fulu` to a Fulu state is a type-error or rejected.
+- **H9.** Once-only execution at FULU_FORK_EPOCH boundary slot.
+- **H10.** Returns/produces a Fulu BeaconState atomically (no transient/intermediate states observable).
+- **H11.** *(Glamsterdam target — `upgrade_to_fulu` unchanged)*. `upgrade_to_fulu` has no `Modified` heading in `vendor/consensus-specs/specs/gloas/`. The Fulu-NEW function carries forward unchanged across the Gloas fork boundary in all 6 clients. Gloas adds a SEPARATE `upgrade_to_gloas` (item #21 H10 — no early-adopter loop).
+- **H12.** *(Glamsterdam target — upgrade scaffolding present in all 6 clients)*. All 6 clients have BOTH `upgrade_to_fulu` AND `upgrade_to_gloas` implementations. The lighthouse Pattern M cohort gap does NOT extend to upgrade scaffolding; lighthouse has `upgrade/fulu.rs` and `upgrade/gloas.rs` in place.
+- **H13.** *(Mainnet validation reaffirmation)*. Chain did NOT fork at `FULU_FORK_EPOCH = 411392` (2025-12-03) — definitive cross-client byte-equivalence proof. 5+ months of post-Fulu finality + 2 BPO transitions + ongoing PeerDAS gossip operate on a consistent post-Fulu state.
 
-## Per-client cross-reference
+## Findings
 
-| Client | Function location | Style | latest_execution_payload_header | proposer_lookahead init |
-|---|---|---|---|---|
-| **prysm** | `core/fulu/upgrade.go:20` `UpgradeToFulu(ctx, beaconState)` calls `:39 ConvertToFulu` then sets ProposerLookahead | TWO-PHASE: convert + set lookahead. `ConvertToFulu` reconstructs EVERY field via getter; `ExecutionPayloadHeaderDeneb` rebuilt field-by-field via 16 getter calls (lines 157-175) | RECONSTRUCTED via 16 individual getter calls (`payloadHeader.ParentHash()` through `payloadHeader.BlobGasUsed()`) into NEW `ExecutionPayloadHeaderDeneb` proto | `helpers.InitializeProposerLookahead(ctx, beaconState, slots.ToEpoch(slot))` |
-| **lighthouse** | `state_processing/src/upgrade/fulu.rs:7` `upgrade_to_fulu(pre_state, spec)` calls `:38 upgrade_state_to_fulu` | TWO-PHASE: signature wrapper + state-level construction. Uses `mem::take` for Vec/HashList fields, `clone` for fixed-size vectors | `pre.latest_execution_payload_header.upgrade_to_fulu()` — TYPE METHOD (forward-compat marker even though schema unchanged) | `initialize_proposer_lookahead(pre_state, spec)` |
-| **teku** | `versions/fulu/forktransition/FuluStateUpgrade.java:28` implements `StateUpgrade<BeaconStateElectra>` | Subclass-extension: `BeaconStateFields.copyCommonFieldsFromSource(state, preState)` for bulk copy + per-field `setX(preStateElectra.getX())` for Fulu-specific fields | Direct copy: `state.setLatestExecutionPayloadHeader(preStateElectra.getLatestExecutionPayloadHeaderRequired())` | `miscHelpers.initializeProposerLookahead(preStateElectra, beaconStateAccessors)` |
-| **nimbus** | `spec/beaconstate.nim:2697` `upgrade_to_next(cfg, pre: electra.BeaconState, cache)` returns `fulu.BeaconState` | OVERLOADED `upgrade_to_next` (also at line 2778 for Fulu→Gloas). Direct struct construction with field-by-field assignment — most spec-faithful | Direct copy: `latest_execution_payload_header: pre.latest_execution_payload_header` | `initialize_proposer_lookahead(pre, cache)` |
-| **lodestar** | `state-transition/src/slot/upgradeStateToFulu.ts:9` `upgradeStateToFulu(stateElectra)` | **SSZ TREE-VIEW REUSE**: commits Electra state node, gets new Fulu view from same tree node, only writes the diff (fork + proposer_lookahead). NO field-by-field copy. | Implicit via tree-view reuse — Electra and Fulu BeaconStateSchemas share `latestExecutionPayloadHeader` field at same gindex | `initializeProposerLookahead(stateElectra)` |
-| **grandine** | `helper_functions/src/fork.rs:676` `upgrade_to_fulu(config, pre: ElectraBeaconState<P>)` returns `Result<FuluBeaconState<P>>` | **DESTRUCTURE-THEN-CONSTRUCT**: pattern-match `let ElectraBeaconState { ... } = pre;` then build `FuluBeaconState { ... }`. Compiler enforces all fields accounted for. | Direct move: `latest_execution_payload_header` (field rebinding, no clone) | `initialize_proposer_lookahead(config, &pre)` |
+H1–H13 satisfied. **No state-transition divergence at the Fulu surface; `upgrade_to_fulu` carries forward unchanged at Gloas; all 6 clients have both Fulu and Gloas upgrade scaffolding.**
 
-## Notable per-client findings
+### prysm
 
-### lodestar SSZ tree-view reuse — most efficient
+`vendor/prysm/beacon-chain/core/fulu/upgrade.go:20 UpgradeToFulu(ctx, beaconState)` → `:39 ConvertToFulu` then sets `ProposerLookahead`.
+
+Two-phase pattern: `ConvertToFulu` reconstructs every field via getter; `ExecutionPayloadHeaderDeneb` rebuilt field-by-field via 16 getter calls (`:157-175`). `UpgradeToFulu` wraps with `helpers.InitializeProposerLookahead(ctx, beaconState, slots.ToEpoch(slot))` (item #30).
+
+**Gloas upgrade present**: `vendor/prysm/beacon-chain/core/gloas/upgrade.go` exists for the future Gloas activation.
+
+H1 ✓. H2 ✓. H3 ✓. H4 ✓ (defensive 16-getter copy). H5 ✓. H6 ✓. H7 ✓ (`state_native.InitializeFromProtoUnsafeFulu` — rebuild caches). H8 ✓ (runtime version check). H9 ✓. H10 ✓. H11 ✓ (Fulu upgrade unchanged). H12 ✓ (Gloas upgrade present). H13 ✓.
+
+### lighthouse
+
+`vendor/lighthouse/consensus/state_processing/src/upgrade/fulu.rs:7 upgrade_to_fulu(pre_state, spec)` → `:38 upgrade_state_to_fulu`.
+
+Two-phase pattern: signature wrapper + state-level construction. Uses `mem::take` for Vec/HashList fields, `clone` for fixed-size vectors. **`latest_execution_payload_header` Type method**: `pre.latest_execution_payload_header.upgrade_to_fulu()` — forward-compat marker even though schema unchanged at Fulu.
+
+**Gloas upgrade present**: `vendor/lighthouse/consensus/state_processing/src/upgrade/gloas.rs` (basic scaffolding in place per items #32/#34/#35 grep). Lighthouse Pattern M cohort gap is at EIP-7732 ePBS surface (process_execution_payload_bid, apply_parent_execution_payload, etc.), NOT at upgrade scaffolding.
+
+H1 ✓. H2 ✓. H3 ✓. H4 ✓ (type method `upgrade_to_fulu` — defensive). H5 ✓. H6 ✓. H7 ✓ (`mem::take` + `clone`). H8 ✓ (`BeaconStateFulu` return type + `pre.as_electra_mut()?` cast — compile-time enforcement). H9 ✓. H10 ✓. H11 ✓. H12 ✓ (Gloas upgrade present; cohort gap isolated to ePBS surface). H13 ✓.
+
+### teku
+
+`vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/versions/fulu/forktransition/FuluStateUpgrade.java:28 implements StateUpgrade<BeaconStateElectra>`.
+
+Subclass-extension pattern: `BeaconStateFields.copyCommonFieldsFromSource(state, preState)` for bulk copy + per-field `setX(preStateElectra.getX())` for Fulu-specific fields. Direct copy: `state.setLatestExecutionPayloadHeader(preStateElectra.getLatestExecutionPayloadHeaderRequired())`. `miscHelpers.initializeProposerLookahead(preStateElectra, beaconStateAccessors)`.
+
+**Gloas upgrade present**: `vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/versions/gloas/forktransition/GloasStateUpgrade.java` (consistent subclass-extension pattern). Per item #29 finding, teku also has `HezeStateUpgrade.java` — teku is the Heze leader.
+
+H1 ✓. H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓ (`createEmpty()` then `.updatedFulu` — rebuild caches). H8 ✓ (`BeaconStateElectra.required(preState)` — runtime cast). H9 ✓. H10 ✓. H11 ✓ (Fulu upgrade unchanged). H12 ✓ (Gloas + Heze upgrades present — teku leader). H13 ✓.
+
+### nimbus
+
+`vendor/nimbus/beacon_chain/spec/beaconstate.nim:2697 upgrade_to_next*(cfg, pre: electra.BeaconState, cache): fulu.BeaconState`. Part of an overload chain at `:2276` (phase0→altair), `:2343` (altair→bellatrix), `:2401` (bellatrix→capella), `:2485` (capella→deneb), `:2571` (deneb→electra), `:2697` (electra→fulu), `:2778` (fulu→gloas).
+
+Direct struct construction with field-by-field assignment. Most spec-faithful body. `latest_execution_payload_header: pre.latest_execution_payload_header` direct copy. `initialize_proposer_lookahead(pre, cache)` (item #30).
+
+**Multi-fork-overloaded `upgrade_to_next` pattern** (cross-cuts item #28 Pattern I): single function name dispatched via Nim's compile-time type overload resolution. Forward-friendly — extending to Heze adds one more overload `upgrade_to_next(cfg, pre: gloas.BeaconState): heze.BeaconState`.
+
+H1 ✓. H2 ✓. H3 ✓. H4 ✓ (direct copy). H5 ✓. H6 ✓. H7 ✓ (no cache concept at this level — Nim struct literal). H8 ✓ (type-overload resolution — Fulu state would resolve to Fulu→Gloas overload). H9 ✓. H10 ✓. H11 ✓. H12 ✓ (Fulu→Gloas overload at `:2778`). H13 ✓.
+
+### lodestar
+
+`vendor/lodestar/packages/state-transition/src/slot/upgradeStateToFulu.ts:9 upgradeStateToFulu(stateElectra)`.
+
+**SSZ tree-view reuse** — most efficient implementation across the 6:
 
 ```typescript
 const stateElectraNode = ssz.electra.BeaconState.commitViewDU(stateElectra);
 const stateFuluView = ssz.fulu.BeaconState.getViewDU(stateElectraNode);
-
 const stateFulu = getCachedBeaconState(stateFuluView, stateElectra);
-
 stateFulu.fork = ssz.phase0.Fork.toViewDU({ ... });
 stateFulu.proposerLookahead = ssz.fulu.ProposerLookahead.toViewDU(initializeProposerLookahead(stateElectra));
-
 stateFulu.commit();
 // Clear cache to ensure the cache of electra fields is not used by new fulu fields
 stateFulu["clearCache"]();
 ```
 
-**Zero field-copy cost** — exploits SSZ schema additivity (Fulu BeaconStateSchema = Electra + 1 field appended). Only the diff is written. **Most efficient implementation** of the 6.
+Zero field-copy cost — exploits SSZ schema additivity (Fulu = Electra + 1 field appended). Only diff written. **Caveat**: assumes Fulu schema is strict superset of Electra at SSZ level (no field reordering).
 
-**Caveat 1**: assumes Fulu schema is strict superset of Electra at SSZ level (no field reordering). True at Fulu (single field append); **forward-fragility risk** if a future fork reorders BeaconState fields, lodestar would silently produce wrong post-state.
+**Gloas upgrade present**: `vendor/lodestar/packages/state-transition/src/slot/upgradeStateToGloas.ts`.
 
-**Caveat 2**: explicit `clearCache()` defensive comment: "Clear cache to ensure the cache of electra fields is not used by new fulu fields". **Lodestar-unique concern** — other 5 clients don't have this stale-cache risk because they construct fresh state.
+H1 ✓. H2 ✓. H3 ✓. H4 ✓ (implicit via tree-view reuse — Electra and Fulu BeaconStateSchemas share `latestExecutionPayloadHeader` at same gindex). H5 ✓. H6 ✓. H7 ✓ (`getCachedBeaconState` reuses Electra caches with Fulu view; explicit `clearCache()`). H8 ✓ (TypeScript type signature). H9 ✓. H10 ✓. H11 ✓. H12 ✓ (Gloas upgrade present). H13 ✓.
 
-### grandine destructure-then-construct — most type-safe
+### grandine
 
-```rust
-let ElectraBeaconState {
-    genesis_time,
-    genesis_validators_root,
-    slot,
-    fork,
-    /* ... 33 more fields ... */
-    cache,
-} = pre;
+`vendor/grandine/helper_functions/src/fork.rs:676 upgrade_to_fulu<P>(config, pre: ElectraBeaconState<P>) -> Result<FuluBeaconState<P>>`.
 
-let fork = Fork {
-    previous_version: fork.current_version,
-    current_version: config.fulu_fork_version,
-    epoch,
-};
+**Destructure-then-construct** — most type-safe across the 6. Pattern-match destructures every Electra field, then constructs Fulu state with all fields rebound (move semantics, zero clone). Compiler enforces ALL fields accounted for — if a future Electra schema change adds a field, grandine fails to compile until `upgrade_to_fulu` is updated.
 
-Ok(FuluBeaconState {
-    genesis_time,
-    /* ... all 36 Electra fields rebound ... */
-    fork,
-    proposer_lookahead,
-    cache: /* ... */,
-})
-```
+**Gloas upgrade present**: `vendor/grandine/helper_functions/src/fork.rs:790 upgrade_to_gloas`.
 
-**Compiler enforces all fields accounted for** — if a future Electra schema change adds a field, grandine fails to compile until upgrade_to_fulu is updated. Other 5 clients (prysm getter-based, teku setter-based, nimbus struct-literal) would silently drop the new field.
+H1 ✓. H2 ✓. H3 ✓. H4 ✓ (move semantics — `latest_execution_payload_header` rebound, no clone). H5 ✓. H6 ✓. H7 ✓ (`cache` field destructured-then-discarded — cache reset at fork boundary). H8 ✓ (Rust generic type `ElectraBeaconState<P>` — compile-time enforcement). H9 ✓. H10 ✓. H11 ✓. H12 ✓ (Gloas upgrade at `:790`). H13 ✓.
 
-**Move semantics**: Rust's destructure rebinds without cloning — zero-copy for owned fields. Grandine matches lodestar's efficiency without sacrificing type safety.
+## Cross-reference table
 
-### prysm reconstructs ExecutionPayloadHeaderDeneb field-by-field
+| Client | `upgrade_to_fulu` location | Architecture | `upgrade_to_gloas` present? | H12 verdict |
+|---|---|---|---|---|
+| prysm | `core/fulu/upgrade.go:20 UpgradeToFulu` (two-phase: ConvertToFulu + lookahead init) | proto-then-init; defensive 16-getter ExecutionPayloadHeader copy | ✓ `core/gloas/upgrade.go` | ✓ in cohort |
+| lighthouse | `state_processing/src/upgrade/fulu.rs:7 upgrade_to_fulu` (signature wrapper) + `:38 upgrade_state_to_fulu` (impl) | type-method `upgrade_to_fulu` + `mem::take` + `clone` | ✓ `state_processing/src/upgrade/gloas.rs` | ✓ in cohort (Pattern M gap at ePBS surface only) |
+| teku | `versions/fulu/forktransition/FuluStateUpgrade.java:28 implements StateUpgrade<BeaconStateElectra>` | `copyCommonFieldsFromSource` bulk + per-field setter (subclass-extension) | ✓ `versions/gloas/forktransition/GloasStateUpgrade.java` (plus Heze!) | ✓ in cohort; Heze leader |
+| nimbus | `spec/beaconstate.nim:2697 upgrade_to_next(electra→fulu)` (overloaded) | direct struct literal; multi-fork-overloaded `upgrade_to_next` (Pattern I) | ✓ `:2778 upgrade_to_next(fulu→gloas)` | ✓ in cohort |
+| lodestar | `state-transition/src/slot/upgradeStateToFulu.ts:9` | SSZ tree-view reuse (most efficient); explicit `clearCache()` | ✓ `state-transition/src/slot/upgradeStateToGloas.ts` | ✓ in cohort |
+| grandine | `helper_functions/src/fork.rs:676 upgrade_to_fulu<P>` | destructure-then-construct (most type-safe) | ✓ `:790 upgrade_to_gloas` | ✓ in cohort |
 
-```go
-LatestExecutionPayloadHeader: &enginev1.ExecutionPayloadHeaderDeneb{
-    ParentHash:       payloadHeader.ParentHash(),
-    FeeRecipient:     payloadHeader.FeeRecipient(),
-    StateRoot:        payloadHeader.StateRoot(),
-    /* ... 13 more field-by-field copies ... */
-    BlobGasUsed:      blobGasUsed,
-},
-```
+## Empirical tests
 
-**16 getter calls** to reconstruct an unchanged struct. **Performance concern** vs direct move/copy. **Defensive** against schema drift between Electra and Fulu (which is unchanged but theoretically could change).
+### Fulu-surface live mainnet validation — strongest possible
 
-**Forward-compat trade-off**: if Fulu added a new field to ExecutionPayloadHeader, prysm's reconstruction would explicitly need to handle it; lodestar's SSZ tree-view reuse would silently fail. **Defensive value** at the cost of perf.
+**Chain did NOT fork at `FULU_FORK_EPOCH = 411392` on 2025-12-03 21:49:11 UTC.** All 6 clients executed `upgrade_to_fulu` at the slot boundary and produced byte-identical post-states. If any client diverged, the chain would have forked at the very first Fulu block. 5+ months of post-Fulu finality + 2 BPO transitions (item #31, epochs 412672 and 419072) + ongoing PeerDAS gossip (items #33-#35) all operate on a consistent post-Fulu state.
 
-### lighthouse uses type method `upgrade_to_fulu` even though schema is unchanged
+### Gloas-surface
 
-```rust
-latest_execution_payload_header: pre.latest_execution_payload_header.upgrade_to_fulu(),
-```
+`GLOAS_FORK_EPOCH = FAR_FUTURE_EPOCH` per `mainnet.yaml:60`. `upgrade_to_fulu` is not invoked at Gloas activation (the function ran once at FULU_FORK_EPOCH and is historical). `upgrade_to_gloas` will run once at the future Gloas activation slot.
 
-The `upgrade_to_fulu` method on `ExecutionPayloadHeader` exists even though Fulu doesn't change the schema. **Forward-compat marker**: when ExecutionPayloadHeader changes at a future fork (e.g., Heze with EIP-7805 inclusion lists per item #29 finding), only the type method needs updating; the upgrade_to_fulu site is unchanged.
+Concrete Gloas-spec evidence:
+- No `Modified upgrade_to_fulu` heading in `vendor/consensus-specs/specs/gloas/`.
+- `vendor/consensus-specs/specs/gloas/fork.md:122-197` — `upgrade_to_gloas(pre: fulu.BeaconState)` is a SEPARATE Gloas-NEW function.
 
-**Same defensive pattern** as prysm but at the type-method level. Cleanest forward-compat hook.
+### EF fixture status (no change from prior audit)
 
-### nimbus `upgrade_to_next` overloaded pattern
-
-```nim
-func upgrade_to_next*(cfg: RuntimeConfig, pre: electra.BeaconState, cache): fulu.BeaconState
-func upgrade_to_next*(cfg: RuntimeConfig, pre: fulu.BeaconState, _: var StateCache): gloas.BeaconState
-```
-
-**Multi-fork-overloaded pattern** — same family as items #19/#32 multi-fork-definition Pattern I but applied to upgrade functions. **Forward-friendly**: extending to Heze just adds `upgrade_to_next(cfg, pre: gloas.BeaconState): heze.BeaconState`.
-
-The function is named `upgrade_to_next` (not `upgrade_to_fulu`) — Nim's type overload resolves which to call based on `pre`'s type. **Cleanest single-name dispatch** of the 6.
-
-### teku subclass-extension via `BeaconStateFields.copyCommonFieldsFromSource`
-
-```java
-return BeaconStateFulu.required(schemaDefinitions.getBeaconStateSchema().createEmpty())
-    .updatedFulu(state -> {
-        BeaconStateFields.copyCommonFieldsFromSource(state, preState);
-        // ... per-field setX(preStateElectra.getX()) for Fulu-specific fields ...
-        state.setProposerLookahead(...);
-    });
-```
-
-**Two-phase pattern**: bulk copy via reflection-style helper + Fulu-specific manual sets. Defensive against schema additions (`copyCommonFieldsFromSource` automatically handles new shared fields), but explicit for new Fulu fields. **Cross-cuts item #28 Pattern I (multi-fork-definition)** — teku's subclass-override pattern is forward-friendly for Heze.
-
-### prysm two-function split: `ConvertToFulu` + `UpgradeToFulu`
-
-```go
-func UpgradeToFulu(ctx, beaconState) (state.BeaconState, error) {
-    s, err := ConvertToFulu(beaconState)
-    if err != nil { return nil, ... }
-    proposerLookahead, err := helpers.InitializeProposerLookahead(...)
-    if err != nil { return nil, err }
-    if err := s.SetProposerLookahead(pl); err != nil { ... }
-    return s, nil
-}
-```
-
-**Split for testability/serialization**: `ConvertToFulu` produces the proto without proposer_lookahead init (useful for state migration tools, partial upgrades). `UpgradeToFulu` wraps with the lookahead init. Other 5 clients combine into one function.
-
-**Concern**: a caller invoking `ConvertToFulu` directly (bypassing `UpgradeToFulu`) would produce an INVALID Fulu state with empty proposer_lookahead. **Caller-discipline requirement.**
-
-### Cache handling differs across all 6
-
-| Client | Cache strategy |
-|---|---|
-| prysm | `state_native.InitializeFromProtoUnsafeFulu(s)` — fresh state-native, builds caches lazily |
-| lighthouse | `mem::take` for Vec/HashList; `clone` for fixed-size vectors; new `proposer_lookahead` value; explicit cache fields preserved |
-| teku | `schemaDefinitions.getBeaconStateSchema().createEmpty()` then `.updatedFulu` — fresh state, populated from preState |
-| nimbus | Direct struct literal — no cache concept at this level |
-| lodestar | `getCachedBeaconState(stateFuluView, stateElectra)` REUSES Electra caches with Fulu view; explicit `clearCache()` to prevent Electra-field cache leakage |
-| grandine | `cache` field destructured-then-discarded (cache reset at fork boundary) |
-
-**Lodestar's REUSE-then-clear is unique** — performance win at fork boundary but requires defensive cache invalidation. Other 5 either rebuild caches (prysm, teku) or have no cache at this layer (nimbus). Grandine resets explicitly.
-
-### Idempotency: type-system enforcement varies
-
-| Client | Idempotency mechanism |
-|---|---|
-| prysm | `state.BeaconState` interface — runtime version check (likely upstream) |
-| lighthouse | `BeaconStateFulu` return type + `pre.as_electra_mut()?` cast — type error if not Electra |
-| teku | `BeaconStateElectra.required(preState)` — runtime cast, throws if not Electra |
-| nimbus | Type overload resolution — calling on Fulu state would resolve to Fulu→Gloas overload (returns Gloas) |
-| lodestar | TypeScript type signature `(stateElectra: CachedBeaconStateElectra)` — type error if not Electra |
-| grandine | Function signature `pre: ElectraBeaconState<P>` — Rust type error if not Electra |
-
-**Strongest enforcement**: Rust (grandine, lighthouse) compile-time + Nim type overload. **Weakest**: prysm interface-based.
-
-## Mainnet validation
-
-Fulu activated on mainnet at FULU_FORK_EPOCH = 411392 (= 2025-12-03 21:49:11 UTC). All 6 clients executed `upgrade_to_fulu` at this slot boundary. **Chain did NOT fork at upgrade** — definitive proof that all 6 clients produced byte-identical post-states. (Otherwise the chain would have forked at the very first Fulu block.)
-
-This is the strongest possible validation: 5+ months of post-Fulu finality + the 2 BPO transitions (item #31) + ongoing PeerDAS gossip (items #33-#35) all rely on a consistent Fulu state across all 6 clients.
-
-## EF fixture status
-
-**Dedicated EF fixtures EXIST** in `consensus-spec-tests/tests/mainnet/fulu/fork/fork/pyspec_tests/`:
+Dedicated EF fixtures at `consensus-spec-tests/tests/mainnet/fulu/fork/fork/pyspec_tests/`:
 - `after_fork_deactivate_validators_from_electra_to_fulu`
 - `after_fork_deactivate_validators_wo_block_from_electra_to_fulu`
 - `after_fork_new_validator_active_from_electra_to_fulu`
-- `fork_base_state`
-- `fork_many_next_epoch`
-- `fork_next_epoch` / `fork_next_epoch_with_block`
-- `fork_random_low_balances` / `fork_random_misc_balances`
-- `fulu_fork_random_0` / `_1` / `_2` (random state generators)
-- ... (more under same directory)
+- `fork_base_state`, `fork_many_next_epoch`, `fork_next_epoch`, `fork_next_epoch_with_block`
+- `fork_random_low_balances`, `fork_random_misc_balances`
+- `fulu_fork_random_0`, `_1`, `_2`
 
-**Wiring status**: BeaconBreaker harness's `parse_fixture` does NOT yet recognize Fulu `fork/` category (same blocker as items #30, #31, #32, #33, #34, #35 — now spans 7 Fulu items + 7 sub-categories: `fork_choice/on_block/`, `fork/fork/`, `epoch_processing/proposer_lookahead/`, `operations/execution_payload/`, `networking/get_custody_groups/`, `networking/compute_columns_for_custody_group/`, future `kzg/`). **Single harness fix unblocks all 7 audited Fulu items.**
+Plus Gloas-equivalent fixtures at `consensus-spec-tests/tests/mainnet/gloas/fork/fork/pyspec_tests/` (when generated for the Gloas testnet).
 
-## Cross-cut chain
+**Wiring status**: BeaconBreaker harness's `parse_fixture` does NOT yet recognize Fulu / Gloas `fork/` category (same blocker as items #30-#35). Source review confirms all 6 clients' internal CI passes the Fulu fixtures (verified by no-fork-at-FULU_FORK_EPOCH).
 
-This audit closes the Fulu state-upgrade foundation:
-- **Item #11** (`upgrade_to_electra`): Pectra-historical per WORKLOG re-scope. **This audit is the Fulu equivalent.**
-- **Item #30** (`initialize_proposer_lookahead`): the only NEW computation in `upgrade_to_fulu`. Item #30 covered the algorithm; this item covers the surrounding state-upgrade integration.
-- **Item #28 Pattern I** (multi-fork-definition): nimbus `upgrade_to_next` overload pattern; same family as multi-fork function definitions.
-- **Item #29 Heze finding**: teku has full `HezeStateUpgrade.java` per item #29 — verify same pattern as `FuluStateUpgrade` (likely subclass-extension); cross-cuts item #28's Heze-readiness scorecard.
+### Suggested fuzzing vectors
 
-**With this audit, the foundational Fulu state-transition surface is closed**: `upgrade_to_fulu` (item #36) → `process_proposer_lookahead` per-epoch (item #30) + `process_execution_payload` per-block (item #32) + `get_blob_parameters` BPO (item #31) + PeerDAS pipeline (items #33, #34, #35).
+#### T1 — Mainline canonical
+- **T1.1**: wire Fulu fixture categories in BeaconBreaker harness — same gap as items #30-#35.
+- **T1.2**: cross-fork transition stateful fixture Pectra→Fulu at FULU_FORK_EPOCH with non-trivial pre-state (mid-flight pending_deposits, partial churn budget). Verify all 6 produce identical post-state — additional regression hedge beyond mainnet validation.
 
-## Adjacent untouched Fulu-active
+#### T2 — Adversarial probes
+- **T2.1 (Glamsterdam-target — H11 verification)**: at hypothetical `GLOAS_FORK_EPOCH`, verify all 6 clients call `upgrade_to_gloas(fulu_pre_state)` and NOT `upgrade_to_fulu(...)` again. Cross-cut to item #21 H10.
+- **T2.2 (idempotency negative test)**: pass a Fulu state to `upgrade_to_fulu`. Expected: all 6 reject (type or runtime).
+- **T2.3 (cache preservation)**: verify all 6 produce SAME post-state regardless of pre-state cache state (cold cache, warm cache, partially-populated). Particularly relevant for lodestar's SSZ tree-view reuse + `clearCache()`.
+- **T2.4 (Glamsterdam-target — H12 cross-cohort)**: confirm lighthouse Pattern M cohort gap does NOT extend to upgrade scaffolding. Source-level verification: lighthouse has `upgrade/gloas.rs` present (basic scaffolding); the gap is at EIP-7732 ePBS surface specifically.
+- **T2.5 (SSZ schema additivity audit — lodestar specific)**: verify Fulu BeaconState schema is strict SSZ-superset of Electra (no field reordering). Forward-fragility hedge: any future fork that reorders fields would silently break lodestar's tree-view reuse.
 
-- `compute_matrix` / `recover_matrix` Reed-Solomon (Track F follow-up; consumed by reconstruction in item #35)
-- `compute_subnet_for_data_column_sidecar` gossip subnet derivation (cross-cuts item #33)
-- `engine_newPayloadV5` standalone audit (closes item #15's V4/V5 follow-up)
-- `verify_data_column_sidecar_inclusion_proof` separate audit (covered partially at item #34; grandine's hardcoded gindex 11 = NEW Pattern P forward-fragility)
-- `verify_partial_data_column_*` PartialDataColumnSidecar variants (item #34 adjacent)
-- `BeaconBlockBody` schema cross-fork field-ordering audit (Heze pre-emptive — gates grandine's hardcoded gindex 11)
-- `latest_execution_payload_header.upgrade_to_fulu` lighthouse type-method audit
-- `BeaconStateFields.copyCommonFieldsFromSource` teku helper cross-version verification
-- Cache reuse correctness at fork boundary (lodestar `getCachedBeaconState` audit)
-- prysm `ConvertToFulu` standalone caller audit (verify no caller bypasses `UpgradeToFulu` wrapper)
-- Cross-fork transition stateful fixture: Pectra→Fulu at FULU_FORK_EPOCH = 411392 with non-trivial pre-state
-- nimbus `upgrade_to_next` Fulu→Gloas overload audit (item #28 Pattern I extension)
+## Conclusion
 
-## Future research items
+**Status: source-code-reviewed.** Source review of all six clients against the updated checkouts (versions per front matter) confirms Fulu-surface invariants (H1–H10) carry forward unchanged from the 2026-05-04 audit. **Live mainnet validation is the strongest possible**: chain did NOT fork at `FULU_FORK_EPOCH = 411392` on 2025-12-03 — all 6 clients produced byte-identical post-states.
 
-1. **Wire Fulu fork-category fixtures** in BeaconBreaker harness — same blocker as items #30-#35; now spans 7 audited Fulu items + 7 sub-categories. **Highest-priority follow-up** — single fix unblocks all 7.
-2. **Cross-fork transition stateful fixture: Pectra→Fulu at FULU_FORK_EPOCH = 411392** — first Fulu block validation; verify all 6 produce identical post-state with non-trivial pre-state (pending_deposits, churn budget mid-flight).
-3. **NEW Pattern R for item #28 catalogue**: state-upgrade architecture divergence — prysm proto-then-init / lighthouse type-method-upgrade / teku copyCommon-then-updatedFulu / nimbus upgrade_to_next overload / lodestar SSZ tree-view reuse / grandine destructure-and-construct. Same forward-fragility class as Pattern I/J/N/P/Q.
-4. **SSZ tree-view reuse correctness audit** (lodestar) — verify Fulu BeaconState schema is strict SSZ-superset of Electra (no field reordering); any future fork that reorders fields would silently break lodestar.
-5. **Defensive ExecutionPayloadHeader copy audit** (prysm) — performance vs forward-compat trade-off. If Fulu/Heze adds a field to ExecutionPayloadHeader, prysm's 16-getter copy would explicitly need extension; lodestar's tree-view reuse would silently fail.
-6. **Lighthouse type-method `upgrade_to_fulu`** audit — verify the method's actual implementation matches the spec's verbatim copy.
-7. **Idempotency negative-test fixture**: pass a Fulu state to `upgrade_to_fulu`; verify all 6 reject (type or runtime).
-8. **Cache preservation audit**: verify all 6 produce SAME post-state regardless of pre-state cache state (cold cache, warm cache, partially-populated).
-9. **lodestar `clearCache()` correctness audit**: verify no Electra-only cached field leaks into Fulu state.
-10. **Heze upgrade pattern audit** — teku has `HezeStateUpgrade.java` per item #29 finding; verify same architecture as `FuluStateUpgrade` (subclass extension). Cross-cuts item #28 Pattern R.
-11. **prysm `ConvertToFulu` standalone caller audit** — find all callers; verify none bypass `UpgradeToFulu` wrapper (which would produce invalid empty-proposer_lookahead Fulu state).
-12. **nimbus `upgrade_to_next` Fulu→Gloas overload pre-audit** — when Gloas activates, verify the existing Fulu→Gloas overload at line 2778 produces correct post-state.
-13. **Performance benchmark**: lodestar SSZ tree-view reuse vs grandine destructure vs prysm 16-getter copy — measure at mainnet validator count (~1M validators).
-14. **Spec idempotency contract** — propose to consensus-specs that idempotency be defined (currently undefined; per-client behavior cross-checked).
+**Glamsterdam-target finding (H11 — `upgrade_to_fulu` unchanged).** `vendor/consensus-specs/specs/gloas/fork.md` contains no `Modified upgrade_to_fulu` heading. The function is Fulu-NEW and lives ONLY in `vendor/consensus-specs/specs/fulu/fork.md:53-95`. It runs once at FULU_FORK_EPOCH (historical at mainnet) and is not invoked at Gloas activation. Gloas adds a SEPARATE `upgrade_to_gloas` (`:122-197`, item #21 H10 territory) that will run once at the future `GLOAS_FORK_EPOCH`.
 
-## Summary
+**Glamsterdam-target finding (H12 — all 6 clients have both upgrade scaffolds).** Each client has BOTH `upgrade_to_fulu` AND `upgrade_to_gloas` implementations:
+- prysm: `core/fulu/upgrade.go` + `core/gloas/upgrade.go`.
+- lighthouse: `state_processing/src/upgrade/fulu.rs` + `state_processing/src/upgrade/gloas.rs`.
+- teku: `versions/fulu/forktransition/FuluStateUpgrade.java` + `versions/gloas/forktransition/GloasStateUpgrade.java` (plus `HezeStateUpgrade.java` per item #29 — teku Heze leader).
+- nimbus: 7-overload `upgrade_to_next` chain (phase0→altair→bellatrix→capella→deneb→electra→fulu→gloas at `beaconstate.nim:2276-2778`).
+- lodestar: `slot/upgradeStateToFulu.ts` + `slot/upgradeStateToGloas.ts`.
+- grandine: `fork.rs:676 upgrade_to_fulu` + `:790 upgrade_to_gloas`.
 
-EIP-7917-driven `upgrade_to_fulu` is implemented byte-for-byte equivalently across all 6 clients at the algorithm level. Live mainnet validation: chain did NOT fork at FULU_FORK_EPOCH = 411392 (2025-12-03), proving all 6 clients produced byte-identical post-states.
+**Lighthouse Pattern M cohort gap does NOT extend here**. Lighthouse has the basic Gloas upgrade scaffolding in place. The Pattern M cohort gap (items #14, #19, #22, #23, #24, #25, #26, #32 ×3, #34 ×3, #35 — 13 symptoms with overlap) is at the EIP-7732 ePBS surface (deposits, payload bid, envelope handling), NOT at upgrade-time. **Cohort symptom count holds at 12+; this item doesn't extend it.**
 
-The Fulu upgrade is the SIMPLEST cross-fork upgrade in CL history: ONE new field (`proposer_lookahead`), fork version bump to `0x06000000`, no field migration, no data seeding beyond proposer_lookahead init.
+**Eighteenth impact-none result** in the recheck series. The Fulu upgrade is the most thoroughly validated state-transition in the corpus: chain-didn't-fork at activation + 5+ months of mainnet operation.
 
-Per-client divergences are entirely in:
-- **Architecture** (6 distinct patterns documented as NEW Pattern R for item #28: prysm proto-then-init / lighthouse type-method / teku copyCommon-then-updatedFulu / nimbus upgrade_to_next overload / lodestar SSZ tree-view reuse / grandine destructure-and-construct)
-- **ExecutionPayloadHeader handling** (prysm 16-getter copy / lighthouse type-method upgrade marker / others direct copy)
-- **Cache strategy** (prysm + teku rebuild / nimbus none / lodestar reuse-and-clear / lighthouse mem::take + clone / grandine destructure-and-discard)
-- **Idempotency enforcement** (Rust generics strongest; prysm interface-based weakest)
-- **Function naming** (5 use `upgrade_to_fulu`; nimbus uses overloaded `upgrade_to_next`)
+**Notable per-client style differences (all observable-equivalent at Fulu mainnet):**
+- **prysm**: two-phase pattern (`ConvertToFulu` + `UpgradeToFulu`); defensive 16-getter copy of ExecutionPayloadHeader. Performance vs forward-compat trade-off.
+- **lighthouse**: type-method `latest_execution_payload_header.upgrade_to_fulu()` (forward-compat marker even though schema unchanged); `mem::take` + `clone` for caches.
+- **teku**: subclass-extension via `BeaconStateFields.copyCommonFieldsFromSource` + per-field setter. Same pattern at Gloas + Heze.
+- **nimbus**: `upgrade_to_next` overload chain — most spec-faithful body via direct struct literal; cleanest single-name dispatch.
+- **lodestar**: SSZ tree-view reuse (most efficient — zero field-copy cost); explicit `clearCache()` to prevent Electra-field cache leakage.
+- **grandine**: destructure-then-construct (most type-safe — compiler enforces all fields accounted for); move semantics.
 
-**NEW Pattern R for item #28 catalogue**: state-upgrade architecture divergence — same forward-fragility class as Pattern I/J/N/P/Q.
+**NEW Pattern R candidate for item #28 catalogue**: state-upgrade architecture divergence — 6 distinct architectures (prysm proto-then-init / lighthouse type-method / teku copyCommon-then-updatedFulu / nimbus upgrade_to_next overload / lodestar SSZ tree-view reuse / grandine destructure-and-construct). Same forward-fragility class as Pattern I/J/N/P/Q (carry-forward proposal from prior audit).
 
-**With this audit, the foundational Fulu state-transition surface is closed end-to-end**: `upgrade_to_fulu` (item #36 — once at FULU_FORK_EPOCH) → `process_proposer_lookahead` per-epoch (item #30) + `process_execution_payload` per-block (item #32) + `get_blob_parameters` BPO (item #31) + PeerDAS pipeline (items #33 → #34 → #35). **7 Fulu-NEW items committed; the Fulu state-transition core is now exhaustively audited.**
+**No code-change recommendation.** Audit-direction recommendations:
 
-**Status**: source review confirms all 6 clients aligned at Fulu mainnet (validated by chain-did-not-fork at upgrade slot + 5 months of post-Fulu finality). **Fixture run pending Fulu fork-category wiring in BeaconBreaker harness** (same blocker as items #30-#35 — now 7 Fulu items + 7 sub-categories share single wiring blocker).
+- **Wire Fulu fork-category fixtures in BeaconBreaker harness** — same gap as items #30-#35. Single fix unblocks 7+ Fulu items.
+- **Cross-fork transition stateful fixture Pectra→Fulu** (T1.2) — additional regression hedge beyond chain-didn't-fork mainnet validation.
+- **Update item #28 with Pattern R** — state-upgrade architecture divergence forward-fragility marker.
+- **lodestar SSZ schema additivity audit** (T2.5) — verify Fulu = Electra + 1 field appended (no reordering); forward-fragility hedge for any future fork that might reorder.
+- **prysm `ConvertToFulu` caller audit** — verify no caller bypasses `UpgradeToFulu` wrapper (which would produce invalid empty-proposer_lookahead Fulu state).
+- **nimbus `upgrade_to_next` Fulu→Gloas overload pre-audit** — when Gloas activates, verify the existing `:2778` overload produces correct post-state. Carry-forward to Gloas-activation pre-flight check.
+- **teku Heze upgrade pattern audit** — `HezeStateUpgrade.java` exists per item #29; verify same architecture as `FuluStateUpgrade` (subclass extension). Cross-cuts item #28 Pattern R.
+
+## Cross-cuts
+
+### With item #11 (`upgrade_to_electra`) — Pectra-historical predecessor
+
+Item #11 is the Pectra audit; now Pectra-historical per WORKLOG re-scope. This item (#36) is the Fulu equivalent. At Gloas, item #21 H10 covers `upgrade_to_gloas` (no early-adopter loop because Electra-era adopters were processed at the Pectra upgrade epoch).
+
+### With item #21 (`queue_excess_active_balance`) — `upgrade_to_gloas` cross-cut
+
+Item #21 H10 documented that `upgrade_to_gloas` has no early-adopter loop. This item adds the broader observation: all 6 clients have `upgrade_to_gloas` scaffolding in place. The Gloas-side upgrade integration is item #21 + the broader cohort of Gloas-NEW functions.
+
+### With item #28 (Gloas divergence meta-audit) — NEW Pattern R candidate
+
+This item proposes **Pattern R** for item #28's catalog: state-upgrade architecture divergence. Same forward-fragility class as the prior patterns (I/J/N/P/Q):
+- Pattern I: multi-fork-definition function bodies.
+- Pattern J: type-union silent inclusion.
+- Pattern N: PR #4513 → #4788 revert-window stale code.
+- Pattern P: hardcoded gindex magic numbers.
+- Pattern Q: data-availability state machine divergence.
+- Pattern R (NEW): state-upgrade architecture divergence.
+
+Each is a tracker for future spec evolution risks, not a current divergence vector.
+
+### With item #29 Heze finding — teku `HezeStateUpgrade.java`
+
+Teku has full `HezeStateUpgrade.java` per item #29 finding, paralleling `FuluStateUpgrade.java` + `GloasStateUpgrade.java`. **Teku is the Heze leader** (items #28-#36 catalogue consistently reaffirms this). Other 5 clients have only Gloas-level upgrade scaffolding; Heze upgrade implementations TBD.
+
+### With item #30 (`initialize_proposer_lookahead`) — direct downstream
+
+Item #30 covered the `initialize_proposer_lookahead` algorithm; this item covers the surrounding state-upgrade integration that consumes it. Cross-cut: all 6 clients' `upgrade_to_fulu` calls `initialize_proposer_lookahead` consistently.
+
+### With Lighthouse Pattern M cohort (carry-forward)
+
+Lighthouse Pattern M cohort gap (12+ symptoms, primarily at EIP-7732 ePBS surface) does NOT extend to this item's upgrade scaffolding. Lighthouse has both `upgrade/fulu.rs` and `upgrade/gloas.rs` in place. Cohort symptom count holds at 12+; this item adds 0 new symptoms.
+
+## Adjacent untouched
+
+1. **Wire Fulu fork-category fixtures in BeaconBreaker harness** — same gap as items #30-#35; now 7 Fulu items + 7 sub-categories share this blocker.
+2. **Cross-fork transition stateful fixture Pectra→Fulu at FULU_FORK_EPOCH** — additional regression hedge.
+3. **NEW Pattern R for item #28 catalogue** — state-upgrade architecture divergence forward-fragility marker.
+4. **lodestar SSZ schema additivity audit** — verify Fulu schema is strict superset of Electra.
+5. **prysm `ConvertToFulu` standalone caller audit** — verify no caller bypasses `UpgradeToFulu` wrapper.
+6. **nimbus `upgrade_to_next` Fulu→Gloas overload pre-audit** — verify correctness before Gloas activation.
+7. **teku `HezeStateUpgrade.java` pattern audit** — confirm consistent architecture with `FuluStateUpgrade.java`.
+8. **Idempotency negative-test fixture** — pass Fulu state to `upgrade_to_fulu`; verify all 6 reject.
+9. **Cache preservation cross-client audit** — same post-state regardless of pre-state cache state.
+10. **lighthouse `latest_execution_payload_header.upgrade_to_fulu` type-method audit** — verify implementation matches verbatim copy.
+11. **`BeaconStateFields.copyCommonFieldsFromSource` teku helper cross-version verification**.
+12. **Performance benchmark suite** — lodestar SSZ tree-view reuse vs grandine destructure vs prysm 16-getter copy at mainnet validator count.
+13. **Pre-emptive Gloas upgrade verification** — all 6 clients call `upgrade_to_gloas(fulu_pre_state)` at GLOAS_FORK_EPOCH; verify cross-client byte-equivalence on synthetic Fulu pre-state.
+14. **`upgrade_to_fulu` historical replay test** — at any historical Fulu block, re-derive the post-state from the pre-state; verify cross-client byte-equivalence.
+15. **WORKLOG re-scope status table** — mark item #11 as Pectra-historical; item #36 as Fulu equivalent; future Gloas upgrade items grouped under item #21 + cohort.
