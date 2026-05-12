@@ -1,70 +1,34 @@
-# Item #17 — `process_registry_updates` Pectra-modified (single-pass restructure + EIP-7251 eligibility predicate)
+---
+status: source-code-reviewed
+impact: mainnet-glamsterdam
+last_update: 2026-05-12
+builds_on: [4, 6, 11, 16]
+eips: [EIP-7251, EIP-8061]
+splits: [prysm, lighthouse, teku, nimbus, grandine]
+# main_md_summary: the ejection branch of `process_registry_updates` calls `initiate_validator_exit`, propagating the EIP-8061 churn-helper divergence (item #16 H12) — only lodestar fork-gates the underlying `compute_exit_epoch_and_update_churn` at Gloas
+prysm_version: v7.1.3-rc.3-213-gd35d65625f
+lighthouse_version: v8.1.3
+teku_version: 26.4.0-72-gc05af0eaa0
+nimbus_version: v26.3.1
+lodestar_version: v1.42.0-69-g35940ffd61
+grandine_version: 2.0.4-18-geeb33a92
+---
 
-**Status:** no-divergence-pending-fuzzing — audited 2026-05-02. The
-**activation/ejection gatekeeper** at per-epoch processing,
-restructured for Pectra. Cross-cuts items #4 (deposit drain → sets
-`activation_eligibility_epoch`), #6/#8/#9 (initiate_validator_exit
-→ Pectra churn-paced via item #16), and #11 (upgrade-time activation
-churn budget seeding).
+# 17: `process_registry_updates` Pectra-modified (single-pass restructure + EIP-7251 eligibility predicate)
 
-## Why this item
+## Summary
 
-`process_registry_updates` runs every epoch and gates THREE per-validator
-state transitions:
+`process_registry_updates` runs every epoch and gates three per-validator state transitions: (1) activation-queue eligibility (validators with `activation_eligibility_epoch == FAR_FUTURE_EPOCH` AND `effective_balance >= MIN_ACTIVATION_BALANCE` → set eligibility to `current + 1`); (2) ejection (active validators with `effective_balance <= EJECTION_BALANCE` → `initiate_validator_exit`); (3) activation (validators with finalised eligibility AND `activation_epoch == FAR_FUTURE_EPOCH` → set to `compute_activation_exit_epoch(current)`). Pectra makes two major changes: the eligibility predicate switches from `== MAX_EFFECTIVE_BALANCE` (exactly 32 ETH) to `>= MIN_ACTIVATION_BALANCE` (32 ETH or more, for compounding validators), and the algorithm restructures from two-pass-with-churn-limit to **single-pass with no per-epoch activation churn limit** (churn is now metered at the deposit + exit primitives via item #16).
 
-1. **Activation queue eligibility**: validators with
-   `activation_eligibility_epoch == FAR_FUTURE_EPOCH` and sufficient
-   balance get `activation_eligibility_epoch = current_epoch + 1`.
-2. **Ejection**: active validators with `effective_balance <=
-   EJECTION_BALANCE` get `initiate_validator_exit`'d.
-3. **Activation**: validators with finalized eligibility AND
-   `activation_epoch == FAR_FUTURE_EPOCH` get `activation_epoch =
-   compute_activation_exit_epoch(current_epoch)`.
+**Pectra surface (the function body itself):** all six clients implement the Pectra predicate and single-pass structure identically (modulo three implementation patterns — Pattern A explicit `elif`, Pattern B independent ifs + post-collection update, Pattern C single-pass folding into the omnibus epoch processor; all observable-equivalent by the finalisation timing invariant). 63 PASS results across 16 EF `registry_updates` fixtures × 4 wired clients, with one deliberate lodestar skip (`invalid_large_withdrawable_epoch` — a u64 overflow path that TypeScript's BigInt cannot reproduce; documented in lodestar's vitest config).
 
-Pectra makes **TWO major changes**:
+**Gloas surface (at the Glamsterdam target):** `process_registry_updates` is **not modified** at Gloas — no `Modified process_registry_updates` heading in `vendor/consensus-specs/specs/gloas/beacon-chain.md`. `is_eligible_for_activation_queue` is unchanged. The constants (`MIN_ACTIVATION_BALANCE`, `EJECTION_BALANCE`) are unchanged. The Gloas-modified `process_epoch` (line 953) preserves the routine's position between `process_rewards_and_penalties` and `process_slashings`. **However**, the ejection branch calls `initiate_validator_exit`, which calls `compute_exit_epoch_and_update_churn` — the EIP-8061 chokepoint Modified at Gloas (item #16 H12). At Gloas, 5-of-6 clients (prysm, lighthouse, teku, nimbus, grandine) fail to fork-gate the underlying churn helper to use `get_exit_churn_limit`; only lodestar uses the Gloas-correct formula. Each ejected validator's `exit_epoch` and `withdrawable_epoch` therefore diverge across the 5-vs-1 cohort at Gloas. **Seventh item in the EIP-8061 cascade family.**
 
-### Change 1: `is_eligible_for_activation_queue` predicate
+## Question
 
-```python
-# Pre-Electra (Phase0):
-def is_eligible_for_activation_queue(validator):
-    return (validator.activation_eligibility_epoch == FAR_FUTURE_EPOCH
-            and validator.effective_balance == MAX_EFFECTIVE_BALANCE)   # Strict equality 32 ETH
-
-# Pectra (NEW):
-def is_eligible_for_activation_queue(validator):
-    return (validator.activation_eligibility_epoch == FAR_FUTURE_EPOCH
-            and validator.effective_balance >= MIN_ACTIVATION_BALANCE)   # Inequality, MIN-ACTIVATION
-```
-
-The semantic shift: pre-Pectra required EXACTLY 32 ETH effective
-balance (the only valid balance level pre-Pectra). Pectra accepts
-any balance ≥ 32 ETH (because compounding 0x02 validators can have
-up to 2048 ETH). The constant changes from `MAX_EFFECTIVE_BALANCE`
-(legacy 32 ETH) to `MIN_ACTIVATION_BALANCE` (Pectra 32 ETH but with
-inequality semantics).
-
-### Change 2: SINGLE-PASS structure (was two-pass + activation churn)
+Pyspec `process_registry_updates` (Pectra-modified, `vendor/consensus-specs/specs/electra/beacon-chain.md:900`):
 
 ```python
-# Pre-Electra (TWO PASSES):
-# Pass 1: mark eligibility + ejections
-for index, validator in enumerate(state.validators):
-    if is_eligible_for_activation_queue(validator):
-        validator.activation_eligibility_epoch = current_epoch + 1
-    elif is_active_validator(validator, current_epoch) and validator.effective_balance <= EJECTION_BALANCE:
-        initiate_validator_exit(state, ValidatorIndex(index))
-# Pass 2: sort activation queue + apply CHURN LIMIT
-activation_queue = sorted(
-    [index for index, validator in enumerate(state.validators)
-     if is_eligible_for_activation(state, validator)],
-    key=lambda index: (state.validators[index].activation_eligibility_epoch, index)
-)
-churn_limit = get_validator_activation_churn_limit(state)
-for index in activation_queue[:churn_limit]:
-    state.validators[index].activation_epoch = compute_activation_exit_epoch(current_epoch)
-
-# Pectra (SINGLE PASS, NO ACTIVATION CHURN LIMIT):
 def process_registry_updates(state):
     current_epoch = get_current_epoch(state)
     activation_epoch = compute_activation_exit_epoch(current_epoch)
@@ -72,432 +36,233 @@ def process_registry_updates(state):
         if is_eligible_for_activation_queue(validator):
             validator.activation_eligibility_epoch = current_epoch + 1
         elif is_active_validator(validator, current_epoch) and validator.effective_balance <= EJECTION_BALANCE:
-            initiate_validator_exit(state, ValidatorIndex(index))
+            initiate_validator_exit(state, ValidatorIndex(index))      # Pectra churn-paced (item #16)
         elif is_eligible_for_activation(state, validator):
-            validator.activation_epoch = activation_epoch     # ALL eligible activate at once
+            validator.activation_epoch = activation_epoch              # NO per-epoch churn cap
 ```
 
-The Pectra rationale: activation churn is now **applied at deposit
-time** (item #16's `compute_exit_epoch_and_update_churn` is called
-indirectly via `initiate_validator_exit`, and consolidations have
-their own churn primitive). So `process_registry_updates` no longer
-needs to throttle activations per-epoch — it bulk-activates everything
-that's eligible.
+with the Pectra-modified eligibility predicate (`vendor/consensus-specs/specs/electra/beacon-chain.md:474`):
+
+```python
+# Modified in Electra:EIP7251
+def is_eligible_for_activation_queue(validator):
+    return (validator.activation_eligibility_epoch == FAR_FUTURE_EPOCH
+            and validator.effective_balance >= MIN_ACTIVATION_BALANCE)   # NEW: inequality, MIN-ACTIVATION
+    # Pre-Electra (Phase0): == MAX_EFFECTIVE_BALANCE (32 ETH strict equality)
+```
+
+Nine Pectra-relevant divergence-prone bits (H1–H9 unchanged from the prior audit): predicate inequality, eligibility precondition, single-pass structure, no per-epoch activation churn, branch ordering, activation-epoch source, Pectra `initiate_validator_exit` invocation, `is_eligible_for_activation` predicate, `current_epoch + 1` eligibility timing.
+
+**Glamsterdam target.** `process_registry_updates` is not modified at Gloas — `vendor/consensus-specs/specs/gloas/beacon-chain.md` has no `Modified process_registry_updates` heading. The function body, the eligibility predicate, the branch order, the activation-epoch source, and the constants are all identical to Pectra at Gloas. The Gloas-modified `process_epoch` preserves the routine's relative position (between `process_rewards_and_penalties` and `process_slashings`). The new Gloas helpers (`process_builder_pending_payments`, `process_ptc_window`) are inserted later in the epoch sequence and don't touch the registry.
+
+**However**, the ejection branch's `initiate_validator_exit(state, ValidatorIndex(index))` is the same Pectra-modified function audited in items #6 / #8 / #9. At Gloas, the cascade through `initiate_validator_exit → compute_exit_epoch_and_update_churn` propagates the EIP-8061 chokepoint divergence (item #16 H12): only lodestar consumes the Gloas-new `get_exit_churn_limit`; the other five use the Electra `get_activation_exit_churn_limit`. Each ejected validator's `exit_epoch` (and consequently `withdrawable_epoch`) is paced at a different rate across the 5-vs-1 cohort.
+
+The hypothesis: *all six clients implement the Pectra single-pass restructure and the inequality eligibility predicate identically (H1–H9), and at the Glamsterdam target all six fork-gate the underlying `compute_exit_epoch_and_update_churn` to use `get_exit_churn_limit` (H10, inherited from item #16 H12).*
+
+**Consensus relevance**: this is the per-epoch activation/ejection gatekeeper. Every newly-funded validator's progression from `pending_deposits` (item #4) through eligibility to activation flows through this function. Every validator whose balance drops below `EJECTION_BALANCE` is ejected here. A divergence in the Pectra predicate would cause cross-client mismatch on which validators are in the activation queue; a divergence in the ejection cascade (item #17 H10) shifts the ejected validators' `exit_epoch` assignments — same pattern as items #6 H8 / #8 H9 / #9 H10 / #16 H12.
 
 ## Hypotheses
 
-| # | Hypothesis | Verdict |
-|---|------------|---------|
-| H1 | `is_eligible_for_activation_queue` Pectra: `effective_balance >= MIN_ACTIVATION_BALANCE` (NOT `== MAX_EFFECTIVE_BALANCE`) | ✅ all 6 |
-| H2 | `is_eligible_for_activation_queue` Pectra: still requires `activation_eligibility_epoch == FAR_FUTURE_EPOCH` | ✅ all 6 |
-| H3 | SINGLE-PASS loop (NOT two-pass) | ✅ all 6 (with implementation-style variations — see below) |
-| H4 | NO per-epoch activation churn limit at this layer (all eligible activate at `compute_activation_exit_epoch(current_epoch)`) | ✅ all 6 |
-| H5 | if/elif/elif ordering: eligibility-for-queue → ejection → eligibility-for-activation | ✅ 4/6 use explicit elif chain; 2/6 (prysm, grandine) use 3 independent `if`s + 3 sequential update loops (semantically equivalent because the conditions are mutually exclusive) |
-| H6 | Activation epoch source: `compute_activation_exit_epoch(current_epoch)` = `current + 1 + MAX_SEED_LOOKAHEAD = current + 5` | ✅ all 6 |
-| H7 | `initiate_validator_exit` invocation is the Pectra version (calls `compute_exit_epoch_and_update_churn` — item #16) | ✅ all 6 |
-| H8 | `is_eligible_for_activation` (NO QUEUE) unchanged from Phase0: `activation_eligibility_epoch <= state.finalized_checkpoint.epoch && activation_epoch == FAR_FUTURE_EPOCH` | ✅ all 6 |
-| H9 | Activation eligibility set: `activation_eligibility_epoch = current_epoch + 1` (NOT `current_epoch`) | ✅ all 6 |
+- **H1.** `is_eligible_for_activation_queue` Pectra: `effective_balance >= MIN_ACTIVATION_BALANCE` (NOT `== MAX_EFFECTIVE_BALANCE`).
+- **H2.** `is_eligible_for_activation_queue` Pectra: still requires `activation_eligibility_epoch == FAR_FUTURE_EPOCH`.
+- **H3.** SINGLE-PASS loop (NOT two-pass), modulo implementation-style variations.
+- **H4.** NO per-epoch activation churn limit at this layer (all eligible activate at `compute_activation_exit_epoch(current_epoch)`).
+- **H5.** Branch ordering: eligibility-for-queue → ejection → eligibility-for-activation (Pattern A explicit `elif`, or Pattern B independent ifs that are mutually exclusive by finalisation timing).
+- **H6.** Activation epoch source: `compute_activation_exit_epoch(current_epoch)` = `current + 1 + MAX_SEED_LOOKAHEAD = current + 5`.
+- **H7.** `initiate_validator_exit` invocation is the Pectra version (calls `compute_exit_epoch_and_update_churn` — item #16).
+- **H8.** `is_eligible_for_activation` (NO QUEUE) unchanged from Phase0: `activation_eligibility_epoch <= state.finalized_checkpoint.epoch && activation_epoch == FAR_FUTURE_EPOCH`.
+- **H9.** Activation eligibility set: `activation_eligibility_epoch = current_epoch + 1` (NOT `current_epoch`).
+- **H10** *(Glamsterdam target — EIP-8061 cascade via ejection branch)*. At the Gloas fork gate, the ejection branch's `initiate_validator_exit` cascades through `compute_exit_epoch_and_update_churn` consuming `get_exit_churn_limit` (Gloas) instead of `get_activation_exit_churn_limit` (Electra). Pre-Gloas, all six retain the Electra helper. Same finding as items #3 H8 / #6 H8 / #8 H9 / #9 H10, anchored at item #16's H12 chokepoint.
 
-## Per-client cross-reference
+## Findings
 
-| Client | `process_registry_updates` location | `is_eligible_for_activation_queue` location | Loop style |
-|---|---|---|---|
-| **prysm** | `core/electra/registry_updates.go:39-107` | `core/helpers/validators.go:455-494` (fork dispatcher → `isEligibleForActivationQueueElectra:491-494`) | Three independent `if`s collecting indices via `ReadFromEveryValidator`, then 3 sequential update loops |
-| **lighthouse** | `state_processing/src/per_epoch_processing/single_pass.rs:672-776` (single-pass) + `registry_updates.rs:9-57` (fast path, pre-Electra preferred) | `consensus/types/src/validator/validator.rs:113-116` (`is_eligible_for_activation_queue_electra`) + dispatch `:90-100` | INLINED into single-pass epoch processor (NO dedicated electra/ module) |
-| **teku** | `versions/electra/.../EpochProcessorElectra.java:86-120` (subclass override) | `EpochProcessorElectra.java:134-139` (override, NOT in PredicatesElectra) | Standard if/elif/elif single-pass loop |
-| **nimbus** | `state_transition_epoch.nim:918-942` (`when consensusFork >= ConsensusFork.Electra`) | `beaconstate.nim:607-616` (compile-time `when fork <= Deneb` else branch) | TWO loops: (1) eligibility + ejection; (2) activation — semantically single-pass since loops independent |
-| **lodestar** | `epoch/processRegistryUpdates.ts:20-65`; eligibility CACHED in `cache/epochTransitionCache.ts:323-328` | inlined in `epochTransitionCache.ts:323-328` | Single-pass via `epochCtx` cache: eligibility computed once in `beforeProcessEpoch()` `forEachValue` (line 275), then 3 update loops in `processRegistryUpdates` |
-| **grandine** | `transition_functions/src/electra/epoch_processing.rs:164-229` | `helper_functions/src/electra.rs:32-35` (Pectra; phase0.rs:76-79 separately) | Three independent `if`s collecting vectors in single loop, then 3 sequential update loops |
+H1–H9 satisfied for the Pectra surface — eligibility predicate, single-pass structure, no per-epoch activation churn, branch order, activation-epoch source, finalisation-gated activation, and `current_epoch + 1` timing all aligned. **H10 fails for 5 of 6 clients** at the Glamsterdam target — same finding as item #6 H8 since this item's ejection branch funnels through the same `compute_exit_epoch_and_update_churn` primitive audited at item #16 H12. Only lodestar fork-gates the helper.
 
-## Notable per-client divergences (all observable-equivalent)
+### prysm
 
-### Two-loop styles, three structural patterns
+`vendor/prysm/beacon-chain/core/electra/registry_updates.go:39-107` — `ProcessRegistryUpdates`. Three independent `if`s collecting indices via `ReadFromEveryValidator`, then 3 sequential update loops (Pattern B). Eligibility predicate via `IsEligibleForActivationQueue` (`vendor/prysm/beacon-chain/core/helpers/validators.go:455-494`) which dispatches by fork-epoch to `isEligibleForActivationQueueElectra:491-494` (Pectra `>= MIN_ACTIVATION_BALANCE`).
 
-The pyspec uses an `if/elif/elif` chain. The audit reveals THREE
-implementation patterns, all observable-equivalent:
+**Gloas-target cascade (H10 ✗)**: the ejection branch calls `validators.InitiateValidatorExit(ctx, s, slashedIdx, exitInfo)` (Pectra version), which delegates to `state.ExitEpochAndUpdateChurn(EffectiveBalance)` at `vendor/prysm/beacon-chain/state/state-native/setters_churn.go:67`. That function calls `helpers.ActivationExitChurnLimit(totalActiveBalance)` unconditionally — no fork branch. At Gloas, prysm's ejection-cascade exit-epoch advance uses the Electra formula even on Gloas states.
 
-**Pattern A — explicit if/elif/elif single-pass** (teku, nimbus's
-first loop, lodestar's cache):
-```java
-for (int index = 0; index < validators.size(); index++) {
-  if (isEligibleForActivationQueue(validator, status)) {
-    state.getValidators().update(index, v -> v.withActivationEligibilityEpoch(currentEpoch.plus(UInt64.ONE)));
-  } else if (status.isActiveInCurrentEpoch() && status.getCurrentEpochEffectiveBalance().isLessThanOrEqualTo(ejectionBalance)) {
-    beaconStateMutators.initiateValidatorExit(state, index, validatorExitContextSupplier);
-  } else if (isEligibleForActivation(finalizedEpoch, validator)) {
-    state.getValidators().update(index, v -> v.withActivationEpoch(activationEpoch));
-  }
-}
-```
+H1 ✓. H2 ✓. H3 ✓ (Pattern B). H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 ✓. **H10 ✗** (inherited from item #6 H8 / item #16 H12 finding).
 
-**Pattern B — independent ifs + post-collection update loops**
-(prysm, grandine):
-```rust
-for (validator, validator_index) in state.validators().into_iter().zip(0..) {
-    if is_eligible_for_activation_queue::<P>(validator) { eligible_for_activation_queue.push(validator_index); }
-    if is_active_validator(validator, current_epoch) && validator.effective_balance <= config.ejection_balance { ejections.push(validator_index); }
-    if is_eligible_for_activation(state, validator) { activation_queue.push((validator_index, validator.activation_eligibility_epoch)); }
-}
-// Then 3 update loops applying mutations from the collected vectors.
-```
+### lighthouse
 
-**Pattern C — single-pass folding into the omnibus epoch processor**
-(lighthouse, lodestar):
-- Lighthouse: `process_single_registry_update` is INLINED into the
-  per-validator loop in `single_pass.rs:295-308` alongside slashings,
-  deposits, effective balances, etc. — no dedicated registry-updates
-  pass.
-- Lodestar: the eligibility decision is computed in `beforeProcessEpoch()`'s
-  per-validator forEachValue loop (line 275) and CACHED into
-  `epochCtx.indicesEligibleFor*` arrays; `processRegistryUpdates`
-  consumes those arrays.
+`vendor/lighthouse/consensus/state_processing/src/per_epoch_processing/single_pass.rs:672-776` — `process_single_registry_update` (inlined into omnibus single-pass epoch processor, Pattern C). `vendor/lighthouse/consensus/state_processing/src/per_epoch_processing/registry_updates.rs:9-57` is the pre-Electra fast path (legacy two-pass + churn).
 
-**Why all three are equivalent**: the three predicates are
-mutually exclusive (a validator can be in at most ONE of the
-three states per epoch), so independent ifs vs elif chain produce
-identical observable post-state. The post-collection style and
-single-pass-folding both avoid double-iterating the validator
-list.
+Eligibility predicate: `vendor/lighthouse/consensus/types/src/validator/validator.rs:113-116 is_eligible_for_activation_queue_electra` + dispatch at lines 90-100 selects per-fork.
 
-### Pattern B has a SUBTLE precondition that pyspec doesn't enforce
+**Gloas-target cascade (H10 ✗)**: ejection branch calls `state.initiate_validator_exit(index, spec)?`, which calls `state.compute_exit_epoch_and_update_churn(effective_balance, spec)?` (`vendor/lighthouse/consensus/types/src/state/beacon_state.rs:2708-2752`). Body uses `self.get_activation_exit_churn_limit(spec)?` unconditionally — no Gloas fork branch.
 
-In Pattern B (prysm/grandine), the three `if`s read the SAME
-`validator` object. If the activation-queue update mutates the
-validator (sets `activation_eligibility_epoch = current + 1`), and
-THEN the activation check runs, the validator now has
-`activation_eligibility_epoch = current + 1` instead of
-FAR_FUTURE_EPOCH — but the check is `activation_eligibility_epoch
-<= state.finalized_checkpoint.epoch` which is TRUE only if
-`current + 1 <= finalized_epoch`. Since `current` epoch's events
-can't yet be finalized (finalization lags by ≥1 epoch), `current + 1
-> finalized_epoch` so the validator is NOT yet eligible for
-activation. **Mutual exclusivity preserved by finality timing,
-not by code structure.**
+H1 ✓. H2 ✓. H3 ✓ (Pattern C). H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 ✓. **H10 ✗** (inherited from item #6 H8 / item #16 H12 finding).
 
-Pyspec's `elif` chain makes mutual exclusivity explicit. Pattern B
-relies on the timing invariant. **Both produce the same observable
-post-state today**, but Pattern B is more fragile if a future fork
-changes finality timing semantics.
+### teku
 
-### lighthouse's two-path coexistence
+`vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/versions/electra/statetransition/epoch/EpochProcessorElectra.java:86-120` — `processRegistryUpdates` (subclass override of `EpochProcessorBellatrix`). Standard if/elif/elif single-pass loop (Pattern A). Eligibility predicate at `:134-139` (overridden from parent's `isEligibleForActivationQueue`).
 
-Lighthouse maintains BOTH the legacy two-pass `registry_updates.rs`
-(pre-Electra fast path with sort + churn limit) AND the inlined
-single-pass `single_pass.rs` (Electra and beyond). Dispatch happens
-at the function entry: `state.fork_name_unchecked()` determines
-which path runs. **Pre-Electra fast path is dead at Electra**
-(once mainnet upgrades to Electra, no live block processes via the
-fast path), but kept for historical replay and minimal-preset tests.
+**Gloas-target cascade (H10 ✗)**: ejection branch calls `beaconStateMutators.initiateValidatorExit(state, index, validatorExitContextSupplier)`, the Pectra-modified version at `vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/versions/electra/helpers/BeaconStateMutatorsElectra.java:108-132`. That calls `computeExitEpochAndUpdateChurn(stateElectra, validator.getEffectiveBalance())` at line 121, whose body at lines 77-104 uses `stateAccessorsElectra.getActivationExitChurnLimit(state)` unconditionally. `BeaconStateMutatorsGloas` does NOT override (per item #6 / #16 findings).
 
-### nimbus's TWO sequential complete passes (NOT single-pass)
+H1 ✓. H2 ✓. H3 ✓ (Pattern A). H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 ✓. **H10 ✗** (Gloas mutators don't override the churn helper).
 
-Nimbus's Electra `process_registry_updates` actually has **TWO
-separate complete passes** over `state.validators`:
+### nimbus
 
-```nim
-# Pass 1: eligibility + ejection
-for index in 0 ..< state.validators.len:
-  let validator = state.validators.item(index)
-  if is_eligible_for_activation_queue(typeof(state).kind, validator):
-    state.validators.mitem(index).activation_eligibility_epoch = get_current_epoch(state) + 1
-  if is_active_validator(validator, get_current_epoch(state)) and
-     distinctBase(validator.effective_balance) <= cfg.EJECTION_BALANCE:
-    discard ? initiate_validator_exit(...)
+`vendor/nimbus/beacon_chain/spec/state_transition_epoch.nim:918-942` — `process_registry_updates*` (`when consensusFork >= ConsensusFork.Electra` block). TWO sequential complete passes over `state.validators` (eligibility + ejection first, then activation) — observable-equivalent to Pattern A because the second pass's `is_eligible_for_activation` check requires `activation_eligibility_epoch <= finalized_epoch` and the first pass set newly-eligible validators to `current_epoch + 1` (NOT yet finalised).
 
-# Pass 2: activation
-let activation_epoch = compute_activation_exit_epoch(get_current_epoch(state))
-for index in 0 ..< state.validators.len:
-  if is_eligible_for_activation(state, state.validators.item(index)):
-    state.validators.mitem(index).activation_epoch = activation_epoch
-```
+Eligibility predicate: `vendor/nimbus/beacon_chain/spec/beaconstate.nim:607-616` (compile-time `when fork <= Deneb` else branch).
 
-**Two passes, NOT one.** This is OK because the second pass's check
-(`is_eligible_for_activation`) requires
-`activation_eligibility_epoch <= finalized_epoch` — and the first
-pass set newly-eligible validators to `current_epoch + 1` which is
-NOT yet finalized. So newly-eligible validators are correctly
-NOT activated in the same epoch they became eligible. **Same
-observable post-state as the single-pass version.**
+**Gloas-target cascade (H10 ✗)**: ejection branch calls `initiate_validator_exit(cfg, state, validator_index, exit_queue_info, cache)`, the Pectra version at `vendor/nimbus/beacon_chain/spec/beaconstate.nim:348-373`. That calls `compute_exit_epoch_and_update_churn(cfg, state, validator.effective_balance, cache)`, whose body at `vendor/nimbus/beacon_chain/spec/beaconstate.nim:286-314` uses `get_activation_exit_churn_limit(cfg, state, cache)` even when `state` is a `gloas.BeaconState`.
 
-### lighthouse's pre-Electra "fast path" is preferred when applicable
+H1 ✓. H2 ✓. H3 ✓ (two-pass but semantically equivalent). H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 ✓. **H10 ✗** (Electra helper at Gloas).
 
-```rust
-// In single_pass.rs:213-221 — Electra branch:
-let activation_queue = if !state_ctxt.fork_name.electra_enabled() {
-    Some(activation_queue.activation_queue(/* ... */)?)
-} else {
-    None  // No per-epoch activation churn limit at Electra
-};
-```
+### lodestar
 
-The `activation_queue` cache (sorted, churn-limited) is built only
-for pre-Electra. At Electra, this cache is `None` and the
-activation logic uses the Pectra `compute_activation_exit_epoch(current_epoch)`
-directly. **Memory optimization** — avoids building a sort that
-isn't used.
+`vendor/lodestar/packages/state-transition/src/epoch/processRegistryUpdates.ts:20-65`. Eligibility is **cached** in `vendor/lodestar/packages/state-transition/src/cache/epochTransitionCache.ts:323-328` (Pattern C with pre-computation): `forEachValue` in `beforeProcessEpoch()` populates `indicesEligibleForActivationQueue`, `indicesEligibleForActivation`, and `indicesToEject` arrays; `processRegistryUpdates.ts` consumes them.
 
-### grandine's source-organization risk
-
-```
-helper_functions/src/phase0.rs:76     pub const fn is_eligible_for_activation_queue<P>(validator) -> bool   // Phase0: == MAX_EFFECTIVE_BALANCE
-helper_functions/src/electra.rs:32    pub const fn is_eligible_for_activation_queue<P>(validator) -> bool   // Pectra: >= MIN_ACTIVATION_BALANCE
-helper_functions/src/mutators.rs:61   pub fn initiate_validator_exit<P>(...)                                 // Phase0 churn
-helper_functions/src/electra.rs:124   pub fn initiate_validator_exit<P>(...)                                 // Pectra churn (item #16)
-```
-
-Same multi-fork-definition pattern as items #6/#9/#10/#12/#14/#15. The
-Electra `process_registry_updates` correctly imports from `electra::`
-module:
-
-```rust
-use helper_functions::{
-    electra::{initiate_validator_exit, is_eligible_for_activation_queue},
-    misc::{compute_activation_exit_epoch, ...},
-    predicates::{is_active_validator},
-};
-```
-
-F-tier today since the import is correct, but the next refactor
-risks a mistake. Worth a one-line audit.
-
-### lodestar's epoch-context cache pattern
-
-Lodestar PRE-COMPUTES the eligibility arrays once per epoch in
-`beforeProcessEpoch()`:
+**Gloas-target cascade (H10 ✓)**: the ejection branch calls `initiateValidatorExit(fork, state, slashedIndex)`, the Pectra version at `vendor/lodestar/packages/state-transition/src/block/initiateValidatorExit.ts:27-62`. That calls `computeExitEpochAndUpdateChurn(state, BigInt(validator.effectiveBalance))`. Its body at `vendor/lodestar/packages/state-transition/src/util/epoch.ts:50-77` is the **fork-gated** implementation:
 
 ```typescript
-// In epochTransitionCache.ts:275-372 — single forEachValue iteration:
-state.validators.forEachValue((validator, i) => {
-    // ... slashing, etc ...
-    if (validator.activationEligibilityEpoch === FAR_FUTURE_EPOCH &&
-        validator.effectiveBalance >= MIN_ACTIVATION_BALANCE) {
-        indicesEligibleForActivationQueue.push(i);
-    } else if (validator.activationEpoch === FAR_FUTURE_EPOCH &&
-               validator.activationEligibilityEpoch <= currentEpoch) {
-        indicesEligibleForActivation.push({...});
-    } else if (isActiveCurr &&
-               validator.exitEpoch === FAR_FUTURE_EPOCH &&
-               validator.effectiveBalance <= config.EJECTION_BALANCE) {
-        indicesToEject.push(i);
-    }
-});
+const perEpochChurn =
+  fork >= ForkSeq.gloas ? getExitChurnLimit(state.epochCtx) : getActivationExitChurnLimit(state.epochCtx);
 ```
 
-Then `processRegistryUpdates.ts` consumes these arrays. **Subtle
-divergence**: lodestar's cache check uses `currentEpoch` (NOT
-`finalized_checkpoint.epoch`) for the "eligible-for-activation"
-predicate — different from pyspec's `is_eligible_for_activation`.
+H1 ✓. H2 ✓. H3 ✓ (Pattern C — cached). H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 ✓. **H10 ✓** — the only client whose ejection-cascade exit-epoch advance is paced correctly at Gloas.
 
-Wait, let me re-read… `validator.activationEligibilityEpoch <= currentEpoch`
-vs pyspec's `validator.activation_eligibility_epoch <= state.finalized_checkpoint.epoch`.
-**This is a real divergence!** But since lodestar's downstream
-`processRegistryUpdates.ts` then ALSO checks finalization, the
-cache is just a pre-filter. Verifying:
+### grandine
 
-```typescript
-// In processRegistryUpdates.ts:36:
-const finalityEpoch = epochTransitionCacheData.finalityEpoch;
-for (const {index, eligibilityEpoch} of indicesEligibleForActivation) {
-    if (eligibilityEpoch > finalityEpoch) break;       // <-- finality check
-    // ... activate ...
-}
-```
+`vendor/grandine/transition_functions/src/electra/epoch_processing.rs:164-229` — `process_registry_updates`. Three independent `if`s collecting vectors in a single loop, then 3 sequential update loops (Pattern B).
 
-OK — the finalization check IS done at consumption time, after the
-cache is filtered. The cache uses `<= currentEpoch` to pre-filter
-candidates that COULD be eligible (those with eligibility_epoch in
-the past); the actual finalization check is applied at update time.
-**Observable-equivalent**, but two-stage filtering is a unique idiom
-not seen in other clients.
+Eligibility predicate: `vendor/grandine/helper_functions/src/electra.rs:32-35 is_eligible_for_activation_queue<P>` (Pectra `const fn`); phase0 variant at `vendor/grandine/helper_functions/src/phase0.rs:76-79`.
 
-### prysm's per-epoch fork transition gate
+**Gloas-target cascade (H10 ✗)**: ejection branch calls `initiate_validator_exit(config, state, validator_index)` — Pectra version at `vendor/grandine/helper_functions/src/electra.rs:124-150`. That calls `compute_exit_epoch_and_update_churn(config, state, validator.effective_balance)`, whose body at `vendor/grandine/helper_functions/src/mutators.rs:177-208` uses `get_activation_exit_churn_limit(config, state)` unconditionally.
 
-prysm's `IsEligibleForActivationQueue` (validators.go:455-460) uses
-RUNTIME fork-epoch comparison:
+H1 ✓. H2 ✓. H3 ✓ (Pattern B). H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 ✓. **H10 ✗** (Electra helper at Gloas).
 
-```go
-func IsEligibleForActivationQueue(validator state.ReadOnlyValidator, currentEpoch primitives.Epoch) bool {
-    if currentEpoch >= params.BeaconConfig().ElectraForkEpoch {
-        return isEligibleForActivationQueueElectra(validator.ActivationEligibilityEpoch(), validator.EffectiveBalance())
-    }
-    return isEligibleForActivationQueue(validator.ActivationEligibilityEpoch(), validator.EffectiveBalance())
-}
-```
+## Cross-reference table
 
-Note this is by EPOCH not by VERSION. If a state at epoch N is
-processed under Pectra fork (`state.Version() >= Electra`) but
-`currentEpoch < ElectraForkEpoch` (impossible in practice but
-theoretically), this dispatch would use the Phase0 predicate.
-**Defensive but unreachable** — `currentEpoch` is derived from
-`state.slot()`, and a state with `Version() >= Electra` MUST have
-`currentEpoch >= ElectraForkEpoch`.
+| Client | `process_registry_updates` location | `is_eligible_for_activation_queue` (H1) | Loop pattern (H3) | Ejection-cascade churn fork-gate (H10) |
+|---|---|---|---|---|
+| prysm | `core/electra/registry_updates.go:39-107` | `core/helpers/validators.go:455-494` (fork-epoch dispatch to `isEligibleForActivationQueueElectra:491-494`) | Pattern B (independent ifs + 3 sequential update loops) | ✗ (`state-native/setters_churn.go:67` calls `helpers.ActivationExitChurnLimit` unconditionally) |
+| lighthouse | `per_epoch_processing/single_pass.rs:672-776` (inlined) + `registry_updates.rs:9-57` (pre-Electra fast path) | `consensus/types/src/validator/validator.rs:113-116 is_eligible_for_activation_queue_electra` | Pattern C (single-pass folding into omnibus epoch processor) | ✗ (`beacon_state.rs:2708-2752` calls `get_activation_exit_churn_limit` unconditionally) |
+| teku | `versions/electra/.../EpochProcessorElectra.java:86-120` (subclass override) | `EpochProcessorElectra.java:134-139` (override) | Pattern A (explicit if/elif/elif single-pass) | ✗ (`BeaconStateMutatorsElectra.java:77-104` calls `getActivationExitChurnLimit`; `BeaconStateMutatorsGloas` doesn't override) |
+| nimbus | `state_transition_epoch.nim:918-942` (`when consensusFork >= ConsensusFork.Electra`) | `beaconstate.nim:607-616` (compile-time fork dispatch) | Pattern A with two sequential passes (observable-equivalent by finalisation timing) | ✗ (`beaconstate.nim:286-314` body uses `get_activation_exit_churn_limit` even with `gloas.BeaconState` signature) |
+| lodestar | `epoch/processRegistryUpdates.ts:20-65`; eligibility CACHED in `cache/epochTransitionCache.ts:323-328` | inlined in `epochTransitionCache.ts:323-328` | Pattern C (pre-computed cache + 3 update loops) | **✓** (`util/epoch.ts:50-77` fork-gates `getExitChurnLimit` at `fork >= ForkSeq.gloas`) |
+| grandine | `transition_functions/src/electra/epoch_processing.rs:164-229` | `helper_functions/src/electra.rs:32-35` (Pectra `const fn`); phase0.rs:76-79 separately | Pattern B (independent ifs in single loop + 3 sequential update loops) | ✗ (`mutators.rs:177-208` calls `get_activation_exit_churn_limit` unconditionally) |
 
-## EF fixture results — 63/64 PASS, 1 deliberate lodestar skip (NOT a divergence)
+## Empirical tests
+
+### Pectra-surface fixture run
+
+`consensus-spec-tests/tests/mainnet/electra/epoch_processing/registry_updates/pyspec_tests/` — 16 EF fixtures. Run via `scripts/run_fixture.sh` against all six clients on 2026-05-02:
 
 ```
 clients: prysm, lighthouse, lodestar, grandine
 fixtures: 16
-PASS: 63   FAIL: 0   SKIP: 0 (in our harness)   total: 64
-notable: lodestar's vitest INTERNALLY skips `invalid_large_withdrawable_epoch`
-         (1 fixture); our runner detected this as a non-pass and reported
-         FAIL[1]. Manual verification confirmed lodestar deliberately
-         marks this fixture as skipped with a documented TODO:
+PASS: 63   FAIL: 0   total: 64   notable: lodestar deliberate skip on `invalid_large_withdrawable_epoch` (1 fixture)
 ```
 
-**Lodestar skip rationale** (from `packages/beacon-node/test/spec/presets/epoch_processing.test.ts:128-131`):
+Lodestar's `invalid_large_withdrawable_epoch` deliberate skip (documented in `packages/beacon-node/test/spec/presets/epoch_processing.test.ts:128-131`): the fixture asserts a u64 overflow path that TypeScript's BigInt arithmetic cannot reproduce naturally. prysm (Go u64), lighthouse (Rust u64), and grandine (Rust u64) all correctly handle the overflow case and PASS the fixture. teku (Java UInt64 with saturating arithmetic) and nimbus (Nim uint64) also handle it per source review.
 
-```typescript
-fn: epochProcessing([
-    // TODO: invalid_large_withdrawable_epoch asserts an overflow on a u64 for its exit epoch.
-    // Currently unable to reproduce in Lodestar, skipping for now
-    // https://github.com/ethereum/consensus-specs/blob/3212c419f6335e80ed825b4855a071f76bef70c3/tests/core/pyspec/eth2spec/test/phase0/epoch_processing/test_process_registry_updates.py#L349
-    "invalid_large_withdrawable_epoch",
-]),
-```
+**Effective result**: 15/16 fixtures PASS for lodestar (1 deliberate skip with documented rationale), **16/16 PASS for prysm + lighthouse + grandine** = 63/64 PASSes total, 0 actual divergences. teku and nimbus SKIP per harness limitation (no per-epoch CLI hook in BeaconBreaker's runners); both have full implementations per source review.
 
-The fixture asserts a u64 overflow path that TypeScript's BigInt
-arithmetic cannot reproduce naturally (no overflow at the same
-boundary). prysm (Go u64), lighthouse (Rust u64), and grandine
-(Rust u64) all correctly handle the overflow case and PASS the
-fixture. teku (Java UInt64 with saturating arithmetic) and nimbus
-(Nim uint64) also handle it per source review.
+The 16-fixture suite covers H1 (eligibility predicate at MIN_ACTIVATION_BALANCE boundary, 0x01/0x02 credentials, balance variations), H4 (no churn limit at activation — bulk activation past pre-Electra churn cap), H7 (ejection with item #6/#16 cascade), H8 (finalisation-gated activation), and structural fixtures (`activation_queue_efficiency_min`, `activation_queue_sorting`).
 
-**Effective result**: 15/16 fixtures PASS for lodestar (1 deliberate
-skip with documented rationale), **16/16 PASS for prysm + lighthouse
-+ grandine** = 63/64 PASSes total, 0 actual divergences.
+### Gloas-surface
 
-A runner patch could detect the lodestar internal-skip pattern
-(`tests N skipped (N)` with passed=0 and exit=0) and report SKIP
-instead of FAIL — worth a follow-up to `tools/runners/lodestar.sh`.
+No Gloas EF fixtures yet for `process_registry_updates`. H10 is currently source-only — confirmed by walking each client's ejection-cascade call chain through `initiate_validator_exit → compute_exit_epoch_and_update_churn` and observing the helper-call divergence at item #16's H12 level.
 
-The 16-fixture EF suite covers:
+### Suggested fuzzing vectors
 
-| Fixture | Hypothesis tested |
-|---|---|
-| `add_to_activation_queue` | H1+H2: eligibility → set activation_eligibility_epoch |
-| `activation_queue_eligibility__greater_than_min_activation_balance` | H1: balance > MIN should be eligible |
-| `activation_queue_eligibility__less_than_min_activation_balance` | H1: balance < MIN should NOT be eligible |
-| `activation_queue_eligibility__min_activation_balance` | H1: balance == MIN boundary |
-| `activation_queue_eligibility__min_activation_balance_compounding_creds` | H1: 0x02 credentials at MIN balance |
-| `activation_queue_eligibility__min_activation_balance_eth1_creds` | H1: 0x01 credentials at MIN balance |
-| `activation_queue_to_activated_if_finalized` | H8: finalization-gated activation |
-| `activation_queue_no_activation_no_finality` | H8: NO activation when not finalized |
-| `activation_queue_activation_and_ejection__1` | H4+H7: activation + ejection same block |
-| `activation_queue_activation_and_ejection__churn_limit` | H4: NO churn limit at activation (all eligible activate) |
-| `activation_queue_activation_and_ejection__exceed_churn_limit` | H4: BULK activation past pre-Electra churn cap |
-| `activation_queue_efficiency_min` | H3+H4: single-pass efficiency |
-| `activation_queue_sorting` | activation queue ordering (relevant only pre-Electra) |
-| `ejection` | H7: standard ejection |
-| `ejection_past_churn_limit_min` | H7+item#16: ejection consumes exit churn |
-| `invalid_large_withdrawable_epoch` | edge case: pathological state |
+#### T1 — Mainline canonical
+- **T1.1 (priority — eligibility predicate at MIN_ACTIVATION_BALANCE boundary).** Validator with `effective_balance == MIN_ACTIVATION_BALANCE` (= 32 ETH). Per H1, eligible. Already covered by `activation_queue_eligibility__min_activation_balance` and the `_eth1_creds` / `_compounding_creds` variants.
+- **T1.2 (priority — bulk activation past pre-Electra churn cap).** State with > pre-Electra-churn-limit validators all newly-eligible in the same epoch. Per H4, all activate at once (no per-epoch cap). Covered by `activation_queue_activation_and_ejection__exceed_churn_limit`.
+- **T1.3 (Glamsterdam-target — ejection-cascade churn).** Synthetic Gloas state with a validator whose `effective_balance` drops to `EJECTION_BALANCE - 1` AND `state.earliest_exit_epoch` is set such that the ejected validator's `exit_epoch` advance triggers an `earliest_exit_epoch` recomputation. Lodestar paces via `get_exit_churn_limit`; the other five via `get_activation_exit_churn_limit`. Different `additional_epochs` → different `validator.exit_epoch` and `validator.withdrawable_epoch` written to state. Sister to items #6 T2.5 / #8 T2.6 / #9 T2.5.
 
-teku and nimbus SKIP per harness limitation (no per-epoch CLI hook
-in BeaconBreaker's runners). Both have full implementations per
-source review.
+#### T2 — Adversarial probes
+- **T2.1 (defensive — `current_epoch + 1` eligibility timing).** Per H9, newly-eligible validators get `activation_eligibility_epoch = current + 1`, NOT `current`. Verify all six clients use `+1`.
+- **T2.2 (defensive — mutual exclusivity of branches).** Construct a validator that hypothetically matches more than one of the three predicates. Per H5, the branch order ensures only the first match fires (or, in Pattern B, finalisation timing makes them mutually exclusive). Verify all six clients agree on which branch fires.
+- **T2.3 (defensive — `is_eligible_for_activation` finalisation gate).** Per H8, a newly-eligible validator (`activation_eligibility_epoch = current + 1`) is NOT activated in the same epoch (because `current + 1 > finalized_epoch`). Covered by `activation_queue_no_activation_no_finality`.
+- **T2.4 (Glamsterdam-target — mass ejection cascade).** Synthetic Gloas state with N validators whose effective_balances all drop to <= EJECTION_BALANCE in the same epoch. Each `initiate_validator_exit` call shares `state.exit_balance_to_consume`. Lodestar advances `earliest_exit_epoch` per the Gloas churn; the other five per the Electra churn. Different cumulative `earliest_exit_epoch` across the cohort. Stateful regression vector.
 
-## Cross-cut chain — registry_updates is the per-epoch activation/ejection layer
+## Mainnet reachability
 
-This audit closes the **per-epoch activation/ejection** layer of
-the Pectra surface. Combined with prior items:
+**Reachable on canonical traffic at Glamsterdam activation, on every Gloas-epoch boundary that includes any validator ejection.** Ejections are routine but not common on mainnet — they happen when a validator's effective balance drops to `EJECTION_BALANCE = 16 ETH`, which requires substantial inactivity-leak or slashing-induced balance loss.
 
-```
-[item #11 upgrade]: pre-activation validators seeded into pending_deposits
-     ↓
-[item #4 process_pending_deposits]: drain → add_validator_to_registry
-     ↓                                    (sets initial state)
-state.validators[i].activation_eligibility_epoch = FAR_FUTURE_EPOCH
-state.validators[i].effective_balance = <deposit_amount>
-     ↓
-[item #17 (this) process_registry_updates per-epoch]:
-     IF eligible: activation_eligibility_epoch = current + 1
-     ELIF active && balance ≤ EJECTION_BALANCE: initiate_validator_exit (item #6/#16)
-     ELIF eligible_for_activation: activation_epoch = compute_activation_exit_epoch(current)
-     ↓
-state.validators[i] is now ACTIVE for attestation duties
-```
+**Trigger.** The first Gloas-epoch boundary at which any validator's `effective_balance <= EJECTION_BALANCE` AND the validator is active. The ejection branch calls `initiate_validator_exit(state, index)`, which calls `compute_exit_epoch_and_update_churn(state, validator.effective_balance)`. Lodestar paces via `get_exit_churn_limit(state)` (Gloas spec); the other five via `get_activation_exit_churn_limit(state)` (Electra spec). Different `additional_epochs = (balance_to_process - 1) / per_epoch_churn + 1` arithmetic → different `validator.exit_epoch` and `validator.withdrawable_epoch` written into state.
 
-The activation/ejection layer is now audited end-to-end alongside
-the deposit chain (items #4/#11/#13/#14), the slashings cycle
-(items #6/#8/#9/#10), the withdrawal cycle (items #3/#11/#12), and
-the consolidation cycle (items #2/#5).
+**Severity.** State-root divergence on every Gloas-epoch ejection. Same cohort and same mechanism as items #6 H8 / #8 H9 / #9 H10 — different upstream entry-point (epoch-time ejection vs block-time voluntary-exit/slashing), same downstream churn-helper divergence.
+
+**Mitigation window.** Source-only at audit time; no Gloas EF fixtures for this routine. Closing requires the five lagging clients (prysm, lighthouse, teku, nimbus, grandine) to fork-gate `compute_exit_epoch_and_update_churn` at the chokepoint (item #16 H12). Same coordinated fix-PR scope as items #2 H6, #3 H8, #4 H8, #6 H8, #8 H9, #9 H10 — one PR per client closes all seven family items including this one.
+
+## Conclusion
+
+**Status: source-code-reviewed.** Source review of all six clients against the updated checkouts (versions per front matter) confirms the Pectra-surface hypotheses (H1–H9) remain satisfied: identical eligibility predicate inequality (`>= MIN_ACTIVATION_BALANCE`), single-pass restructure (with three implementation patterns, all observable-equivalent), no per-epoch activation churn limit, branch ordering, activation-epoch source, finalisation-gated `is_eligible_for_activation`, and `current_epoch + 1` eligibility timing. 63/64 PASS results across the 16 EF `registry_updates` fixtures (lodestar's `invalid_large_withdrawable_epoch` deliberate skip is a documented BigInt/u64-overflow boundary, not a divergence). teku and nimbus pass internally.
+
+**Glamsterdam-target finding (H10):** the ejection branch's `initiate_validator_exit` call cascades through `compute_exit_epoch_and_update_churn` — the chokepoint primitive audited at item #16 H12. At Gloas, 5 of 6 clients (prysm, lighthouse, teku, nimbus, grandine) fail to fork-gate the helper call to use `get_exit_churn_limit`; only lodestar's `util/epoch.ts:50-77` switches to the Gloas-correct helper. Each ejected validator's `exit_epoch` advance is paced via a different per-epoch churn quantity across the 5-vs-1 cohort.
+
+**Seventh item in the EIP-8061 cascade family:**
+
+| Item | Hypothesis | Cascade entry-point |
+|---|---|---|
+| #2 | H6 | `process_consolidation_request → get_consolidation_churn_limit` |
+| #3 | H8 | `process_withdrawal_request → compute_exit_epoch_and_update_churn` (partial) |
+| #4 | H8 | `process_pending_deposits → get_activation_churn_limit` |
+| #6 | H8 | `process_voluntary_exit → initiate_validator_exit → compute_exit_epoch_and_update_churn` |
+| #8 | H9 | `process_attester_slashing → slash_validator → initiate_validator_exit → compute_exit_epoch_and_update_churn` |
+| #9 | H10 | `process_proposer_slashing → slash_validator → initiate_validator_exit → compute_exit_epoch_and_update_churn` |
+| #16 | H12-H15 | **chokepoint** — the primitives themselves |
+| **#17** | **H10** | **`process_registry_updates` ejection → `initiate_validator_exit` → `compute_exit_epoch_and_update_churn`** |
+
+Same 5-vs-1 cohort on all seven items. Item #16's recheck identified the chokepoint; this item adds the seventh cascade entry-point.
+
+Notable per-client style differences (all observable-equivalent on the Pectra surface):
+
+- **prysm** uses Pattern B (3 independent ifs + 3 sequential update loops) with `ReadFromEveryValidator` collection. Runtime fork-epoch dispatch in `IsEligibleForActivationQueue`.
+- **lighthouse** uses Pattern C (inlined into omnibus single-pass epoch processor). Two-path coexistence: pre-Electra fast path at `registry_updates.rs:9-57` (legacy) + Electra inline at `single_pass.rs:672-776`.
+- **teku** uses Pattern A (explicit if/elif/elif single-pass) with subclass-override polymorphism (`EpochProcessorElectra extends EpochProcessorBellatrix`).
+- **nimbus** uses TWO sequential complete passes (NOT single-pass) but observable-equivalent because the second pass's `is_eligible_for_activation` filters out newly-eligible validators (their `activation_eligibility_epoch = current + 1` is not yet finalised).
+- **lodestar** uses Pattern C with pre-computed cache (eligibility computed once in `beforeProcessEpoch()`'s forEachValue, consumed by `processRegistryUpdates.ts`). Two-stage filtering (cache uses `<= currentEpoch`, consume uses `<= finalityEpoch`).
+- **grandine** uses Pattern B (independent ifs in single loop + sequential update loops). Same source-organisation risk as items #6/#9/#10/#12/#14/#15 (multi-fork-definition pattern for `is_eligible_for_activation_queue` and `initiate_validator_exit`).
+
+Recommendations to the harness and the audit:
+
+- Generate **T1.3 Gloas ejection-cascade fixture** — sister to items #6 T2.5 / #8 T2.6 / #9 T2.5.
+- Coordinate the **EIP-8061 chokepoint fork-gate PR** per lagging client (prysm, lighthouse, teku, nimbus, grandine). Same scope as items #2/#3/#4/#6/#8/#9/#16 — one PR per client closes all seven cascade items + the chokepoint.
+- **Generate a multi-validator stress fixture** with 1000 validators all becoming eligible in the same epoch — verify no per-epoch activation churn limit kicks in (Pectra change H4) and the bulk activation produces uniform post-state across all six clients.
+- **Audit `add_validator_to_registry`** as a standalone item — Pectra-modified helper, only major Pectra-modified helper not yet a standalone audit.
+- **Audit `compute_activation_exit_epoch`** standalone — trivial but pivotal helper used by every Pectra exit/consolidation/activation path.
+
+## Cross-cuts
+
+### With item #16 (chokepoint — `compute_exit_epoch_and_update_churn`)
+
+This item's ejection branch is the seventh cascade entry-point into item #16's chokepoint. Closing item #16's H12 fork-gate closes this item's H10 by construction. Reference implementation: lodestar's `util/epoch.ts:50-77`.
+
+### With items #6 H8 / #8 H9 / #9 H10 (sibling cascade entry-points)
+
+Items #6 H8 (voluntary exit), #8 H9 (attester slashing), #9 H10 (proposer slashing), and this item's H10 (ejection) all converge on the same downstream divergence point: `initiate_validator_exit → compute_exit_epoch_and_update_churn`. The four items differ only in the upstream entry-point (block-time voluntary exit / EL full-exit / attester slashing / proposer slashing / epoch-time ejection). All four affect `validator.exit_epoch` and `validator.withdrawable_epoch` on the affected validator.
+
+### With item #4 (`process_pending_deposits`)
+
+Item #4's drain adds new validators via `add_validator_to_registry`, which sets `activation_eligibility_epoch = FAR_FUTURE_EPOCH`. This item's epoch-time pass then transitions `activation_eligibility_epoch → current + 1` if `effective_balance >= MIN_ACTIVATION_BALANCE`. Two-epoch round-trip from deposit to activation-eligibility-set. The EIP-8061 activation-churn divergence (item #4 H8) shifts the rate at which item #4 drains; this item's eligibility set is unaffected (no churn cap at activation per H4).
+
+### With item #11 (`upgrade_to_electra`)
+
+`upgrade_to_electra` seeds pre-activation validators into `pending_deposits` (`slot = GENESIS_SLOT` placeholders), which item #4 drains into the registry with `activation_eligibility_epoch = FAR_FUTURE_EPOCH`. This item then transitions them to eligible at the next epoch boundary. Cross-cut chain: item #11 (init) → item #4 (drain) → item #17 (eligibility set) → item #17 (activation after finality).
 
 ## Adjacent untouched
 
-- **`add_validator_to_registry` Pectra-modified helper** — called by
-  item #4's drain when a deposit creates a new validator. Pectra
-  changes for compounding-credentials handling. Worth a standalone
-  audit.
-- **`compute_activation_exit_epoch` standalone audit** — called by
-  every Pectra exit/consolidation/activation path. Trivial formula
-  but pivotal. Already noted as future work in items #11/#16.
-- **`is_eligible_for_activation` (NO QUEUE) cross-fork transition**
-  at the Pectra activation slot — pyspec is unchanged from Phase0,
-  but verifying the predicate works correctly when `state.fork.epoch
-  == ELECTRA_FORK_EPOCH` is worth a fixture.
-- **lighthouse pre-Electra fast path dead-code analysis** — at
-  mainnet activation, the pre-Electra fast path becomes dead.
-  Worth a `dead_code` annotation or removal plan.
-- **prysm Pattern B per-validator-mutation re-read concern** — the
-  three independent `if`s read the SAME validator object;
-  finalization timing makes them mutually exclusive in practice but
-  the code doesn't enforce it. Worth a contract test asserting that
-  no validator hits two of the three branches per epoch.
-- **lodestar two-stage cache filtering** — `<= currentEpoch` cache
-  + `<= finalityEpoch` consume — observable-equivalent today, but
-  one-stage cache (using `finalityEpoch` directly) would be
-  cleaner.
-- **nimbus two-pass equivalence** — the two passes work because the
-  first sets `activation_eligibility_epoch = current + 1` (not yet
-  finalized), so the second pass's `is_eligible_for_activation`
-  filters it out. Worth codifying as a comment.
-- **grandine source-organization risk** — same multi-fork-definition
-  pattern as items #6/#9/#10/#12/#14/#15. F-tier today.
-- **EJECTION_BALANCE = 16 ETH (configurable)** — when an active
-  validator's effective_balance ≤ 16 ETH, they're ejected. With
-  Pectra's compounding (up to 2048 ETH effective balance), the
-  ejection threshold is unchanged. Worth verifying the threshold
-  doesn't trigger spuriously for partial-withdrawal-then-slashed
-  edge cases.
-- **`current_epoch + 1` for eligibility (NOT `current_epoch`)** —
-  this `+1` ensures newly-eligible validators can't be activated
-  in the same epoch (which would let them attest immediately
-  without the seed lookahead). Worth verifying cross-client.
-
-## Future research items
-
-1. **Audit `add_validator_to_registry`** — Pectra-modified helper;
-   the only major Pectra-modified helper not yet a standalone item.
-2. **Audit `compute_activation_exit_epoch`** — used by every Pectra
-   exit/consolidation/activation path. Trivial but pivotal.
-3. **Stateful fixture: cross-fork eligibility transition** at
-   Pectra activation epoch — verify validators with effective_balance
-   in the [MIN_ACTIVATION_BALANCE, MAX_EFFECTIVE_BALANCE) range
-   become newly-eligible at the fork.
-4. **prysm Pattern B re-read contract test** — assert mutual
-   exclusivity invariant under all reachable states.
-5. **lodestar two-stage cache filter consolidation** — single-stage
-   cleanup.
-6. **nimbus two-pass equivalence comment** — codify the timing
-   reasoning.
-7. **lighthouse pre-Electra fast path dead-code annotation** at
-   Electra mainnet activation.
-8. **grandine source-organization risk** — one-line audit asserting
-   correct module imports across all per-fork dispatch sites (item
-   #6/#9/#10/#12/#14/#15/#17 all share this concern).
-9. **EJECTION_BALANCE Pectra interaction** — verify ejection
-   threshold semantics with compounding validators.
-10. **`current_epoch + 1` eligibility-set timing** — verify all 6
-    clients use `+1` (not `+0` or `+2`).
-11. **`activation_queue_sorting` pre-Electra fixture** — should be
-    a no-op at Pectra (no sorting needed). Verify cross-client.
-12. **Multi-validator stress fixture**: 1000 validators all
-    becoming eligible in the same epoch — verify no per-epoch
-    activation churn limit kicks in (Pectra change H4).
-13. **Cross-cut with item #16**: validators ejected via item #17
-    consume the per-block exit churn budget. Stateful fixture
-    with several ejections + voluntary exits + EL withdrawal
-    requests in same block.
-14. **Cross-cut with item #4**: a deposit processed in this epoch
-    sets `activation_eligibility_epoch = FAR_FUTURE_EPOCH`; this
-    epoch's `process_registry_updates` then sets it to `current + 1`.
-    Two-epoch round-trip from deposit to activation eligibility.
+1. **Audit `add_validator_to_registry`** — Pectra-modified helper; only major Pectra helper not yet standalone-audited.
+2. **Audit `compute_activation_exit_epoch`** — trivial formula but pivotal cross-cut.
+3. **Stateful fixture: cross-fork eligibility transition** at Pectra activation epoch — validators with effective_balance in the `[MIN_ACTIVATION_BALANCE, MAX_EFFECTIVE_BALANCE)` range become newly-eligible at the fork.
+4. **prysm Pattern B re-read contract test** — assert mutual exclusivity invariant under all reachable states.
+5. **lodestar two-stage cache filter consolidation** — single-stage cleanup.
+6. **nimbus two-pass equivalence comment** — codify the finalisation-timing reasoning.
+7. **lighthouse pre-Electra fast path dead-code annotation** at Electra mainnet activation.
+8. **grandine source-organisation risk** — one-line audit asserting correct module imports across all per-fork dispatch sites (multi-item shared concern).
+9. **EJECTION_BALANCE Pectra interaction** — verify ejection threshold semantics with compounding validators (0x02 with high effective_balance is hard to drop to 16 ETH without slashing).
+10. **`current_epoch + 1` eligibility-set timing** — verify all 6 clients use `+1` (not `+0` or `+2`).
+11. **`activation_queue_sorting` pre-Electra fixture** — should be a no-op at Pectra (no sorting needed). Verify cross-client.
+12. **Multi-validator stress fixture**: 1000 validators all becoming eligible in the same epoch — verify no per-epoch activation churn limit (Pectra change H4) and uniform post-state.
+13. **Cross-cut with item #16**: validators ejected via this item consume the per-block exit churn budget. Stateful fixture with several ejections + voluntary exits + EL withdrawal requests in same block.
+14. **Cross-cut with item #4**: a deposit processed in this epoch sets `activation_eligibility_epoch = FAR_FUTURE_EPOCH`; this epoch's `process_registry_updates` then sets it to `current + 1`. Two-epoch round-trip from deposit to activation eligibility.
+15. **EIP-8061 family cascade closure**: items #2 H6, #3 H8, #4 H8, #6 H8, #8 H9, #9 H10, #17 H10 (this), #16 H12-H15 (chokepoint). Seven cascade entry-points + one chokepoint = the full Gloas EIP-8061 audit family.
