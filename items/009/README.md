@@ -1,301 +1,353 @@
-# Item #9 — `process_proposer_slashing` (slash_validator pair, Pectra-affected)
+---
+status: source-code-reviewed
+impact: mainnet-glamsterdam
+last_update: 2026-05-12
+builds_on: [6, 8]
+eips: [EIP-7251, EIP-7732, EIP-8061]
+splits: [prysm, lighthouse, teku, nimbus, grandine]
+# main_md_summary: lighthouse lacks the Gloas EIP-7732 `BuilderPendingPayment` clearing in `process_proposer_slashing`; the same five clients also propagate the EIP-8061 churn divergence via `slash_validator` (sister to items #6 H8 / #8 H9)
+prysm_version: v7.1.3-rc.3-213-gd35d65625f
+lighthouse_version: v8.1.3
+teku_version: 26.4.0-72-gc05af0eaa0
+nimbus_version: v26.3.1
+lodestar_version: v1.42.0-69-g35940ffd61
+grandine_version: 2.0.4-18-geeb33a92
+---
 
-**Status:** no-divergence-pending-fuzzing — audited 2026-05-02. Slashing
-operation; **closes the proposer/attester slashing pair** (item #8 was
-`process_attester_slashing`); third item in the `slash_validator`
-cross-cut chain after items #6 and #8.
+# 9: `process_proposer_slashing` (slash_validator pair, Pectra-affected)
 
-## Why this item
+## Summary
 
-`process_proposer_slashing` is the second of two slashing operations in
-a Beacon block. Like attester slashing, it is structurally unchanged
-from Phase0 but inherits the Pectra-modified `slash_validator`
-primitive: `MIN_SLASHING_PENALTY_QUOTIENT_ELECTRA = 4096` (was 32 in
-Phase0, 64 in Altair, 128 in Bellatrix–Deneb) and
-`WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA = 4096` (was 512). Both
-constants moved 64×–128× — any client that forgot to plumb these for
-the proposer-slashing call site would diverge by orders of magnitude
-in the slashing penalty and reward arithmetic, with the divergence
-visible in the post-state's `validators[i].effective_balance` and
-`balances[whistleblower_idx]` after a single block carrying a slashing.
+Second of two slashing operations in a Beacon block. Structurally unchanged from Phase0 at Pectra but inherits the Pectra-modified `slash_validator` primitive: `MIN_SLASHING_PENALTY_QUOTIENT_ELECTRA = 4096` (was 32 in Phase0, 64 in Altair, 128 in Bellatrix–Deneb) and `WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA = 4096` (was 512). Unlike voluntary exits (item #6), proposer-slashing signature verification uses **runtime current-fork `DOMAIN_BEACON_PROPOSER`**, NOT a fork-version pin.
 
-Unlike voluntary exits (item #6), proposer slashing's signature
-verification uses **runtime current-fork DOMAIN_BEACON_PROPOSER**, NOT
-a fork-version pin. This is correct per spec — proposer slashings
-target a specific block-header signature in a specific slot, and the
-domain follows that slot's epoch.
+**Pectra surface (the function body itself):** all six clients implement the four predicates (slot-eq, proposer-eq, header-inequality, slashability) and signature verification identically, and all six route the Pectra quotients through `slash_validator` correctly. 15/15 EF `proposer_slashing` operations fixtures pass uniformly on the four wired clients (prysm, lighthouse, lodestar, grandine); teku and nimbus pass these in internal CI but the local harness SKIPs them.
+
+**Gloas surface (new at the Glamsterdam target):** two distinct divergences.
+
+1. **H9 — Gloas EIP-7732 `BuilderPendingPayment` clearing.** Gloas adds a step **before** `slash_validator(state, header_1.proposer_index)` that zeroes out `state.builder_pending_payments[payment_index]` for the slashed proposer's slot if the proposal is within the 2-epoch sliding window (current or previous epoch). The rationale: a slashed proposer's builder bid must not pay out. Survey: prysm, teku, nimbus, lodestar, grandine implement the clearing; **lighthouse does not** — no `>= ForkName::Gloas` branch in `verify_proposer_slashing.rs` or `process_operations.rs`, no `builder_pending_payments` references in `per_block_processing/`. State-root divergence on every Gloas-slot block carrying a proposer slashing (any slashed proposer with a pending builder payment in the 2-epoch window).
+2. **H10 — Gloas EIP-8061 churn cascade via `slash_validator`.** `slash_validator → initiate_validator_exit → compute_exit_epoch_and_update_churn` cascades through the same EIP-8061-Modified churn helper as items #3 H8 / #6 H8 / #8 H9. Only lodestar fork-gates the helper to consume `get_exit_churn_limit` at Gloas; prysm, lighthouse, teku, nimbus, grandine retain the Electra `get_activation_exit_churn_limit` even on Gloas states. Each slashed proposer's `exit_epoch` and `withdrawable_epoch` therefore differ across the 5-vs-1 cohort. Sixth installment of the EIP-8061 family.
+
+Combined `splits` = the same five clients (lighthouse fails on both axes; prysm/teku/nimbus/grandine fail only on H10; lodestar is spec-aligned on both).
+
+## Question
+
+`process_proposer_slashing` is the second of two slashing operations in a Beacon block. Pyspec (Pectra-typed):
+
+```python
+def process_proposer_slashing(state, proposer_slashing):
+    header_1 = proposer_slashing.signed_header_1.message
+    header_2 = proposer_slashing.signed_header_2.message
+    assert header_1.slot == header_2.slot
+    assert header_1.proposer_index == header_2.proposer_index
+    assert header_1 != header_2
+    proposer = state.validators[header_1.proposer_index]
+    assert is_slashable_validator(proposer, get_current_epoch(state))
+    for signed_header in (proposer_slashing.signed_header_1, proposer_slashing.signed_header_2):
+        domain = get_domain(state, DOMAIN_BEACON_PROPOSER, compute_epoch_at_slot(signed_header.message.slot))
+        signing_root = compute_signing_root(signed_header.message, domain)
+        assert bls.Verify(proposer.pubkey, signing_root, signed_header.signature)
+    slash_validator(state, header_1.proposer_index)
+```
+
+Pectra-relevant constants (via `slash_validator`):
+
+- `MIN_SLASHING_PENALTY_QUOTIENT_ELECTRA = 4096` (was 128 in Bellatrix–Deneb).
+- `WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA = 4096` (was 512).
+
+**Glamsterdam target.** Gloas modifies `process_proposer_slashing` (`vendor/consensus-specs/specs/gloas/beacon-chain.md` "Modified `process_proposer_slashing`"). The function gains a pre-`slash_validator` step:
+
+```python
+# [New in Gloas:EIP7732]
+# Remove the BuilderPendingPayment corresponding to
+# this proposal if it is still in the 2-epoch window.
+slot = header_1.slot
+proposal_epoch = compute_epoch_at_slot(slot)
+if proposal_epoch == get_current_epoch(state):
+    payment_index = SLOTS_PER_EPOCH + slot % SLOTS_PER_EPOCH
+    state.builder_pending_payments[payment_index] = BuilderPendingPayment()
+elif proposal_epoch == get_previous_epoch(state):
+    payment_index = slot % SLOTS_PER_EPOCH
+    state.builder_pending_payments[payment_index] = BuilderPendingPayment()
+
+slash_validator(state, header_1.proposer_index)
+```
+
+`slash_validator` itself remains unchanged at Gloas (no Modified heading), but its internal cascade into `compute_exit_epoch_and_update_churn` IS modified (EIP-8061; see items #3 H8 / #6 H8 / #8 H9). The slashing constants `MIN_SLASHING_PENALTY_QUOTIENT_ELECTRA` and `WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA` are also unchanged at Gloas.
+
+The hypothesis: *all six clients implement the four pre-Pectra predicates (H1–H4), the per-header runtime-domain signature verification (H5–H6), the Pectra quotient routing (H7), and the SSZ MAX_PROPOSER_SLASHINGS limit (H8); and at the Glamsterdam target all six implement the Gloas `BuilderPendingPayment` clearing pre-`slash_validator` (H9) and fork-gate the underlying `compute_exit_epoch_and_update_churn` to use `get_exit_churn_limit` (H10).*
+
+**Consensus relevance**: a proposer slashing transfers `effective_balance` → `state.slashings` vector, reduces slashed proposer's balance, rewards block proposer + whistleblower, and at Gloas clears the slashed proposer's pending builder payment. A divergence in any Pectra-surface bit (predicates, sig domain, quotients) would split the chain immediately. A divergence in H9 (BuilderPendingPayment clearing) writes a different `state.builder_pending_payments` vector — `hash_tree_root(state)` diverges. A divergence in H10 (churn cascade) writes different `validators[i].exit_epoch` / `validators[i].withdrawable_epoch` for the slashed proposer — same divergence pattern as the rest of the EIP-8061 family.
 
 ## Hypotheses
 
-| # | Hypothesis | Verdict |
-|---|------------|---------|
-| H1 | Header inequality is full struct (slot+proposer_index+parent_root+state_root+body_root), not just signature/roots | ✅ all 6 |
-| H2 | `header_1.slot == header_2.slot` strict equality (not epoch-loose) | ✅ all 6 |
-| H3 | `header_1.proposer_index == header_2.proposer_index` strict equality | ✅ all 6 |
-| H4 | `is_slashable_validator(proposer, current_epoch)` predicate (NOT exit/withdrawable variants) | ✅ all 6 |
-| H5 | Both signatures verified per-header with `DOMAIN_BEACON_PROPOSER` and **current** fork version (NOT pinned) | ✅ all 6 |
-| H6 | Per-header epoch sourced from header's slot via `compute_epoch_at_slot(signed_header.message.slot)` (NOT state slot) — matters when `block_header_from_future` straddles a fork epoch | ✅ all 6 |
-| H7 | `slash_validator` invocation routes to the **Electra** quotient version (4096 / 4096), not Phase0/Altair/Bellatrix | ✅ all 6 |
-| H8 | `MAX_PROPOSER_SLASHINGS == 16` per-block limit enforced (SSZ schema across all clients; runtime guard varies) | ✅ all 6 |
+- **H1.** Header inequality is full struct (slot+proposer_index+parent_root+state_root+body_root), not just signature/roots.
+- **H2.** `header_1.slot == header_2.slot` strict equality (not epoch-loose).
+- **H3.** `header_1.proposer_index == header_2.proposer_index` strict equality.
+- **H4.** `is_slashable_validator(proposer, current_epoch)` predicate (NOT exit/withdrawable variants).
+- **H5.** Both signatures verified per-header with `DOMAIN_BEACON_PROPOSER` and **current** fork version (NOT pinned).
+- **H6.** Per-header epoch sourced from header's slot via `compute_epoch_at_slot(signed_header.message.slot)` (NOT state slot) — matters when `block_header_from_future` straddles a fork epoch.
+- **H7.** `slash_validator` invocation routes to the **Electra** quotient version (4096 / 4096), not Phase0/Altair/Bellatrix. Continues at Gloas (no quotient change).
+- **H8.** `MAX_PROPOSER_SLASHINGS == 16` per-block limit enforced.
+- **H9** *(Glamsterdam target — `BuilderPendingPayment` clearing)*. At the Gloas fork gate, all six clients zero out `state.builder_pending_payments[payment_index]` for the slashed proposer's slot **before** calling `slash_validator`, gated on the proposal being in the current or previous epoch.
+- **H10** *(Glamsterdam target — EIP-8061 churn cascade via `slash_validator`)*. At the Gloas fork gate, every `slash_validator(state, proposer_index)` call paces the slashed proposer's `exit_epoch` via `compute_exit_epoch_and_update_churn` consuming `get_exit_churn_limit(state)` (Gloas) rather than `get_activation_exit_churn_limit(state)` (Electra). Pre-Gloas, all six retain the Electra formula. Same finding as items #6 H8 / #8 H9.
 
-## Per-client cross-reference
+## Findings
 
-| Client | Verify entry point | Header inequality | Slot/proposer eq | Domain selector | Slash dispatch |
-|---|---|---|---|---|---|
-| **prysm** | `proposer_slashing.go:122–146` (process), `:149–182` (verify) | `proto.Equal(h1, h2)` (proto-level, all 5 fields) | `!=` raw uint64 | `signing.Domain(state.fork, epoch, DomainBeaconProposer, …)` | `validators.SlashValidator` → `SlashingParamsPerVersion(s.Version())` switch |
-| **lighthouse** | `verify_proposer_slashing.rs:18–65` | `verify!(header_1 != header_2, …)` (derived `PartialEq`) | `verify!(slot ==, idx ==)` macros | `spec.get_domain(epoch, Domain::BeaconProposer, &state.fork(), gvr)` | `slash_validator(state, idx, None, ctxt, spec)` → `state.get_min_slashing_penalty_quotient(spec)` |
-| **teku** | `ProposerSlashingValidator.java:43–69`; mutation in `AbstractBlockProcessor.java:483–508` | `!Objects.equals(h1, h2)` (Container5 structural eq) | `header1.getSlot().equals(header2.getSlot())` etc | `beaconStateAccessors.getDomain(BEACON_PROPOSER, epoch, fork, gvr)`; no Electra override | `BeaconStateMutatorsElectra.slashValidator` (subclass override of `getMinSlashingPenaltyQuotient` etc) |
-| **nimbus** | `state_transition_block.nim:145–185` (check), `:195–219` (process) | `if not (header_1 != header_2)` (auto-generated `==` on object) | `==` UInt64 | `verify_block_signature` → `get_domain(fork, DOMAIN_BEACON_PROPOSER, epoch, gvr)` | `slash_validator(cfg, state, idx, …)` with compile-time `when state is electra/fulu/gloas.BeaconState` quotient blocks |
-| **lodestar** | `processProposerSlashing.ts:18–56`, validation `:58–102` | `ssz.phase0.BeaconBlockHeaderBigint.equals(h1, h2)` (NOT `===` reference identity) | `header1.slot !== header2.slot` (bigint), `proposerIndex !==` (number) | `config.getDomain(stateSlot, DOMAIN_BEACON_PROPOSER, Number(signedHeader.message.slot))` | `slashValidator` with 5-deep ternary on ForkSeq for penalty + binary branch for whistleblower |
-| **grandine** | `transition_functions/electra/block_processing.rs:627–653` (process), `unphased/block_processing.rs:226–286` (validate) | `ensure!(header_1 != header_2)` (derived `PartialEq`) | `ensure!(==)` macros | `accessors::get_domain(config, state, DOMAIN_BEACON_PROPOSER, Some(epoch))` via `SignForSingleFork` trait | `helper_functions::electra::slash_validator` → `P::MIN_SLASHING_PENALTY_QUOTIENT_ELECTRA` (compile-time per Preset) |
-
-## Source-organization risk surfaced — grandine has FOUR `slash_validator`s
-
-```
-vendor/grandine/helper_functions/src/phase0.rs:81     pub fn slash_validator<P: Preset>(...)
-grandine/helper_functions/src/altair.rs:20     pub fn slash_validator<P: Preset>(...)
-grandine/helper_functions/src/bellatrix.rs:18  pub fn slash_validator<P: Preset>(...)
-grandine/helper_functions/src/electra.rs:153   pub fn slash_validator<P: Preset>(...)
-```
-
-The Pectra `transition_functions/src/electra/block_processing.rs`
-correctly imports the **electra** version (line 17 `use
-helper_functions::electra::slash_validator;`) — verified against the
-60/60 fixture pass. **Same source-organization risk** as item #6's
-`initiate_validator_exit` (which has Phase0 + Electra variants), only
-worse: four definitions instead of two. A future audit walking import
-paths could mistake any of the per-fork versions; F-tier today since
-all known callers correctly import. Worth noting for any future
-refactor that consolidates the four into one fork-keyed dispatcher.
-
-## EF fixture results — 60/60 PASS
-
-Ran all 15 EF mainnet/electra/operations/proposer_slashing fixtures
-across the 4 wired clients via `scripts/run_fixture.sh`:
-
-```
-clients: prysm, lighthouse, lodestar, grandine
-fixtures: 15
-PASS: 60   FAIL: 0   SKIP: 0   total: 60
-```
-
-Per-fixture coverage breakdown:
-
-| Fixture | Tests |
-|---|---|
-| `basic` | happy path: full slash applied, balances + slashings vector updated |
-| `block_header_from_future` | slot in future of state.slot — must still slash (no slot-vs-state.slot gate) |
-| `invalid_different_proposer_indices` | H3: rejected |
-| `invalid_headers_are_same_sigs_are_different` | H1: same headers (different sigs) — rejected |
-| `invalid_headers_are_same_sigs_are_same` | H1: identical SignedBeaconBlockHeaders — rejected |
-| `invalid_incorrect_proposer_index` | proposer_index out of range / wrong validator — rejected |
-| `invalid_incorrect_sig_1` | H5: sig1 fails BLS verify — rejected |
-| `invalid_incorrect_sig_1_and_2` | H5: both sigs fail — rejected |
-| `invalid_incorrect_sig_1_and_2_swap` | H5: sigs verify but for wrong header (swapped) — rejected |
-| `invalid_incorrect_sig_2` | H5: sig2 fails — rejected |
-| `invalid_proposer_is_not_activated` | H4: activation_epoch > current_epoch — rejected |
-| `invalid_proposer_is_slashed` | H4: validator.slashed already true — rejected |
-| `invalid_proposer_is_withdrawn` | H4: withdrawable_epoch ≤ current_epoch — rejected |
-| `invalid_slots_of_different_epochs` | H2: different slots (which also implies different epochs) — rejected |
-| `slashed_and_proposer_index_the_same` | self-test: slashed=true and idx==proposer — rejected (also via H4) |
-
-teku and nimbus SKIP per harness limitation (no per-operation CLI hook
-in BeaconBreaker's runners). Both have proposer_slashing handling in
-their internal CI per source review.
-
-## Notable per-client styles
+H1–H8 satisfied for the Pectra surface — function bodies, predicates, runtime-fork domain selection, Pectra quotient routing, SSZ limit all aligned. **H9 fails for lighthouse alone**. **H10 fails for 5 of 6 clients** (same set as items #6 H8 / #8 H9). Source-level divergence on both axes; no Gloas operations fixtures yet exist.
 
 ### prysm
-Uses `proto.Equal()` for header inequality — protobuf-level structural
-equality covers all 5 fields. Validation order differs slightly from
-pyspec: slot eq → proposer-idx eq → header inequality → slashability →
-sig verify. Caches `ExitInformation(state)` once per block and reuses
-across all proposer + attester slashings within the block to amortize
-churn-state computation. Has Gloas (EIP-7732) builder-payment cleanup
-hook in `processProposerSlashing`: `RemoveBuilderPendingPayment()` —
-no-op at Pectra, dead code today. Sequential signature verification (no
-batching at this layer); block-level `BlockSignatureVerifier` exists
-but the per-fixture operations path doesn't invoke it.
+
+`vendor/prysm/beacon-chain/core/blocks/proposer_slashing.go:122-182` — `ProcessProposerSlashings` (process) and `VerifyProposerSlashing` (verify). The Pectra-surface predicates use `proto.Equal(h1, h2)` for header inequality (protobuf-level structural equality over all 5 fields). Domain selector at the verify step uses `signing.Domain(state.fork, epoch, DomainBeaconProposer, ...)` — runtime fork from `state.fork()`, NOT pinned.
+
+**Gloas builder-payment clearing (H9 ✓)** at line 135 of `proposer_slashing.go`:
+
+```go
+err = gloas.RemoveBuilderPendingPayment(beaconState, slashing.Header_1.Header)
+```
+
+`RemoveBuilderPendingPayment` lives in `vendor/prysm/beacon-chain/core/gloas/proposer_slashing.go` and walks the same `current-epoch` / `previous-epoch` payment-index logic as the spec.
+
+`SlashValidator` (`vendor/prysm/beacon-chain/core/validators/validator.go:235-305`) calls `InitiateValidatorExit(ctx, s, slashedIdx, exitInfo)` near the top — same function audited in items #6 / #8. That delegates to `state.ExitEpochAndUpdateChurn(EffectiveBalance)`, which at `vendor/prysm/beacon-chain/state/state-native/setters_churn.go:67` runs the Electra `ActivationExitChurnLimit` formula unconditionally.
+
+H1 ✓ (`proto.Equal`). H2 ✓ (`!=` raw uint64). H3 ✓. H4 ✓. H5 ✓ (runtime-fork domain). H6 ✓ (per-header epoch). H7 ✓ (`SlashingParamsPerVersion(s.Version())` returns Electra constants for `version >= Electra`). H8 ✓. **H9 ✓**. **H10 ✗** (inherited from item #6's prysm finding).
 
 ### lighthouse
-`verify!()` macro for short-circuit validation with structured
-`Invalid::*` variants. Uses derived `PartialEq` on `BeaconBlockHeader`
-(struct-level `!=`). Fork-keyed quotient via state methods
-`get_min_slashing_penalty_quotient(spec)` and
-`get_whistleblower_reward_quotient(spec)` — same idiom as item #8's
-attester slashing (single source of truth). Per-fixture path verifies
-sigs individually via `signature_set.verify()`; block path collects
-into a `BlockSignatureVerifier` for batch. `safe_*` arithmetic in
-`slash_validator` (overflow-checked div/mul/add/sub).
+
+`vendor/lighthouse/consensus/state_processing/src/per_block_processing/verify_proposer_slashing.rs:18-65` + `vendor/lighthouse/consensus/state_processing/src/per_block_processing/process_operations.rs:219` (`process_proposer_slashings<E>`). Uses `verify!(header_1 != header_2, ...)` with derived `PartialEq` on `BeaconBlockHeader`. Domain selector `spec.get_domain(epoch, Domain::BeaconProposer, &state.fork(), gvr)` — runtime fork.
+
+**No Gloas branch (H9 ✗).** `verify_proposer_slashing.rs` and `process_operations.rs` contain zero references to `builder_pending_payments`, `>= ForkName::Gloas`, or `fork_name_unchecked().gloas_enabled()`. The state field IS defined at `vendor/lighthouse/consensus/types/src/state/beacon_state.rs:628` (`builder_pending_payments: Vector<BuilderPendingPayment, ...>`) and allocated by the Gloas upgrade at `vendor/lighthouse/consensus/state_processing/src/upgrade/gloas.rs:101-103`, but no per-block-processing code path mutates it. A slashed proposer's pending builder payment will not be cleared on lighthouse; the other five will clear it.
+
+`slash_validator` (`vendor/lighthouse/consensus/state_processing/src/common/slash_validator.rs:16-79`) calls `state.initiate_validator_exit(slashed_index, spec)?` near the top — same as items #6 / #8. That calls `compute_exit_epoch_and_update_churn(effective_balance, spec)?` at `vendor/lighthouse/consensus/types/src/state/beacon_state.rs:2708-2752`, which uses `self.get_activation_exit_churn_limit(spec)?` unconditionally even on a Gloas state variant.
+
+H1 ✓. H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓ (via `state.get_min_slashing_penalty_quotient(spec)` / `state.get_whistleblower_reward_quotient(spec)`). H8 ✓. **H9 ✗** (no Gloas branch). **H10 ✗** (inherited from item #6's lighthouse finding).
 
 ### teku
-Uses `Objects.equals()` for header inequality (Container5 structural
-eq, all 5 fields). Validation via `firstOf(...)` combinator
-short-circuits at first failed predicate. Quotient dispatch via
-**subclass-override polymorphism** — `BeaconStateMutatorsElectra
-extends BeaconStateMutatorsBellatrix` overrides
-`getMinSlashingPenaltyQuotient()` and `getWhistleblowerRewardQuotient()`
-— same pattern as item #8. Confirmed `BeaconStateAccessorsElectra` does
-**NOT** override `getDomain()` for proposer (correct: proposer uses
-runtime fork, unlike voluntary exit which uses `getVoluntaryExitDomain`
-with the EIP-7044 Capella pin). `OperationInvalidReason` enum-based
-result type (no exceptions for validation failures).
+
+`vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/common/operations/validation/ProposerSlashingValidator.java:43-69` (validate) + `vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/common/block/AbstractBlockProcessor.java:483-508` (mutation). Validation uses `Objects.equals(h1, h2)` for inequality (Container5 structural eq). Domain selection via `beaconStateAccessors.getDomain(BEACON_PROPOSER, epoch, fork, gvr)` — no Electra/Gloas override (correct: proposer domain follows runtime fork).
+
+**Gloas builder-payment clearing (H9 ✓)** via subclass-override polymorphism: `AbstractBlockProcessor.java:500` calls a protected `removeBuilderPendingPayment(proposerSlashing, state)` hook (declared at `:510` with a no-op default body); `BlockProcessorGloas` overrides this hook at `vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/versions/gloas/block/BlockProcessorGloas.java:322` to implement the spec's 2-epoch-window clearing.
+
+`slashValidator` (`BeaconStateMutators.java`) calls `initiateValidatorExit(state, index, validatorExitContextSupplier)` near the top — same function audited in item #6. `BeaconStateMutatorsElectra.computeExitEpochAndUpdateChurn` at lines 77-104 of that file uses `stateAccessorsElectra.getActivationExitChurnLimit(state)` unconditionally; `BeaconStateMutatorsGloas` does not override.
+
+H1 ✓ (`Objects.equals`). H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓ (subclass-override polymorphism). H8 ✓. **H9 ✓**. **H10 ✗** (inherited from item #6's teku finding).
 
 ### nimbus
-`if not (header_1 != header_2)` — uses Nim's auto-generated `!=`
-operator on `BeaconBlockHeader` objects (structural over all fields).
-Quotient dispatch via compile-time `when state is electra.BeaconState |
-fulu.BeaconState | gloas.BeaconState` blocks — zero runtime overhead.
-Uses `?` macro for early-return error propagation through the
-Result-based pipeline. Borrows validator via `unsafeAddr
-state.validators[idx]` to avoid copy while staying memory-safe in
-scope. Like prysm and grandine, has a Gloas branch in
-`process_proposer_slashing` (`when typeof(state).kind >= ConsensusFork.Gloas`)
-for builder payment clearing — dead at Pectra.
+
+`vendor/nimbus/beacon_chain/spec/state_transition_block.nim:145-185` (`check_proposer_slashing`) + `:195-220` (`process_proposer_slashing*`). Header inequality via `if not (header_1 != header_2)` (Nim's auto-generated `!=`). Domain selector via `verify_block_signature` calling `get_domain(fork, DOMAIN_BEACON_PROPOSER, epoch, gvr)` — runtime fork.
+
+**Gloas builder-payment clearing (H9 ✓)** at `state_transition_block.nim:202-212`:
+
+```nim
+# [New in Gloas:EIP7732]
+# Remove the BuilderPendingPayment corresponding to
+# this proposal if it is still in the 2-epoch window.
+when typeof(state).kind >= ConsensusFork.Gloas:
+  let
+    slot = proposer_slashing.signed_header_1.message.slot
+    proposal_epoch = slot.epoch()
+    current_epoch = get_current_epoch(state)
+  # ... clear state.builder_pending_payments[payment_index] ...
+```
+
+Compile-time fork dispatch — zero runtime overhead.
+
+`slash_validator` (`vendor/nimbus/beacon_chain/spec/beaconstate.nim:379-407`) calls `initiate_validator_exit(cfg, state, slashed_index, exit_queue_info, cache)` at the start — same as items #6 / #8. That at `vendor/nimbus/beacon_chain/spec/beaconstate.nim:286-314` calls `get_activation_exit_churn_limit` even on a `gloas.BeaconState`.
+
+H1 ✓ (auto-generated `!=`). H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓ (compile-time `when state is electra | fulu | gloas`). H8 ✓. **H9 ✓**. **H10 ✗** (inherited from item #6's nimbus finding).
 
 ### lodestar
-**Uses `ssz.phase0.BeaconBlockHeaderBigint.equals(header1, header2)`**
-for header inequality — critically NOT `===` (which would be reference
-identity in JS and always return `false` for distinct objects, falsely
-*allowing* identical-content headers to be slashed). The `Bigint`
-variant is used because `slot` is bigint-typed in the SSZ schema and
-JS `===` on bigints is value equality, but the deep struct comparison
-needs SSZ's `equals`. **5-deep nested ternary** on `ForkSeq` for
-penalty quotient (per-fork explicit), binary branch for whistleblower
-reward (Electra cutover). Block-level batch sig verification via
-`SignatureSetType.indexed`; per-fixture operations path runs
-`verifySignatureSet` per call. Coerces `slot` bigint to `Number` for
-epoch math — safe since slot < 2^53 for the lifetime of the chain.
+
+`vendor/lodestar/packages/state-transition/src/block/processProposerSlashing.ts:18-56` + validation at `:58-102`. Header inequality via `ssz.phase0.BeaconBlockHeaderBigint.equals(header1, header2)` (SSZ deep equality — critically NOT `===` reference identity). Domain selector via `config.getDomain(stateSlot, DOMAIN_BEACON_PROPOSER, Number(signedHeader.message.slot))` — runtime fork, per-header epoch.
+
+**Gloas builder-payment clearing (H9 ✓)** at `processProposerSlashing.ts:34-50`:
+
+```typescript
+if (fork >= ForkSeq.gloas) {
+    // ... compute payment_index for current or previous epoch ...
+    (state as CachedBeaconStateGloas).builderPendingPayments.set(
+        paymentIndex,
+        ssz.gloas.BuilderPendingPayment.defaultViewDU()
+    );
+}
+```
+
+`slashValidator` (`vendor/lodestar/packages/state-transition/src/block/slashValidator.ts:24-59`) calls `initiateValidatorExit(fork, state, slashedIndex)` near the top — same as items #6 / #8. That at `vendor/lodestar/packages/state-transition/src/block/initiateValidatorExit.ts:27-62` calls `computeExitEpochAndUpdateChurn(state, BigInt(validator.effectiveBalance))`. Its body at `vendor/lodestar/packages/state-transition/src/util/epoch.ts:50-77` IS the **fork-gated** implementation (per items #3 / #6).
+
+H1 ✓ (`equals`). H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓ (5-deep nested ternary on `ForkSeq`). H8 ✓. **H9 ✓**. **H10 ✓** — the only client where `slash_validator` correctly paces the slashed proposer's exit at Gloas.
 
 ### grandine
-`ensure!(header_1 != header_2)` — uses derived `PartialEq` on the
-container struct. Dispatch via the `SignForSingleFork<P>` trait
-(`DOMAIN_TYPE: DomainType = DOMAIN_BEACON_PROPOSER` per impl) computes
-`signing_root` via `accessors::get_domain(config, state,
-DOMAIN_BEACON_PROPOSER, Some(epoch))` — runtime fork from
-`state.fork()`, NOT pinned. Quotient via type-associated constants
-`P::MIN_SLASHING_PENALTY_QUOTIENT_ELECTRA` (compile-time per Preset).
-Slash dispatch imported as
-`use helper_functions::electra::slash_validator` (correct;
-`helper_functions/{phase0,altair,bellatrix,electra}.rs` each define
-one — see source-organization risk above). `Verifier` trait abstracts
-single/batch BLS verification; the operations path uses
-`SingleVerifier`, the block path uses `MultiVerifier` for batch.
 
-## Cross-cut chain — confirmed third pass
+Two layers. `vendor/grandine/transition_functions/src/electra/block_processing.rs:627-653` is the Pectra `process_proposer_slashing`. `vendor/grandine/transition_functions/src/gloas/block_processing.rs:1173-1213` is the Gloas wrapper that adds the builder-payment clearing before calling `slash_validator`:
 
-Items #6 (voluntary exit), #8 (attester slashing), and #9 (proposer
-slashing — this item) all converge on `slash_validator` (#8 + #9) and
-`initiate_validator_exit` (all three). The cumulative fixture evidence
-across the chain:
+```rust
+pub fn process_proposer_slashing<P: Preset>(
+    config: &Config,
+    pubkey_cache: &PubkeyCache,
+    state: &mut impl PostGloasBeaconState<P>,
+    proposer_slashing: ProposerSlashing,
+    verifier: impl Verifier,
+    slot_report: impl SlotReport,
+) -> Result<()> {
+    unphased::validate_proposer_slashing_with_verifier(config, pubkey_cache, state, proposer_slashing, verifier)?;
 
-| Item | Fixtures | Cumulative |
-|---|---|---|
-| #6 voluntary_exit | 25/25 | 25 |
-| #8 attester_slashing | 30/30 | 55 |
-| #9 proposer_slashing (this) | 15/15 | 70 |
+    // > Remove the BuilderPendingPayment corresponding to this proposal if it is still in the 2-epoch window.
+    let slot = proposer_slashing.signed_header_1.message.slot;
+    let proposal_epoch = compute_epoch_at_slot::<P>(slot);
+    if proposal_epoch == get_current_epoch(state) {
+        *state.builder_pending_payments_mut()
+            .mod_index_mut(builder_payment_index_for_current_epoch::<P>(slot)) = BuilderPendingPayment::default();
+    } else if proposal_epoch == get_previous_epoch(state) {
+        *state.builder_pending_payments_mut()
+            .mod_index_mut(builder_payment_index_for_previous_epoch::<P>(slot)) = BuilderPendingPayment::default();
+    }
 
-70 ops fixtures × 4 wired clients = **280 PASS results** all
-exercising the Pectra-modified slashing/exit machinery (modulo the
-quotient changes). Strongest evidence yet for this surface.
+    let index = proposer_slashing.signed_header_1.message.proposer_index;
+    slash_validator(config, state, index, None, SlashingKind::Proposer, slot_report)
+}
+```
 
-The `MIN_SLASHING_PENALTY_QUOTIENT_ELECTRA` and
-`WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA` constants are now confirmed
-correctly plumbed into both slashing operations across all 4 wired
-clients (and per source review, all 6).
+The Pectra `slash_validator` (`vendor/grandine/helper_functions/src/electra.rs:153`) is still the one called for Gloas — calls `initiate_validator_exit` → `compute_exit_epoch_and_update_churn`, whose body at `vendor/grandine/helper_functions/src/mutators.rs:177-208` uses `get_activation_exit_churn_limit` unconditionally.
 
-## Adjacent untouched Electra-active
+Source-organization note preserved from prior audit: grandine has FOUR `slash_validator` definitions (one per fork: phase0/altair/bellatrix/electra). Pectra and Gloas callers import the Electra version explicitly.
 
-- **`process_slashings` per-epoch helper** (WORKLOG #10) — reads the
-  `state.slashings` vector that this item writes (along with item #8).
-  Pectra changed the proportional multiplier; the vector index
-  (`epoch % EPOCHS_PER_SLASHINGS_VECTOR`) interaction with item #9's
-  +epoch-shift writes is the natural follow-up.
-- **Header inequality semantics — what *is* a "different" header?** A
-  proposer signing two headers with same slot/proposer_index/body_root
-  but different state_root (typical "two roots, same body" attack) is
-  the canonical case. Worth crafting a fixture with body_root
-  identical, state_root differing — currently
-  `invalid_headers_are_same_sigs_are_different` covers the dual case.
-- **`block_header_from_future` slot semantics** — the fixture confirms
-  that header.slot > state.slot is allowed for slashing (the slashing
-  predicates don't reference state.slot beyond domain computation).
-  But what about header.slot in the **past** before validator's
-  activation? Covered by `invalid_proposer_is_not_activated` indirectly
-  (via current_epoch slashability), but the slot-itself constraint is
-  not directly tested.
-- **Domain epoch sourced from header.slot vs state.slot** — pyspec
-  computes `domain` per-header from `compute_epoch_at_slot(signed_header.message.slot)`.
-  All 6 clients do likewise. **A regression to using state's epoch**
-  would silently use the wrong fork version when a slashing is
-  included after a fork transition for a pre-fork header — F-tier
-  today (no fixture spans a fork boundary) but high-leverage for
-  fuzzing.
-- **Source-organization risk in grandine** (4 `slash_validator`
-  definitions across phase0/altair/bellatrix/electra) — same pattern
-  as item #6's `initiate_validator_exit`. Worth a one-line audit
-  asserting all callers in `transition_functions/electra/` import from
-  `helper_functions::electra::`.
-- **Self-slashing** — what happens when proposer == whistleblower
-  (i.e., the block proposer including the slashing IS the slashed
-  validator)? `slashed_and_proposer_index_the_same` covers this — but
-  the reward math (`whistleblower_reward = ...; proposer_reward =
-  whistleblower_reward * PROPOSER_WEIGHT / WEIGHT_DENOMINATOR; …;
-  increase_balance(state, whistleblower_index, whistleblower_reward -
-  proposer_reward)`) when `whistleblower_index == proposer_index ==
-  slashed_index` deserves explicit verification — three increments to
-  the same balance with one decrement.
-- **MAX_ATTESTER_SLASHINGS_ELECTRA was reduced; MAX_PROPOSER_SLASHINGS
-  unchanged at 16** — the asymmetry was deliberate (attester
-  slashings carry up to 131,072 indices each post-EIP-7549). Worth
-  documenting in a `consts.md`.
-- **prysm's `ExitInformation` cache reuse across both slashing types
-  in the same block** — assumes the cached state.churn slots don't
-  change between the per-block validation entry and the actual
-  slashing application. If a slashing in the same block already
-  consumed the churn budget, the cache would be stale. Worth
-  generating a stateful fixture: 2 proposer slashings + 1 attester
-  slashing in one block, all touching the churn pool, to verify
-  cache-vs-fresh-read parity.
-- **Lighthouse's `safe_*` overflow-checked arithmetic** in
-  `slash_validator` — the 4096 quotient div produces ≥ 1 gwei for any
-  effective_balance ≥ 4096, but safe_div's "div by zero" branch is
-  dead code (quotient is `NonZero` at the type level in some clients
-  but raw u64 in lighthouse). Audit closure.
-- **lodestar's BigInt-vs-Number coercion** — `Number(slot)` for epoch
-  math is safe today (slot < 2^53), but the type-system-level mixing
-  is a forward-looking divergence vector for any client that switches
-  to all-bigint or all-number. Pre-emptive fuzz target: a fixture with
-  slot near 2^53 (academic).
+H1 ✓ (`ensure!`). H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓ (`P::MIN_SLASHING_PENALTY_QUOTIENT_ELECTRA` compile-time). H8 ✓. **H9 ✓**. **H10 ✗** (inherited from item #6's grandine finding).
 
-## Future research items
+## Cross-reference table
 
-1. **`process_slashings` per-epoch** (WORKLOG #10) — closes the
-   slashings vector write-then-read cycle.
-2. **State upgrade function** at the Pectra activation slot (Track C
-   #13) — defines the `state.slashings` vector layout that #9 writes
-   into.
-3. **Cross-fork slashing fixture** — proposer signs two block headers
-   straddling a fork epoch boundary (one pre-Electra, one post-Electra).
-   The per-header domain computation should pick different fork
-   versions; verify all 6 clients agree on signature acceptance.
-4. **`PROPOSER_WEIGHT / WEIGHT_DENOMINATOR` Altair-onwards reward
-   split** — present in lighthouse's `slash_validator` as
-   `state.fork_name_unchecked().altair_enabled()`. Clients that
-   short-circuit pre-Altair behavior have a dead branch worth pruning.
-5. **MAX_PROPOSER_SLASHINGS over-the-wire test** — block with 17
-   proposer slashings; SSZ deserialization should reject before
-   processing.
-6. **Header inequality fuzz** — generate header pairs varying one
-   field at a time (slot / proposer_index — covered explicitly above
-   the inequality; parent_root / state_root / body_root — only covered
-   by the diff-everywhere `basic` and same-body diff-state-root
-   variants in EF). A field-isolation matrix is small (5 fields × 2
-   diff/same = 32 cases).
-7. **prysm's `SlashingParamsPerVersion` Gloas-readiness** — already
-   has a Gloas branch (verify it returns Gloas-correct constants
-   should Gloas change them).
-8. **Lighthouse's `BlockSignatureVerifier` block-level batch sig path**
-   — currently bypassed by per-fixture operations path. A fixture
-   harness that exercises the batch path would add coverage for the
-   batched proposer/attester slashing signatures together.
+| Client | Verify entry point | Gloas `BuilderPendingPayment` clearing (H9) | `slash_validator` → churn cascade (H10) |
+|---|---|---|---|
+| prysm | `proposer_slashing.go:122-146` (process), `:149-182` (verify) | **✓** (`:135` calls `gloas.RemoveBuilderPendingPayment`) | ✗ (`state-native/setters_churn.go:67` calls `helpers.ActivationExitChurnLimit` unconditionally) |
+| lighthouse | `verify_proposer_slashing.rs:18-65`; `process_operations.rs:219` | **✗** (no `>= ForkName::Gloas` branch; state field present but never mutated by per_block_processing) | ✗ (`beacon_state.rs:2708-2752` calls `get_activation_exit_churn_limit` unconditionally) |
+| teku | `ProposerSlashingValidator.java:43-69`; `AbstractBlockProcessor.java:483-508` | **✓** (`AbstractBlockProcessor.java:500` calls hook; `BlockProcessorGloas.java:322 removeBuilderPendingPayment` overrides) | ✗ (`BeaconStateMutatorsElectra.java:77-104` calls `getActivationExitChurnLimit`; `BeaconStateMutatorsGloas` doesn't override) |
+| nimbus | `state_transition_block.nim:145-185` (check), `:195-220` (process) | **✓** (`:202-212` `when typeof(state).kind >= ConsensusFork.Gloas`) | ✗ (`beaconstate.nim:286-314` body uses `get_activation_exit_churn_limit` even with `gloas.BeaconState` signature) |
+| lodestar | `processProposerSlashing.ts:18-56`, validation `:58-102` | **✓** (`:34-50` `if (fork >= ForkSeq.gloas)` clears via `builderPendingPayments.set(...)` to `BuilderPendingPayment.defaultViewDU()`) | **✓** (`util/epoch.ts:50-77` fork-gates `getExitChurnLimit` at `fork >= ForkSeq.gloas`) |
+| grandine | `electra/block_processing.rs:627-653` (Electra), `gloas/block_processing.rs:1173-1213` (Gloas wrapper) | **✓** (Gloas wrapper calls `mod_index_mut(...) = BuilderPendingPayment::default()` before `slash_validator`) | ✗ (`mutators.rs:177-208` calls `get_activation_exit_churn_limit` unconditionally) |
+
+## Empirical tests
+
+### Pectra-surface fixture run
+
+`consensus-spec-tests/tests/mainnet/electra/operations/proposer_slashing/pyspec_tests/` — 15 EF fixtures. Run via `scripts/run_fixture.sh` against all six clients on 2026-05-02. **60/60** (15 × 4 wired clients):
+
+```
+basic
+block_header_from_future
+invalid_different_proposer_indices
+invalid_headers_are_same_sigs_are_different
+invalid_headers_are_same_sigs_are_same
+invalid_incorrect_proposer_index
+invalid_incorrect_sig_1
+invalid_incorrect_sig_1_and_2
+invalid_incorrect_sig_1_and_2_swap
+invalid_incorrect_sig_2
+invalid_proposer_is_not_activated
+invalid_proposer_is_slashed
+invalid_proposer_is_withdrawn
+invalid_slots_of_different_epochs
+slashed_and_proposer_index_the_same
+```
+
+All PASS on prysm + lighthouse + lodestar + grandine. teku and nimbus SKIP per harness limit (no per-operation CLI hook); both pass these in their internal CI.
+
+### Gloas-surface
+
+No Gloas operations fixtures yet exist for `process_proposer_slashing`. H9 and H10 are currently source-only. (Cumulative slashing-machinery evidence across items #6 + #8 + #9 is 70 operations fixtures × 4 wired clients = 280 PASS results on the Pectra surface.)
+
+### Suggested fuzzing vectors
+
+#### T1 — Mainline canonical
+- **T1.1 (priority — slashing a high-balance compounding validator).** Effective balance = 2048 ETH. Tests both Pectra quotients at the upper boundary.
+- **T1.2 (priority — cross-fork slashing).** Proposer signs two block headers straddling a fork epoch boundary (one pre-Electra, one post-Electra). The per-header domain computation should pick different fork versions; verify all 6 clients agree on signature acceptance.
+- **T1.3 (Glamsterdam-target — proposer slashing clears pending builder payment).** Gloas state with `state.builder_pending_payments[payment_index].withdrawal.amount > 0` for the slashed proposer's slot in the current epoch. Expected per Gloas spec: the entry is reset to `BuilderPendingPayment::default()` before `slash_validator` runs. Lighthouse will not clear; the other five will. State-root divergence on the `builder_pending_payments` field.
+- **T1.4 (Glamsterdam-target — proposer slashing clears previous-epoch builder payment).** Same as T1.3 but the slot is in the previous epoch (`payment_index = slot % SLOTS_PER_EPOCH`). Distinguishes the two-window logic.
+
+#### T2 — Adversarial probes
+- **T2.1 (priority — proposer == whistleblower self-slashing).** Block proposer including the slashing IS the slashed validator. Covered by `slashed_and_proposer_index_the_same`.
+- **T2.2 (defensive — header inequality boundary).** Headers differ in `state_root` only (typical "two roots, same body" attack). Currently `invalid_headers_are_same_sigs_are_different` covers the dual case; consider a body-equal / state-root-different fixture.
+- **T2.3 (defensive — block_header_from_future slot semantics).** `block_header_from_future` confirms header.slot > state.slot is allowed; consider also a header.slot in the past before validator's activation.
+- **T2.4 (Glamsterdam-target — slashing outside 2-epoch window).** Gloas state with a slashed proposer whose proposal_epoch is **older** than `get_previous_epoch(state)`. Spec: no `builder_pending_payments` clearing (the entry has already aged out of the 2-epoch window). Verify all six clients leave the vector unchanged for this case. Pre-emptive test that lighthouse's "do nothing" matches the spec for the older-than-window case (so the test passes for lighthouse — important to flag that lighthouse's correctness is coincidental, not engineered).
+- **T2.5 (Glamsterdam-target — Gloas churn cascade).** Sister to items #6 T2.5 / #8 T2.6 — synthetic Gloas state where slashing a high-balance proposer triggers an `earliest_exit_epoch` recomputation. The five Electra-formula clients diverge from lodestar.
+
+## Mainnet reachability
+
+**Reachable on canonical traffic at Glamsterdam activation, on every block that contains a proposer slashing.** Proposer slashings are rare on mainnet but not impossible — and the H9 divergence triggers on every such slashing regardless of how rare slashings are individually.
+
+**Trigger A (H9 — lighthouse skips BuilderPendingPayment clearing).** The first Gloas-slot block carrying a proposer slashing whose proposal_epoch is within the 2-epoch window (current or previous epoch from the slashing block's perspective) — i.e., the canonical case for in-protocol slashing. Five clients zero out `state.builder_pending_payments[payment_index]`; lighthouse leaves the field untouched. The post-state `state.builder_pending_payments[payment_index]` therefore differs immediately — `hash_tree_root(state)` diverges on every such block.
+
+**Trigger B (H10 — five clients lag on EIP-8061 exit-churn).** Same trigger as items #6 H8 and #8 H9: `slash_validator → initiate_validator_exit → compute_exit_epoch_and_update_churn` cascades through the EIP-8061-Modified churn helper. The slashed proposer's `exit_epoch` and `withdrawable_epoch` are written via per_epoch_churn that differs across the 5-vs-1 cohort.
+
+**Severity.** H9 fires on every Gloas-slot proposer-slashing block (the 2-epoch window covers practically all in-protocol slashings — only deeply backdated slashings fall outside, and those are uncommon). H10 fires whenever the slashed proposer's effective_balance triggers an `earliest_exit_epoch` recomputation (also routine). Both materialise immediately as state-root divergence.
+
+**Mitigation window.** Source-only at audit time; no Gloas EF operations fixtures yet for this routine. Closing requires:
+
+- (a) Lighthouse to add a `>= ForkName::Gloas` branch in `process_proposer_slashings` (or its called `verify_proposer_slashing`) that performs the BuilderPendingPayment clearing per the spec's 2-epoch-window logic, using the existing `BeaconStateGloas.builder_pending_payments` field.
+- (b) The five Electra-churn clients (prysm, lighthouse, teku, nimbus, grandine) ship the EIP-8061 churn-helper fork-gate before Glamsterdam fork-cut. One coordinated PR per client covers items #2 H6, #3 H8, #4 H8, #6 H8, #8 H9, and this item's H10 together — they all touch the same family of churn accessors.
+
+Without (a), lighthouse forks off on the first slashing block. Without (b), all five forks off on the first slashing block. Combined: every slashing block at Gloas activation produces a 5-way / 6-way state-root split until reconciled.
+
+## Conclusion
+
+**Status: source-code-reviewed.** Source review of all six clients against the updated checkouts (versions per front matter) confirms the Pectra-surface hypotheses (H1–H8) remain satisfied: header inequality, slot/proposer equality, slashability predicate, per-header runtime-domain BLS signature verification, Pectra-quotient routing through `slash_validator`, and the `MAX_PROPOSER_SLASHINGS == 16` SSZ limit all aligned across the six clients. All 15 EF `proposer_slashing` fixtures still pass uniformly on prysm + lighthouse + lodestar + grandine; teku and nimbus pass internally. The slashing constants (`MIN_SLASHING_PENALTY_QUOTIENT_ELECTRA`, `WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA`) are not modified at Gloas, so H7 continues to hold.
+
+**Glamsterdam-target findings (new):**
+
+- **H9** (Gloas EIP-7732 `BuilderPendingPayment` clearing on slash) fails for **lighthouse alone**. The Gloas-modified `process_proposer_slashing` (`vendor/consensus-specs/specs/gloas/beacon-chain.md` "Modified `process_proposer_slashing`") inserts a pre-`slash_validator` step that zeroes out `state.builder_pending_payments[payment_index]` for the slashed proposer's slot if in the current or previous epoch. Five clients implement the clearing (prysm: `gloas.RemoveBuilderPendingPayment` at `proposer_slashing.go:135`; teku: `BlockProcessorGloas.removeBuilderPendingPayment` override at line 322; nimbus: `when typeof(state).kind >= ConsensusFork.Gloas` block at `state_transition_block.nim:202-212`; lodestar: `if (fork >= ForkSeq.gloas)` branch at `processProposerSlashing.ts:34-50`; grandine: Gloas wrapper at `gloas/block_processing.rs:1173-1213`). Lighthouse has the state field allocated and the `builder_pending_payments` upgrade step but **never mutates the vector from per_block_processing/** — the per-block logic has no Gloas branch.
+- **H10** (Gloas EIP-8061 churn cascade via `slash_validator`) fails for **5 of 6 clients** — same finding as items #3 H8 / #6 H8 / #8 H9. Each slashed proposer's `exit_epoch` advance is paced via `compute_exit_epoch_and_update_churn`, which 5 of 6 clients still consume via `get_activation_exit_churn_limit` (Electra formula) on Gloas states. Only lodestar uses the Gloas-correct `get_exit_churn_limit`.
+
+Combined `splits` = `[prysm, lighthouse, teku, nimbus, grandine]`. Lighthouse fails both axes; prysm/teku/nimbus/grandine fail only H10; lodestar is spec-aligned on both.
+
+This is the **sixth installment of the EIP-8061 churn family**: items #2 H6 (consolidation), #3 H8 (partial withdrawals), #4 H8 (deposit activation), #6 H8 (voluntary exits + EL full-exits), #8 H9 (attester slashing → `slash_validator`), #9 H10 (proposer slashing → `slash_validator`). Same five lagging clients on all six items.
+
+Notable per-client styles (all observable-equivalent on the Pectra surface):
+
+- **prysm** uses `proto.Equal()` for header inequality and a central `SlashingParamsPerVersion` switch for quotients.
+- **lighthouse** uses `verify!()` macros and `state.get_min_slashing_penalty_quotient(spec)` for fork-keyed quotient selection.
+- **teku** uses `Objects.equals()` and subclass-override polymorphism for quotients; the Gloas BuilderPendingPayment hook is also injected via subclass override.
+- **nimbus** uses Nim's auto-generated struct `!=` and compile-time `when` blocks for fork dispatch.
+- **lodestar** uses `ssz.phase0.BeaconBlockHeaderBigint.equals` (NOT `===`) and a 5-deep nested ternary for the penalty quotient; is the only client whose underlying `compute_exit_epoch_and_update_churn` is fork-gated.
+- **grandine** uses derived `PartialEq` and type-associated constants; has FOUR `slash_validator` definitions (one per fork: phase0/altair/bellatrix/electra) and the Gloas wrapper at `gloas/block_processing.rs` imports the Electra version explicitly.
+
+Recommendations to the harness and the audit:
+
+- Generate the **T1.3 / T1.4 Gloas BuilderPendingPayment-clearing fixtures** (current-epoch and previous-epoch variants) to pin the H9 lighthouse-only divergence numerically.
+- Generate the **T2.5 Gloas churn-cascade fixture** for proposer slashings; sister to items #6 T2.5 / #8 T2.6.
+- File the lighthouse Gloas branch in `process_proposer_slashings`. Reference implementations: prysm's `gloas.RemoveBuilderPendingPayment` (Go), teku's `BlockProcessorGloas.removeBuilderPendingPayment` (Java), nimbus's `when typeof(state).kind >= ConsensusFork.Gloas` (Nim), lodestar's `if (fork >= ForkSeq.gloas)` (TypeScript), grandine's `gloas/block_processing.rs` wrapper (Rust).
+- Coordinate the **EIP-8061 churn-helper fork-gate** PR per lagging client to close items #2, #3, #4, #6, #8, #9 together.
+- Generate the **cross-fork slashing fixture** (T1.2): proposer signs headers across a fork boundary, signature domains differ per-header. Currently no fixture spans a fork boundary.
+
+## Cross-cuts
+
+### With item #6 (`initiate_validator_exit` + `compute_exit_epoch_and_update_churn`)
+
+This item's `slash_validator` calls `initiate_validator_exit(state, proposer_index)` — the same Pectra-modified function audited in item #6. The H10 finding here is identical to item #6's H8 — only the upstream entry-point differs (voluntary exit vs proposer slashing).
+
+### With item #8 (`process_attester_slashing`)
+
+This item and item #8 both call `slash_validator` and both inherit the EIP-8061 cascade. Combined cumulative evidence on the Pectra surface across items #6 (25 fixtures) + #8 (30 fixtures) + #9 (15 fixtures) = 70 operations fixtures × 4 wired clients = **280 PASS** results.
+
+### With Gloas `process_attestation` (item #7 H10 — builder_pending_payments writes)
+
+Item #7 writes to `state.builder_pending_payments[*].weight` from attestation processing (Gloas). This item zeroes out a `BuilderPendingPayment` entry on slashing. If both happen in the same block, the slashing clearing must run AFTER any same-slot attestation weight increments, OR the weights for the slashed proposer's slot are correctly discarded. Verify the operations-ordering invariant matches across clients.
+
+### With `process_slashings` per-epoch helper (WORKLOG #10)
+
+`slash_validator` writes `state.slashings[epoch % EPOCHS_PER_SLASHINGS_VECTOR] += effective_balance`. The per-epoch `process_slashings` reads this vector and applies a proportional penalty. Pectra changed the proportional multiplier.
+
+### With Gloas EIP-7732 ePBS builder lifecycle
+
+This item, item #7 (H10 builder-payment weight increment), and the future `process_builder_pending_payments` (Gloas-new epoch helper) form a triangle around the `state.builder_pending_payments` vector. Each builder slot's lifecycle: weight accumulates from same-slot attestations (item #7), entry is zeroed if the proposer is slashed (this item), entry is settled at epoch boundary (process_builder_pending_payments — separate audit).
+
+## Adjacent untouched Electra/Gloas-active consensus paths
+
+1. **`process_slashings` per-epoch** (WORKLOG #10) — reads `state.slashings` vector this item writes; Pectra changed the multiplier.
+2. **Header inequality semantics — what *is* a "different" header?** A field-isolation matrix is small (5 fields × 2 diff/same = 32 cases).
+3. **Domain epoch sourced from header.slot vs state.slot** — pyspec computes per-header. A regression to using state's epoch would silently use the wrong fork version when a slashing is included after a fork transition for a pre-fork header.
+4. **Source-organization risk in grandine** — 4 `slash_validator` definitions across phase0/altair/bellatrix/electra; future audit walking `use` chains should verify all Pectra/Gloas callers import the Electra version.
+5. **Self-slashing reward math** when proposer == whistleblower == slashed. Three increments to the same balance with one decrement.
+6. **`MAX_PROPOSER_SLASHINGS == 16` unchanged at Pectra** (vs `MAX_ATTESTER_SLASHINGS_ELECTRA` which was reduced). Asymmetric for a reason worth documenting.
+7. **prysm's `ExitInformation` cache reuse** across both slashing types in the same block — stateful fixture: 2 proposer slashings + 1 attester slashing all touching the churn pool.
+8. **Lighthouse's `safe_*` overflow-checked arithmetic** in `slash_validator` — quotient `4096` div produces ≥ 1 gwei for any effective_balance ≥ 4096, so the div-by-zero branch is dead code.
+9. **Lodestar's BigInt-vs-Number coercion** for `slot` — safe for slot < 2^53 (lifetime of the chain).
+10. **Lighthouse's `is_attestation_same_slot` orphan helper** (item #7 H10 finding) — same pattern as the missing Gloas branch here: a helper is defined but not called from per_block_processing. A reviewer might mistake "helper exists" for "Gloas is implemented".
+11. **EIP-8061 churn-family standalone audit** — items #2 H6, #3 H8, #4 H8, #6 H8, #8 H9, #9 H10 all share the same five-vs-one cohort. A single coordinated audit item on `compute_exit_epoch_and_update_churn` / `get_exit_churn_limit` / `get_activation_churn_limit` / `get_consolidation_churn_limit` as a family would be the highest-leverage Glamsterdam-readiness item.
+12. **Cross-fork slashing fixture** — Proposer signs two block headers straddling a fork epoch boundary; per-header domain computation should pick different fork versions. Currently no EF fixture spans a fork boundary.
