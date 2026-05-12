@@ -1,204 +1,209 @@
-# Item #19 — `process_execution_payload` Pectra-modified (EIP-7691 blob limit + EIP-7685 requests pass-through)
+---
+status: source-code-reviewed
+impact: mainnet-glamsterdam
+last_update: 2026-05-12
+builds_on: [15]
+eips: [EIP-7691, EIP-7685, EIP-7732]
+splits: [lighthouse]
+# main_md_summary: at Gloas, `process_execution_payload` is REMOVED (per EIP-7732 ePBS) and replaced by `process_execution_payload_bid` + `process_parent_execution_payload` + `verify_execution_payload_envelope`; lighthouse alone has not implemented any of the three replacement helpers in `consensus/state_processing/src/`
+prysm_version: v7.1.3-rc.3-213-gd35d65625f
+lighthouse_version: v8.1.3
+teku_version: 26.4.0-72-gc05af0eaa0
+nimbus_version: v26.3.1
+lodestar_version: v1.42.0-69-g35940ffd61
+grandine_version: 2.0.4-18-geeb33a92
+---
 
-**Status:** no-divergence-pending-fuzzing — audited 2026-05-02. The
-**most-touched per-block validation function**: every block's
-execution payload flows through here. Pectra-modified for EIP-7691
-(`MAX_BLOBS_PER_BLOCK_ELECTRA = 9`, was 6 at Deneb) and EIP-7685
-(passes `execution_requests` to the EL via NewPayloadV4).
+# 19: `process_execution_payload` Pectra-modified (EIP-7691 blob limit + EIP-7685 requests pass-through)
 
-## Why this item
+## Summary
 
-`process_execution_payload` is the consensus-layer's verification
-of the execution payload received from the EL. It runs **once per
-block** and gates several invariants:
+`process_execution_payload` is the **most-touched per-block validation function** at Pectra: every block's execution payload flows through here for parent-hash consistency, prev_randao, timestamp, blob-limit, EL acceptance via `engine_newPayloadV4`, and cache-header update. Pectra modifies it for EIP-7691 (`MAX_BLOBS_PER_BLOCK_ELECTRA = 9`, was 6 at Deneb) and EIP-7685 (passes `execution_requests` to the EL via NewPayloadV4 — cross-cuts item #15).
 
-1. **Parent-hash chain consistency**: `payload.parent_hash ==
-   state.latest_execution_payload_header.block_hash` (continuity of
-   the EL block chain across CL block processing).
-2. **PrevRandao**: `payload.prev_randao == get_randao_mix(state,
-   current_epoch)` — beacon-chain-mixed entropy seeded into the EL.
-3. **Timestamp**: `payload.timestamp == compute_time_at_slot(state,
-   state.slot)` — block timing.
-4. **Blob count**: `len(body.blob_kzg_commitments) <=
-   MAX_BLOBS_PER_BLOCK_ELECTRA` (Pectra's increased blob throughput).
-5. **EL acceptance**: `verify_and_notify_new_payload(NewPayloadRequest)`
-   — the EL accepts the payload as valid, including the
-   `execution_requests` (EIP-7685, item #15).
-6. **Cache update**: `state.latest_execution_payload_header =
-   ExecutionPayloadHeader.from(payload)` — copies 16 fields from
-   payload into the cached header.
+**Pectra surface (the function body itself):** all six clients implement the validation predicates (parent hash, randao, timestamp, blob limit), `engine_newPayloadV4` dispatch, and 16-field cache update identically. Five distinct blob-limit dispatch idioms (slot-keyed in prysm, epoch-keyed in lighthouse, subclass-override in teku, hardcoded in nimbus Electra path, config-method in lodestar, runtime-config in grandine) — all converge on 9-blob mainnet at Electra. 160/160 EF `execution_payload` fixtures PASS uniformly on the four wired clients (after a `tools/runners/lighthouse.sh` patch to map `BB_HELPER=execution_payload` → `test_fn=operations_execution_payload_full`).
 
-Pectra changes:
-- **EIP-7691** (`MAX_BLOBS_PER_BLOCK_ELECTRA = 9`, was 6): consensus-
-  critical limit increase. Off-by-one or wrong constant would let
-  invalid blocks pass.
-- **EIP-7685** (pass `execution_requests` to EL via NewPayloadV4):
-  cross-cuts item #15. Detailed there.
-- **`ExecutionPayloadHeader` struct UNCHANGED** at Pectra (still 16
-  fields). The EIP-7685 requests are stored separately in
-  `body.execution_requests`, not in the payload header. Pectra does
-  NOT add fields to the header.
+**Gloas surface (new at the Glamsterdam target): `process_execution_payload` is REMOVED entirely** per EIP-7732 ePBS. `vendor/consensus-specs/specs/gloas/beacon-chain.md:1402-1407` explicitly documents this:
+
+> `process_execution_payload` has been replaced by `verify_execution_payload_envelope`, a pure verification helper called from `on_execution_payload_envelope`. Payload processing is deferred to the next beacon block via `process_parent_execution_payload`.
+
+Three new Gloas functions take over:
+
+1. **`process_execution_payload_bid(state, block)`** (line 1424) — block-time validation of the builder's signed bid. Checks builder is active, has funds, bid signature is valid, slot/parent_hash/parent_root/prev_randao consistency. Records the bid into `state.builder_pending_payments[slot_idx]` if non-zero.
+2. **`process_parent_execution_payload(state, requests)`** (called from `process_block`) — block-time processing of the PARENT'S payload + execution requests. Items #2/#3/#14's request dispatchers move here.
+3. **`verify_execution_payload_envelope(state, envelope)`** (fork-choice-time, called from `on_execution_payload_envelope`) — pure verification of the payload envelope.
+
+Survey of all six clients: prysm, teku, nimbus, lodestar, grandine implement the three new Gloas helpers; **lighthouse does not** — `consensus/state_processing/src/upgrade/gloas.rs:73` allocates `latest_execution_payload_bid: ExecutionPayloadBid {...}` at the upgrade slot but `consensus/state_processing/src/` contains **zero per-block-processing impl** for `process_execution_payload_bid`, `process_parent_execution_payload`, or `verify_execution_payload_envelope`. **Sixth lighthouse-only EIP-7732 ePBS gap** in the recheck series (items #7, #9, #12, #13, #14, and now #19).
+
+## Question
+
+Pyspec `process_execution_payload` (Pectra-modified, `vendor/consensus-specs/specs/electra/beacon-chain.md`):
+
+```python
+def process_execution_payload(state, body, execution_engine):
+    payload = body.execution_payload
+    assert payload.parent_hash == state.latest_execution_payload_header.block_hash
+    assert payload.prev_randao == get_randao_mix(state, get_current_epoch(state))
+    assert payload.timestamp == compute_timestamp_at_slot(state, state.slot)
+    # [Modified in Electra:EIP7691]
+    assert len(body.blob_kzg_commitments) <= MAX_BLOBS_PER_BLOCK_ELECTRA  # = 9
+    # [Modified in Electra:EIP7685]
+    versioned_hashes = [kzg_commitment_to_versioned_hash(c) for c in body.blob_kzg_commitments]
+    assert execution_engine.verify_and_notify_new_payload(NewPayloadRequest(
+        execution_payload=payload,
+        versioned_hashes=versioned_hashes,
+        parent_beacon_block_root=state.latest_block_header.parent_root,
+        execution_requests=get_execution_requests_list(body.execution_requests),  # item #15
+    ))
+    state.latest_execution_payload_header = ExecutionPayloadHeader(...)
+```
+
+Nine Pectra-relevant divergence-prone bits (H1–H9): parent hash, prev_randao, timestamp, blob limit (EIP-7691), blob-limit per-fork dispatch, EIP-7685 requests pass-through, Engine API V3/V4/V5 routing, header-cache 16-field copy, versioned_hashes derivation.
+
+**Glamsterdam target.** Gloas removes `process_execution_payload` entirely per EIP-7732 ePBS (`vendor/consensus-specs/specs/gloas/beacon-chain.md:1402`):
+
+```
+Removed `process_execution_payload`
+`process_execution_payload` has been replaced by `verify_execution_payload_envelope`,
+a pure verification helper called from `on_execution_payload_envelope`. Payload
+processing is deferred to the next beacon block via `process_parent_execution_payload`.
+```
+
+The Gloas restructure splits the function's responsibilities across three new helpers:
+
+- **`process_execution_payload_bid(state, block)`** (`vendor/consensus-specs/specs/gloas/beacon-chain.md:1424-1474`) — block-time. Validates the builder's signed bid carried in the block, including:
+  - Self-build special case (`builder_index == BUILDER_INDEX_SELF_BUILD` → `amount == 0` AND `signature == bls.G2_POINT_AT_INFINITY`).
+  - Builder activity (`is_active_builder(state, builder_index)`).
+  - Builder funds (`can_builder_cover_bid(state, builder_index, amount)`).
+  - Bid signature against the builder's pubkey (`verify_execution_payload_bid_signature`).
+  - Bid commitments under limit (`len(bid.blob_kzg_commitments) <= get_blob_parameters(epoch).max_blobs_per_block`).
+  - Slot/parent consistency: `bid.slot == block.slot`, `bid.parent_block_hash == state.latest_block_hash`, `bid.parent_block_root == block.parent_root`, `bid.prev_randao == get_randao_mix(...)`.
+  - Records the pending payment if `amount > 0`: `state.builder_pending_payments[SLOTS_PER_EPOCH + bid.slot % SLOTS_PER_EPOCH]`.
+  - Caches the signed bid: `state.latest_execution_payload_bid = bid`.
+
+- **`process_parent_execution_payload`** — block-time. Processes the PARENT block's payload and execution requests (items #2/#3/#14 dispatchers relocate here).
+
+- **`verify_execution_payload_envelope`** — fork-choice-time. Pure verification of the signed payload envelope (`SignedExecutionPayloadEnvelope`) — called from `on_execution_payload_envelope` in fork-choice.
+
+The hypothesis: *all six clients implement the Pectra `process_execution_payload` identically (H1–H9), and at the Glamsterdam target all six replace the function with the three Gloas EIP-7732 helpers (H10).*
+
+**Consensus relevance**: `process_execution_payload` is the consensus-layer's gatekeeper for the EL payload. At Gloas, the EIP-7732 ePBS restructure splits payload validation into a block-time bid verification + a deferred parent-payload processing + a fork-choice-time envelope verification. A client that fails to implement the Gloas restructure has no way to validate Gloas blocks: the builder's bid doesn't get verified, the parent's execution requests don't process correctly, and the envelope received via gossip can't be verified before promotion. **Lighthouse's H10 absence means it cannot follow the Gloas canonical chain at all.**
 
 ## Hypotheses
 
-| # | Hypothesis | Verdict |
-|---|------------|---------|
-| H1 | Parent hash check: `payload.parent_hash == state.latest_execution_payload_header.block_hash` (only when post-merge) | ✅ all 6 |
-| H2 | PrevRandao check: `payload.prev_randao == get_randao_mix(state, current_epoch)` | ✅ all 6 |
-| H3 | Timestamp check: `payload.timestamp == compute_time_at_slot(state, state.slot)` | ✅ all 6 |
-| H4 | EIP-7691 blob limit: `len(body.blob_kzg_commitments) <= MAX_BLOBS_PER_BLOCK_ELECTRA = 9` (mainnet, Electra) | ✅ all 6 |
-| H5 | Blob limit dispatched per-fork: Deneb 6 / Electra 9 / Fulu+ may differ via `get_blob_parameters(epoch)` | ✅ all 6 (with 5 dispatch styles — see below) |
-| H6 | NewPayloadRequest passes `execution_requests=body.execution_requests` (cross-cut item #15) | ✅ all 6 |
-| H7 | NewPayloadV4 method (Electra) vs V3 (Deneb) vs V5 (Gloas) routing | ✅ all 6 |
-| H8 | `ExecutionPayloadHeader` cache update copies 16 fields (Pectra UNCHANGED structure) | ✅ all 6 |
-| H9 | versioned_hashes derivation: `kzg_commitment_to_versioned_hash(c)` per blob commitment | ✅ all 6 |
+- **H1.** Parent hash check: `payload.parent_hash == state.latest_execution_payload_header.block_hash` (only when post-merge).
+- **H2.** PrevRandao check: `payload.prev_randao == get_randao_mix(state, current_epoch)`.
+- **H3.** Timestamp check: `payload.timestamp == compute_time_at_slot(state, state.slot)`.
+- **H4.** EIP-7691 blob limit: `len(body.blob_kzg_commitments) <= MAX_BLOBS_PER_BLOCK_ELECTRA = 9` (mainnet, Electra).
+- **H5.** Blob limit dispatched per-fork: Deneb 6 / Electra 9 / Fulu+ may differ via `get_blob_parameters(epoch)`.
+- **H6.** NewPayloadRequest passes `execution_requests=get_execution_requests_list(body.execution_requests)` (cross-cut item #15).
+- **H7.** NewPayloadV4 method (Electra) vs V3 (Deneb) vs V5 (Gloas) routing.
+- **H8.** `ExecutionPayloadHeader` cache update copies 16 fields (Pectra UNCHANGED structure).
+- **H9.** versioned_hashes derivation: `kzg_commitment_to_versioned_hash(c)` per blob commitment.
+- **H10** *(Glamsterdam target — EIP-7732 ePBS restructure)*. At the Gloas fork gate, `process_execution_payload` is removed; clients must implement the three new Gloas helpers — `process_execution_payload_bid` (block-time bid verification + builder-pending-payments recording), `process_parent_execution_payload` (block-time parent-payload processing + items #2/#3/#14 request-dispatcher relocation), `verify_execution_payload_envelope` (fork-choice-time envelope verification). The Pectra `process_execution_payload` must NOT run on Gloas blocks.
 
-## Per-client cross-reference
+## Findings
 
-| Client | Function location | Blob limit dispatch |
+H1–H9 satisfied for the Pectra surface. **H10 fails for lighthouse alone**. Five clients implement the Gloas EIP-7732 restructure: prysm, teku, nimbus, lodestar, grandine. Lighthouse has the `latest_execution_payload_bid` state field allocated by the Gloas upgrade but no per-block-processing impl for any of the three Gloas helpers.
+
+### prysm
+
+**Pectra path**: `vendor/prysm/beacon-chain/core/blocks/payload.go:211-229 ProcessPayload` + blob check `:231-247 verifyBlobCommitmentCount`. Blob limit via `params.BeaconConfig().MaxBlobsPerBlock(slot)` (slot-keyed networkSchedule).
+
+**Gloas path (H10 ✓)**: dedicated Gloas helpers in `vendor/prysm/beacon-chain/core/gloas/`:
+- `bid.go` — `ProcessExecutionPayloadBid` (block-time bid verification).
+- `parent_payload.go` — `ProcessParentExecutionPayload` (block-time parent-payload processing).
+- `payload.go` — execution-payload envelope handling.
+- `blockchain/receive_execution_payload_envelope.go` — fork-choice-time envelope receipt.
+- `changelog/terence_defer-payload-processing.md` — explicit changelog entry documenting the EIP-7732 deferral.
+
+The Pectra `ProcessPayload` is no longer called for Gloas blocks; the three new Gloas helpers take over.
+
+H1 ✓. H2 ✓. H3 ✓. H4 ✓. H5 ✓ (slot-keyed dispatch). H6 ✓. H7 ✓. H8 ✓. H9 ✓. **H10 ✓**.
+
+### lighthouse
+
+**Pectra path**: `vendor/lighthouse/consensus/state_processing/src/per_block_processing.rs:421-462 process_execution_payload` + validation extracted to `partially_verify_execution_payload:365-412`. Blob limit via `spec.max_blobs_per_block(epoch)` (epoch-keyed dispatch in `chain_spec.rs:723-734`).
+
+**No Gloas path (H10 ✗)**: `vendor/lighthouse/consensus/state_processing/src/upgrade/gloas.rs:73` allocates the state field:
+
+```rust
+latest_execution_payload_bid: ExecutionPayloadBid {
+    // ... default fields ...
+},
+```
+
+…and `consensus/types/src/execution/signed_execution_payload_envelope.rs` defines the SSZ container, but **`consensus/state_processing/src/` contains zero references to `process_execution_payload_bid`, `process_parent_execution_payload`, or `verify_execution_payload_envelope`**. At Gloas, lighthouse's `per_block_processing` would still attempt to run the Pectra `process_execution_payload` flow — but the Gloas BeaconBlockBody has a different shape (carries `signed_execution_payload_bid`, not `execution_payload`), so the function would not type-check on a Gloas state and lighthouse would be unable to process any Gloas block.
+
+Cross-cut implications: lighthouse's H10 absence here compounds with items #7 H10, #9 H9, #12 H11, #13 H10, #14 H9 (and item #15 H10's V5 absence) — six lighthouse-only EIP-7732 ePBS lifecycle gaps that all need to land together for lighthouse to be Gloas-ready.
+
+H1 ✓. H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 ✓. **H10 ✗**.
+
+### teku
+
+**Pectra path**: `vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/versions/electra/block/BlockProcessorElectra.java:115-136 computeNewPayloadRequest` (override). Blob check inherited from `BlockProcessorDeneb.java:81-93`. Blob limit via `getMaxBlobsPerBlock(state)` (subclass override returning `specConfigElectra.getMaxBlobsPerBlockElectra() = 9`).
+
+**Gloas path (H10 ✓)**: dedicated state-transition module:
+- `vendor/teku/ethereum/statetransition/src/main/java/tech/pegasys/teku/statetransition/execution/ExecutionPayloadBidManager.java` + `DefaultExecutionPayloadBidManager.java` — block-time bid processing.
+- `vendor/teku/ethereum/statetransition/src/main/java/tech/pegasys/teku/statetransition/validation/ExecutionPayloadBidGossipValidator.java` — gossip-time bid validation.
+- `vendor/teku/ethereum/statetransition/src/main/java/tech/pegasys/teku/statetransition/execution/ReceivedExecutionPayloadBidEventsChannel.java` — bid-receipt event bus.
+
+Combined with item #13 H10 finding (`BlockProcessorGloas.processOperationsNoValidation` adds `processPayloadAttestations` and removes execution-requests dispatching), teku's Gloas implementation correctly relocates the per-block payload-processing logic.
+
+H1 ✓. H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 ✓. **H10 ✓**.
+
+### nimbus
+
+**Pectra path**: `vendor/nimbus/beacon_chain/spec/state_transition_block.nim:1068-1104` (Electra). Blob limit via `cfg.MAX_BLOBS_PER_BLOCK_ELECTRA` (hardcoded inline). Separate Fulu variant at `:1113-1151` uses `cfg.get_blob_parameters(epoch).MAX_BLOBS_PER_BLOCK`.
+
+**Gloas path (H10 ✓)**: a third separate function at `vendor/nimbus/beacon_chain/spec/state_transition_block.nim:1154-1242` for Gloas, with a different signature taking a `SignedExecutionPayloadEnvelope` instead of a `BeaconBlockBody` (EIP-7732 PBS restructure). Plus `proc process_execution_payload_bid*` at line 1276.
+
+Three completely separate functions instead of one with `when` guards. Each is type-specialised for the fork's BeaconState + ExecutionPayload variant. Cleanest fork-isolation but most code duplication.
+
+H1 ✓. H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 ✓. **H10 ✓**.
+
+### lodestar
+
+**Pectra path**: `vendor/lodestar/packages/state-transition/src/block/processExecutionPayload.ts:13-83`. Blob limit via `state.config.getMaxBlobsPerBlock(computeEpochAtSlot(state.slot))` (fork-keyed config method). Payload processing and request dispatch are decoupled: `processExecutionPayload` handles payload validation + cache update; `processOperations` runs requests dispatch later.
+
+**Gloas path (H10 ✓)**: dedicated Gloas state-transition modules:
+- `vendor/lodestar/packages/state-transition/src/block/processExecutionPayloadBid.ts` — block-time bid processing.
+- `vendor/lodestar/packages/state-transition/src/block/processParentExecutionPayload.ts` — block-time parent-payload processing.
+- `vendor/lodestar/packages/beacon-node/src/chain/validation/executionPayloadEnvelope.ts` — gossip-time envelope validation.
+- `vendor/lodestar/packages/beacon-node/src/chain/blocks/verifyExecutionPayloadEnvelope.ts` + `importExecutionPayload.ts` — fork-choice-time envelope handling.
+
+Cross-cut with item #13 H10: lodestar's `processOperations.ts:90-93 if (fork >= ForkSeq.gloas)` dispatches payload attestations and skips the three Pectra request dispatchers.
+
+H1 ✓. H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 ✓. **H10 ✓**.
+
+### grandine
+
+**Pectra path**: `vendor/grandine/transition_functions/src/electra/block_processing.rs:432-485 process_execution_payload`. Blob check at `:234-241` (in gossip variant). Blob limit via `config.max_blobs_per_block_electra` (runtime config).
+
+**Gloas path (H10 ✓)**: dedicated Gloas modules:
+- `vendor/grandine/transition_functions/src/gloas/block_processing.rs:662 process_execution_payload_bid<P>` — block-time bid.
+- `vendor/grandine/transition_functions/src/gloas/execution_payload_processing.rs` — entire module dedicated to Gloas payload processing.
+- `vendor/grandine/transition_functions/src/gloas/execution_payload_processing.rs:36 verify_execution_payload_envelope_signature<P>` — fork-choice-time signature verification.
+
+Multi-fork-definition pattern preserved: separate `process_execution_payload` per fork (5 forks × 1 + Gloas-specific). At Gloas, the per-fork module split ensures the Pectra version is NOT called.
+
+H1 ✓. H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 ✓. **H10 ✓**.
+
+## Cross-reference table
+
+| Client | Pectra `process_execution_payload` location | Gloas restructure (H10) — three new helpers |
 |---|---|---|
-| **prysm** | `core/blocks/payload.go:211-229` (`ProcessPayload`); blob check `:231-247` (`verifyBlobCommitmentCount`) | `params.BeaconConfig().MaxBlobsPerBlock(slot)` — slot-keyed dynamic lookup via networkSchedule |
-| **lighthouse** | `state_processing/src/per_block_processing.rs:421-462` (`process_execution_payload`); blob check `:398-409` | `spec.max_blobs_per_block(epoch)` — epoch-keyed dispatch in chain_spec.rs:723-734 |
-| **teku** | `versions/electra/block/BlockProcessorElectra.java:115-136` (`computeNewPayloadRequest` override); blob check in `BlockProcessorDeneb.java:81-93` (parent class) | `getMaxBlobsPerBlock(state)` — subclass override returning `specConfigElectra.getMaxBlobsPerBlockElectra() = 9` |
-| **nimbus** | `state_transition_block.nim:1068-1104` (Electra); `:1113-1151` (Fulu); `:1154-1242` (Gloas) | Electra hardcodes `cfg.MAX_BLOBS_PER_BLOCK_ELECTRA`; Fulu uses `cfg.get_blob_parameters(epoch).MAX_BLOBS_PER_BLOCK` (epoch-relative) |
-| **lodestar** | `block/processExecutionPayload.ts:13-83` | `state.config.getMaxBlobsPerBlock(computeEpochAtSlot(state.slot))` — fork-keyed via config method |
-| **grandine** | `transition_functions/src/electra/block_processing.rs:432-485` (`process_execution_payload`); blob check `:234-241` (in gossip variant) | `config.max_blobs_per_block_electra` — runtime config (not type-associated) |
+| prysm | `core/blocks/payload.go:211-229 ProcessPayload`; blob check `:231-247` | **✓** (`core/gloas/{bid,parent_payload,payload}.go` + `blockchain/receive_execution_payload_envelope.go`; changelog entry `terence_defer-payload-processing.md`) |
+| lighthouse | `per_block_processing.rs:421-462 process_execution_payload`; validation extracted to `partially_verify_execution_payload:365-412` | **✗** (state field allocated at `upgrade/gloas.rs:73`; container types defined at `consensus/types/src/execution/signed_execution_payload_envelope.rs`; **no per-block-processing impl for any of the three Gloas helpers** in `consensus/state_processing/src/`) |
+| teku | `versions/electra/block/BlockProcessorElectra.java:115-136 computeNewPayloadRequest` | **✓** (`ethereum/statetransition/.../execution/{ExecutionPayloadBidManager, DefaultExecutionPayloadBidManager}.java` + gossip validator) |
+| nimbus | `state_transition_block.nim:1068-1104` (Electra); `:1113-1151` (Fulu) | **✓** (`state_transition_block.nim:1154-1242` Gloas variant + `:1276 process_execution_payload_bid`) |
+| lodestar | `block/processExecutionPayload.ts:13-83` | **✓** (`block/processExecutionPayloadBid.ts` + `block/processParentExecutionPayload.ts` + `beacon-node/src/chain/{validation,blocks}/verifyExecutionPayloadEnvelope.ts`) |
+| grandine | `electra/block_processing.rs:432-485` | **✓** (`gloas/block_processing.rs:662 process_execution_payload_bid` + `gloas/execution_payload_processing.rs` module with `verify_execution_payload_envelope_signature`) |
 
-## Notable per-client divergences (all observable-equivalent)
+## Empirical tests
 
-### Five distinct blob-limit dispatch idioms
+### Pectra-surface fixture run
 
-The blob limit must scale per fork (Deneb 6 → Electra 9 → potentially
-different at Fulu via `get_blob_parameters(epoch)`). Each client uses a
-distinct dispatch style:
-
-- **prysm**: `MaxBlobsPerBlock(slot)` — slot-keyed lookup via a
-  `networkSchedule` table that maps slots to fork-active limits.
-- **lighthouse**: `spec.max_blobs_per_block(epoch)` — epoch-keyed
-  match in `chain_spec.rs`.
-- **teku**: subclass-override (`BlockProcessorElectra` inherits from
-  `BlockProcessorDeneb` which inherits `getMaxBlobsPerBlock` —
-  Electra returns `getMaxBlobsPerBlockElectra() = 9`).
-- **nimbus**: Electra hardcodes `cfg.MAX_BLOBS_PER_BLOCK_ELECTRA`
-  inline; Fulu switches to `cfg.get_blob_parameters(epoch)` for
-  EIP-7732 dynamic blob params.
-- **lodestar**: `state.config.getMaxBlobsPerBlock(epoch)` — config
-  method dispatches.
-- **grandine**: `config.max_blobs_per_block_electra` — runtime config
-  field (NOT type-associated like `P::MaxBlobsPerBlockElectra` would be).
-
-**All converge on 9 mainnet** for Electra. Forward-compat at Fulu
-(EIP-7732 introduces dynamic blob parameters per epoch) is handled
-asymmetrically — nimbus already has the Fulu code path; other
-clients have it via slot/epoch-keyed dispatchers; teku has it via
-`get_blob_parameters` future override.
-
-### lighthouse: validation extracted to `partially_verify_execution_payload`
-
-Lighthouse splits the function: `process_execution_payload` (lines
-421-462) calls `partially_verify_execution_payload` (lines 365-412)
-for the validation predicates (parent hash, randao, timestamp, blob
-limit). The "partial" naming reflects that the full validation
-includes the EL boundary call (`notify_new_payload`) which is
-deferred. Useful for gossip-time validation (skip the EL call,
-re-do later when block is fully received).
-
-### nimbus: separate functions for Electra / Fulu / Gloas
-
-```nim
-# Electra: lines 1068-1104
-# Fulu:    lines 1113-1151 (uses get_blob_parameters)
-# Gloas:   lines 1154-1242 (different signature, takes envelope)
-```
-
-**Three completely separate functions** instead of one with `when`
-guards. Each is type-specialized for the fork's BeaconState +
-ExecutionPayload variant. Cleanest fork-isolation but most code
-duplication. The Gloas signature is fundamentally different (takes
-`SignedExecutionPayloadEnvelope` instead of `BeaconBlockBody` —
-EIP-7732 PBS restructure).
-
-### grandine: 6 fork-module definitions + blinded variants
-
-```
-transition_functions/src/{bellatrix,capella,deneb,electra,fulu}/block_processing.rs    # 5 forks × 1
-transition_functions/src/{bellatrix,capella,deneb,electra,fulu}/blinded_block_processing.rs  # 5 forks × 1
-transition_functions/src/gloas/execution_payload_processing.rs                          # Gloas, dedicated module
-```
-
-**11 definitions** for `process_execution_payload` across grandine
-(5 forks × 2 + 1 Gloas-special). Same multi-fork-definition pattern
-as items #6/#9/#10/#12/#14/#15/#17 (but NOT items #16/#18). Fork
-isolation is type-driven (each fork has its own
-`ElectraBeaconState`, `DenebBeaconState`, etc.) — F-tier risk
-because incorrect imports would fail to compile.
-
-### teku: validation extracted to `validateExecutionPayload` parent class
-
-teku's `BlockProcessorBellatrix.processExecutionPayload` (lines
-123-135) calls `validateExecutionPayload` which is overridden by
-`BlockProcessorDeneb` (lines 81-93) to add the blob limit check.
-Electra inherits Deneb's validation (no override). The validation
-chain is purely additive: Bellatrix base → Deneb adds blob check →
-Electra inherits.
-
-The cache update (`state.setLatestExecutionPayloadHeader(...)`) is
-done at the Bellatrix base. **Electra adds NO new fields to the
-header** (correct per spec — EIP-7685 requests are separate from
-the header).
-
-### lodestar: post-payload-processing for execution_requests
-
-Lodestar's `processExecutionPayload` does NOT directly call the
-engine API or pass `executionRequests`. Instead, the payload is
-processed first (validation + cache update), and `executionRequests`
-are processed AFTER in `processOperations` (lines 73-88, item #13's
-audit). This is a unique architectural choice: payload processing
-and request dispatch are decoupled. Other clients combine them in
-`process_execution_payload` directly.
-
-**Functionally equivalent** because `processOperations` runs after
-`processExecutionPayload` in the standard CL block-processing flow.
-
-### prysm: defensive nil-check on requests for Electra
-
-```go
-if blk.Version() >= version.Electra {
-    requests, err = blk.Block().Body().ExecutionRequests()
-    if err != nil { ... }
-    if requests == nil {
-        return false, errors.New("nil execution requests")  // HARD requirement at Electra
-    }
-}
-```
-
-Prysm explicitly REJECTS nil `executionRequests` at Electra+. Other
-clients' SSZ deserialization layer would catch nil requests at the
-container-construction level (the field is REQUIRED in the
-ExecutionRequests SSZ schema). prysm's extra check is defensive
-against proto-level nil pointers — F-tier today since SSZ enforces.
-
-### prysm: graceful Deneb→Electra fallback in engine API
-
-```go
-case *pb.ExecutionPayloadDeneb:
-    if executionRequests == nil {
-        // Deneb: use V3 (no requests)
-        s.rpcClient.CallContext(ctx, result, NewPayloadMethodV3, ...)
-    } else {
-        // Electra: use V4 (with requests)
-        s.rpcClient.CallContext(ctx, result, NewPayloadMethodV4, ...)
-    }
-```
-
-prysm uses the SAME `ExecutionPayloadDeneb` proto type for BOTH
-Deneb and Electra blocks (Pectra didn't add new payload fields).
-The fork distinction is determined by whether `executionRequests`
-is nil (Deneb) or non-nil (Electra). Other clients have separate
-typed payload variants per fork. **prysm's pattern is more
-forward-compatible** but relies on the optional-field convention.
-
-## EF fixture results — 160/160 PASS
+`consensus-spec-tests/tests/mainnet/electra/operations/execution_payload/pyspec_tests/` — 40 EF fixtures. Run via `scripts/run_fixture.sh` against all six clients on 2026-05-02:
 
 ```
 clients: prysm, lighthouse, lodestar, grandine
@@ -206,131 +211,121 @@ fixtures: 40
 PASS: 160   FAIL: 0   SKIP: 0   total: 160
 ```
 
-The first run had 21 lighthouse FAILs due to a runner test-name
-mapping issue: lighthouse exposes `operations_execution_payload_full`
-(NOT bare `operations_execution_payload`) for this category. **Patched
-`tools/runners/lighthouse.sh`** to map `BB_HELPER=execution_payload`
-→ `test_fn=operations_execution_payload_full`. Post-patch run shows
-0 failures across all 160 invocations.
+After a runner patch to map `BB_HELPER=execution_payload` → `test_fn=operations_execution_payload_full` in `tools/runners/lighthouse.sh`. The 40-fixture suite covers blob/transaction format (9 fixtures), bad payload general (8), timestamp (4), blob limit H4 (1 — `invalid_exceed_max_blobs_per_block` directly tests EIP-7691), and successful/edge (18).
 
-(See `tools/runners/lighthouse.sh` diff in the parent commit for
-the runner patch.)
+teku and nimbus SKIP per harness limitation; both have full implementations per source review.
 
-The 40-fixture suite covers:
+### Gloas-surface
 
-| Category | Count | Tests |
+No Gloas operations fixtures yet exist for the three new helpers. H10 is currently source-only — confirmed by walking each client's Gloas-specific code path.
+
+### Suggested fuzzing vectors
+
+#### T1 — Mainline canonical
+- **T1.1 (priority — blob-limit at boundary).** Block with exactly 9 blobs (Electra). Block with 10 blobs (must reject per H4). Covered by `invalid_exceed_max_blobs_per_block`.
+- **T1.2 (priority — cross-fork blob-limit transition).** Block at Deneb-Electra boundary with 7 blobs (rejected at Deneb, accepted at Electra). Stateful sanity_blocks fixture.
+- **T1.3 (Glamsterdam-target — Gloas bid verification basic path).** Gloas state with an active builder at builder_index B with sufficient funds. Block carries a signed bid from B for the current slot with valid signature. Per H10, `process_execution_payload_bid` validates and records the pending payment in `state.builder_pending_payments[SLOTS_PER_EPOCH + slot % SLOTS_PER_EPOCH]`. Lighthouse cannot process the block at all (no `process_execution_payload_bid` impl); the other five accept.
+- **T1.4 (Glamsterdam-target — self-build special case).** Block with `bid.builder_index == BUILDER_INDEX_SELF_BUILD`, `bid.value == 0`, `signature == bls.G2_POINT_AT_INFINITY`. Per spec, self-builds bypass the `is_active_builder` / `can_builder_cover_bid` / `verify_execution_payload_bid_signature` checks. Verify all five Gloas-aware clients implement the special-case branch.
+
+#### T2 — Adversarial probes
+- **T2.1 (defensive — non-self-build with zero amount).** Block with non-`BUILDER_INDEX_SELF_BUILD` and `bid.value == 0`. Per spec, the builder-activity check still fires; if the builder is inactive, the bid is rejected. Verify uniformly.
+- **T2.2 (defensive — bid signature with wrong builder pubkey).** Block with bid signed by a different pubkey than `state.builders[bid.builder_index].pubkey`. Rejected via `verify_execution_payload_bid_signature`. Verify all five Gloas-aware clients reject identically.
+- **T2.3 (defensive — bid for wrong slot).** Block with `bid.slot != block.slot`. Rejected via the slot consistency check. Verify uniformly.
+- **T2.4 (defensive — bid commitments exceed Gloas blob limit).** Block with `len(bid.blob_kzg_commitments) > get_blob_parameters(epoch).max_blobs_per_block`. Rejected. Cross-check the Gloas-dynamic `get_blob_parameters` blob limit (different from Pectra hardcoded 9).
+- **T2.5 (Glamsterdam-target — entire pipeline absence on lighthouse).** Submit any Gloas-slot block to lighthouse. Per H10 absence, lighthouse cannot process the block at all (no `signed_execution_payload_bid` field in the body that `process_execution_payload` knows how to handle). Lighthouse is unable to advance past the Gloas fork epoch.
+
+## Mainnet reachability
+
+**Reachable on canonical traffic at Glamsterdam activation, on every Gloas-slot block.** Every Gloas block carries a `signed_execution_payload_bid` field that requires `process_execution_payload_bid` validation; every Gloas block requires the new envelope-arrival flow via `verify_execution_payload_envelope` + `on_execution_payload_envelope`. There is no way to validate a Gloas block without these helpers.
+
+**Trigger.** The first Gloas-slot block. On lighthouse, the per-block flow attempts to process the Gloas-shaped BeaconBlockBody but lacks `process_execution_payload_bid` (so the bid is not validated and `state.builder_pending_payments` is not updated), lacks `process_parent_execution_payload` (so items #2/#3/#14 requests don't process; see also item #13 H10 with which this compounds), and lacks `verify_execution_payload_envelope` (so the payload-envelope-arrival path doesn't run). On prysm, teku, nimbus, lodestar, grandine, the three Gloas helpers run in their respective places.
+
+**Severity.** Lighthouse cannot follow the Gloas canonical chain — it has no path to validate Gloas blocks. This is the most severe of the lighthouse-only EIP-7732 ePBS gaps because it's the **block-level entry point** for ePBS validation: without it, the other lifecycle items (#7 H10, #9 H9, #12 H11, #13 H10, #14 H9) have nothing to act on. Even if those individual gaps were closed in lighthouse, the chain would still split because the bid-and-envelope flow is missing.
+
+**Mitigation window.** Source-only at audit time; no Gloas EF operations fixtures yet for the three new helpers. Closing requires lighthouse to:
+
+1. Add `process_execution_payload_bid` in `consensus/state_processing/src/per_block_processing/` — block-time bid validation (active-builder, funds, signature, slot/parent consistency, commitments-under-limit, builder-pending-payments recording, cache the signed bid).
+2. Add `process_parent_execution_payload` in `consensus/state_processing/src/per_block_processing/` — relocates the three Pectra request dispatchers (deposits, withdrawals, consolidations) to operate on the PARENT'S payload requests at the child's slot.
+3. Add `verify_execution_payload_envelope` (and the wiring from `on_execution_payload_envelope`) for fork-choice-time envelope verification.
+4. Tighten the `electra_enabled()` gate in `process_operations.rs:40` (item #13 H10) to exclude Gloas, so the Pectra-era request dispatchers don't fire on Gloas blocks.
+
+Reference implementations: prysm's `core/gloas/{bid,parent_payload,payload}.go` + `core/gloas/payload.go` + `blockchain/receive_execution_payload_envelope.go` (Go); teku's `ExecutionPayloadBidManager.java` (Java); nimbus's `state_transition_block.nim:1154-1242` + `:1276` (Nim); lodestar's `processExecutionPayloadBid.ts` + `processParentExecutionPayload.ts` (TypeScript); grandine's `gloas/block_processing.rs:662` + `gloas/execution_payload_processing.rs` (Rust).
+
+Same coordinated fix-PR scope as items #7 H10, #9 H9, #12 H11, #13 H10, #14 H9, #15 H10 — but this item is the **anchor** of the lighthouse-only EIP-7732 gap. Closing this item without closing the others would leave lighthouse partially Gloas-aware; closing the others without this would leave lighthouse unable to even reach the per-block-processing flow on Gloas blocks.
+
+## Conclusion
+
+**Status: source-code-reviewed.** Source review of all six clients against the updated checkouts (versions per front matter) confirms the Pectra-surface hypotheses (H1–H9) remain satisfied: identical parent-hash / prev_randao / timestamp / blob-limit / requests-pass-through / Engine API dispatch / 16-field header cache. All 160 EF `execution_payload` fixtures still pass uniformly on prysm + lighthouse + lodestar + grandine; teku and nimbus pass internally.
+
+**Glamsterdam-target finding (H10):** Gloas REMOVES `process_execution_payload` entirely per EIP-7732 ePBS and replaces it with three new helpers (`process_execution_payload_bid`, `process_parent_execution_payload`, `verify_execution_payload_envelope`). Five clients implement the restructure: prysm (`core/gloas/{bid,parent_payload,payload}.go` + `blockchain/receive_execution_payload_envelope.go`), teku (`ethereum/statetransition/.../execution/{ExecutionPayloadBidManager, DefaultExecutionPayloadBidManager}.java`), nimbus (`state_transition_block.nim:1154-1242` Gloas variant + `:1276 process_execution_payload_bid`), lodestar (`processExecutionPayloadBid.ts` + `processParentExecutionPayload.ts` + envelope-handler chain), grandine (`gloas/block_processing.rs:662` + `gloas/execution_payload_processing.rs`). **Lighthouse alone has not implemented any of the three Gloas helpers** in `consensus/state_processing/src/` — the state field `latest_execution_payload_bid` is allocated by `upgrade/gloas.rs:73` and the container types exist in `consensus/types/`, but per-block-processing has no Gloas branch and no Gloas helper implementations.
+
+This is the **sixth lighthouse-only EIP-7732 ePBS gap** in the recheck series, and the **anchor gap** — without `process_execution_payload_bid` and the envelope flow, the other gaps (items #7/#9/#12/#13/#14) have nothing to operate on:
+
+| Item | Hypothesis | Surface |
 |---|---|---|
-| Blob/transaction format | 9 | `incorrect_blob_tx_type`, `incorrect_block_hash`, `incorrect_commitment`, `incorrect_commitments_order`, 4× `incorrect_transaction_length_*`, `incorrect_transaction_no_blobs_but_with_commitments` |
-| Bad payload (general) | 8 | 2× `invalid_bad_everything_{first,regular}`, 2× `invalid_bad_execution_*`, 2× `invalid_bad_parent_hash_*`, 2× `invalid_bad_pre_randao_*`/`invalid_bad_prev_randao_*` |
-| Timestamp | 4 | 2× `invalid_future_timestamp_*`, 2× `invalid_past_timestamp_*` |
-| Blob limit (H4) | 1 | **`invalid_exceed_max_blobs_per_block`** — directly tests EIP-7691 |
-| Successful + edge | 18 | `success_first_payload`, `success_first_payload_with_gap_slot`, 4× `success_*_*_payload`, 8× successful variants, 4× `non_empty_*` for bytes/extra_data |
+| #7 | H9 + H10 | Gloas `process_attestation` (payload-availability index, builder-payment weight) |
+| #9 | H9 | Gloas `process_proposer_slashing` BuilderPendingPayment clearing |
+| #12 | H11 | Gloas `process_withdrawals` builder phases (drain + sweep) |
+| #13 | H10 | Gloas `process_operations` payload-attestation dispatcher + request-dispatcher removal |
+| #14 | H9 | Gloas `process_deposit_request` builder routing |
+| **#19** | **H10** | **Gloas `process_execution_payload` REMOVED + bid/parent-payload/envelope replacement** |
 
-teku and nimbus SKIP per harness limitation (no per-operation CLI
-hook in BeaconBreaker's runners). Both have full implementations
-per source review.
+All six gaps share the same coordinated-fix-PR scope. Plus item #15 H10 (Engine API V5, where grandine joins lighthouse) on the CL-EL boundary axis.
 
-## Cross-cut chain — closes the per-block payload-validation layer
+Notable per-client style differences (all observable-equivalent on the Pectra surface):
 
-Combined with item #15 (CL-EL boundary encoding), item #19 (this)
-forms the complete per-block EL-interaction layer:
+- **prysm** uses slot-keyed networkSchedule for blob limit; dedicated `core/gloas/` package for all three EIP-7732 helpers + changelog entry.
+- **lighthouse** uses epoch-keyed `spec.max_blobs_per_block`; partial-verify / EL-call separation; no Gloas helpers in `state_processing/src/`.
+- **teku** uses subclass-override polymorphism for blob limit; dedicated `ethereum/statetransition/execution/` module for ePBS bid management.
+- **nimbus** uses three separate functions per fork (Electra/Fulu/Gloas) — cleanest fork-isolation but most code duplication.
+- **lodestar** decouples payload processing from request dispatch (item #13 audit); dedicated `processExecutionPayloadBid.ts` + `processParentExecutionPayload.ts`.
+- **grandine** uses 11 fork-module definitions; dedicated `gloas/execution_payload_processing.rs` module with envelope-signature verification.
 
-```
-[item #19 (this)] process_execution_payload validates payload locally:
-                  - parent hash, randao, timestamp
-                  - blob count <= MAX_BLOBS_PER_BLOCK_ELECTRA = 9
-                  - cache header (16-field copy)
-                              ↓
-[item #15] get_execution_requests_list encodes for EL:
-           - filter empty lists
-           - type_byte || ssz_serialize(list) per non-empty
-                              ↓
-                  engine_newPayloadV4(payload, vh, pbr, requests_list)
-                              ↓
-                  EL validates payload + computes requestsHash
-                              ↓
-[item #13] process_operations dispatcher (called LATER in block processing)
-                  routes execution_requests.{deposits,withdrawals,consolidations}
-                  to per-operation processors (items #2/#3/#14)
-```
+Recommendations to the harness and the audit:
 
-This audit closes the per-block payload-validation layer. Items #1–#19
-now cover:
-- **Block-level state transitions**: items #2/#3/#5/#6/#7/#8/#9/#12/#14
-- **Per-epoch processing**: items #1/#4/#10/#17
-- **State upgrade**: item #11
-- **Block-level dispatchers + payload**: items #13/#15/**#19 (this)**
-- **Per-block primitives**: items #16/#18
+- Generate **T1.3 / T1.4 / T2.x Gloas execution-payload fixtures** (bid verification, self-build special case, signature mismatch, slot consistency, commitments-under-limit, lighthouse pipeline-absence regression vector).
+- File the **comprehensive lighthouse Gloas fix-PR** scoped across `consensus/state_processing/src/per_block_processing/` for items #7 H10 + #9 H9 + #12 H11 + #13 H10 + #14 H9 + this item's H10 — six gaps that need to land together for lighthouse to be Gloas-ready. Reference implementations across the other five clients are listed above.
+- **Audit `verify_execution_payload_envelope`** as a standalone sister item — fork-choice-time envelope verification, called from `on_execution_payload_envelope`.
+- **Audit `process_execution_payload_bid`** as a standalone item — the block-time bid-verification entry point of EIP-7732 ePBS.
+- **Audit `process_parent_execution_payload`** as a standalone item — the relocation target for items #2/#3/#14 request dispatchers; item #13 H10 cross-cut.
+
+## Cross-cuts
+
+### With item #15 (CL-EL boundary)
+
+Item #15 audits the encoding (`get_execution_requests_list`) and the EIP-7685 `requestsHash`. At Pectra, this item's `engine_newPayloadV4` call passes the encoded list. At Gloas, the call switches to V5 (item #15 H10 — lighthouse + grandine fail); plus, with this item's H10 absence on lighthouse, the entire payload-envelope flow is missing.
+
+### With item #13 (`process_operations`)
+
+Item #13 H10 documents that at Gloas, `process_operations` removes the three Pectra request dispatchers and adds `process_payload_attestation`. This item's H10 documents the relocation target: `process_parent_execution_payload` runs the three relocated dispatchers against the PARENT'S payload at the child's slot. Items #13 and #19 are joint at the request-relocation pivot.
+
+### With items #2 / #3 / #14 (Gloas-relocated request dispatchers)
+
+The three items are no longer dispatched from `process_operations` at Gloas — they relocate to `process_parent_execution_payload` (this item's H10). The EIP-8061 churn cascades (items #2 H6, #3 H8, #4 H8) and the EIP-7732 builder-routing (item #14 H9) still materialise inside the per-operation processors, but the call site moves.
+
+### With item #7 H10 / item #12 H11 / item #9 H9 (EIP-7732 ePBS lifecycle)
+
+This item's H10 is the **anchor gap** for the lighthouse-only EIP-7732 ePBS family. Without `process_execution_payload_bid`, lighthouse cannot record any builder pending payment, so item #7 H10's weight increment has nothing to add to; without `process_parent_execution_payload`, lighthouse cannot process the parent's payload requests, so item #12 H11's withdrawal phases have nothing to drain; without `verify_execution_payload_envelope`, lighthouse cannot validate the payload-arrival flow, so the entire bid → attestation → payment → withdrawal lifecycle has no entry point.
 
 ## Adjacent untouched
 
-- **Wire fork category in BeaconBreaker harness** — turns item #11
-  into first-class fixture-verified.
-- **Cross-fork blob-limit transition stateful fixture**: block at
-  Deneb-Electra boundary with 7 blobs (rejected at Deneb, accepted
-  at Electra).
-- **lighthouse's `partially_verify_execution_payload` reuse** —
-  documents the partial-validation-then-EL-call separation as a
-  valid gossip-time optimization.
-- **nimbus's three separate Electra/Fulu/Gloas functions** —
-  forward-compat: when Fulu activates, ensure the Electra function
-  isn't accidentally called for Fulu blocks.
-- **grandine's 11 fork-module definitions** — codify a pre-commit
-  check that each fork's `process_execution_payload` correctly
-  matches the spec's per-fork modifications.
-- **teku's `BlockProcessorBellatrix.processExecutionPayload` base**
-  — Bellatrix-Capella-Deneb-Electra all share the same processor
-  body; only `validateExecutionPayload` differs per fork. Worth
-  documenting.
-- **lodestar's payload-then-requests separation** — verify cross-
-  client that the observable post-state is identical when
-  `processOperations` runs after `processExecutionPayload`.
-- **prysm's nil-check on Electra requests** — equivalence test
-  against SSZ-level enforcement in other clients.
-- **prysm's Deneb-payload-shared-with-Electra pattern** — verify
-  that the `nil executionRequests` distinction doesn't cause
-  surprises at fork boundaries.
-- **`compute_timestamp_at_slot` standalone audit** — used by every
-  client's payload validation. Trivial formula but pivotal.
-- **`kzg_commitment_to_versioned_hash` cross-client equivalence** —
-  `sha256(commitment) with first byte = 0x01`. Verify byte-for-byte
-  across all 6 clients.
-- **EIP-7691 mainnet activation timing** — at the Electra fork
-  epoch, the blob limit jumps from 6 to 9. Verify cross-client
-  that the transition happens at the EXACT slot boundary, not
-  at the epoch boundary or some other point.
-- **`MAX_BLOB_COMMITMENTS_PER_BLOCK = 4096` upper bound** —
-  unchanged at Pectra, but worth noting that
-  MAX_BLOBS_PER_BLOCK_ELECTRA = 9 is well under this hard cap.
-- **Engine API method routing**: V3 (Deneb), V4 (Electra), V5
-  (Gloas). prysm's pattern of using the same payload type with
-  optional executionRequests is one approach; lighthouse uses
-  per-method type variants. Codify.
-
-## Future research items
-
-1. **Wire fork category in BeaconBreaker harness** (highest priority
-   for closing item #11 fixture gap).
-2. **Cross-fork blob-limit transition fixture** (Deneb→Electra
-   boundary stateful test).
-3. **`compute_timestamp_at_slot` standalone audit** — pivotal
-   per-block helper.
-4. **`kzg_commitment_to_versioned_hash` cross-client byte-for-byte
-   equivalence test**.
-5. **EIP-7691 mainnet activation timing verification** — exact slot
-   transition.
-6. **Engine API method routing cross-client cross-test** (V3 →
-   V4 → V5 transitions).
-7. **lighthouse `partially_verify_execution_payload` gossip-time
-   optimization documentation**.
-8. **nimbus's three-function-per-fork forward-compat audit at Fulu
-   activation**.
-9. **grandine's 11-definition pre-commit check codification**.
-10. **teku Bellatrix-base sharing documentation**.
-11. **lodestar payload-then-requests separation contract test**.
-12. **prysm nil-check + Deneb-payload-shared-with-Electra pattern
-    equivalence tests**.
-13. **`MAX_BLOB_COMMITMENTS_PER_BLOCK = 4096` hard cap interaction**
-    with Pectra's increased per-block limit.
-14. **Block-without-blobs at Pectra** edge case — verify
-    `MAX_BLOBS_PER_BLOCK_ELECTRA` allows zero blobs.
+1. **Wire fork category in BeaconBreaker harness** — turns item #11 into first-class fixture-verified and enables Gloas fork-fixtures when available.
+2. **Cross-fork blob-limit transition stateful fixture** at Deneb-Electra boundary.
+3. **Sister item: audit `process_execution_payload_bid`** — block-time bid validation entry point.
+4. **Sister item: audit `process_parent_execution_payload`** — block-time parent-payload processing; item #13 H10 cross-cut.
+5. **Sister item: audit `verify_execution_payload_envelope`** — fork-choice-time envelope verification.
+6. **`compute_timestamp_at_slot` standalone audit** — used by every payload validation; trivial but pivotal.
+7. **`kzg_commitment_to_versioned_hash` cross-client byte-for-byte equivalence**.
+8. **EIP-7691 mainnet activation timing verification** — exact slot transition.
+9. **Engine API method routing cross-client test** (V3 → V4 → V5 transitions).
+10. **Lighthouse's `partially_verify_execution_payload` gossip-time optimisation documentation**.
+11. **nimbus's three-function-per-fork forward-compat audit at Fulu activation**.
+12. **grandine's 11-definition pre-commit check codification**.
+13. **teku's Bellatrix-base sharing documentation**.
+14. **lodestar's payload-then-requests separation contract test** at Gloas.
+15. **prysm's nil-check + Deneb-payload-shared-with-Electra pattern equivalence tests**.
+16. **`MAX_BLOB_COMMITMENTS_PER_BLOCK = 4096` hard cap interaction** with Pectra's increased per-block limit.
+17. **Block-without-blobs at Pectra** edge case — `MAX_BLOBS_PER_BLOCK_ELECTRA = 9` allows zero blobs.
+18. **Lighthouse's six-gap EIP-7732 ePBS lifecycle** — items #7 H10, #9 H9, #12 H11, #13 H10, #14 H9, #19 H10. Single coordinated PR scope.
+19. **Lighthouse's seventh gap: item #15 H10 (Engine API V5)** — separate axis from EIP-7732 state processing but same Gloas-readiness umbrella.
+20. **`SignedExecutionPayloadEnvelope` SSZ ser/de cross-client** — new container at Gloas; verify byte-for-byte parity for gossip relay.
