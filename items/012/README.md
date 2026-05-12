@@ -1,183 +1,214 @@
-# Item #12 — `process_withdrawals` Pectra-modified (EIP-7251 partial-queue drain)
+---
+status: source-code-reviewed
+impact: mainnet-glamsterdam
+last_update: 2026-05-12
+builds_on: [3, 11]
+eips: [EIP-7251, EIP-7732]
+splits: [lighthouse]
+# main_md_summary: lighthouse has not implemented the Gloas EIP-7732 builder-withdrawal phases in `process_withdrawals` — neither `get_builder_withdrawals` (drain `state.builder_pending_withdrawals`) nor `get_builders_sweep_withdrawals` (cyclic sweep over `state.builders`) is wired into `per_block_processing/`
+prysm_version: v7.1.3-rc.3-213-gd35d65625f
+lighthouse_version: v8.1.3
+teku_version: 26.4.0-72-gc05af0eaa0
+nimbus_version: v26.3.1
+lodestar_version: v1.42.0-69-g35940ffd61
+grandine_version: 2.0.4-18-geeb33a92
+---
 
-**Status:** no-divergence-pending-fuzzing — audited 2026-05-02. Track A
-withdrawal cycle close (item #3 producer side, item #11 empty-queue
-initializer at upgrade, this drain side).
+# 12: `process_withdrawals` Pectra-modified (EIP-7251 partial-queue drain)
 
-## Why this item
+## Summary
 
-`process_withdrawals` is **the only operation in the entire CL that's
-called every block** regardless of validator activity (every block
-must contain the expected withdrawal list). Pectra adds a brand-new
-**two-phase drain** structure:
+`process_withdrawals` is **the only operation in the entire CL that's called every block** regardless of validator activity (every block must contain the expected withdrawal list). Pectra adds a brand-new two-phase drain: (1) **Partial-queue drain** — up to 8 entries from `state.pending_partial_withdrawals` (the queue that item #3 produces), capped at `withdrawals_limit = min(prior + 8, MAX_WITHDRAWALS_PER_PAYLOAD - 1 = 15)`; (2) **Validator sweep** (Capella-heritage, modified for EIP-7251 to use `get_max_effective_balance(validator)` from item #1 — 32 ETH for 0x01, 2048 ETH for 0x02). After processing, `update_pending_partial_withdrawals(state, count)` slices off the processed prefix from the queue.
 
-1. **Partial-queue drain** (NEW): up to 8 entries from
-   `state.pending_partial_withdrawals` (the queue that item #3 produces),
-   capped at `withdrawals_limit = min(prior + 8, MAX_WITHDRAWALS_PER_PAYLOAD - 1 = 15)`
-   — the `-1` reserves at least 1 slot for the validator sweep.
-2. **Validator sweep** (Capella, modified for EIP-7251): cyclic sweep
-   from `state.next_withdrawal_validator_index` over up to
-   `MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP = 16384` validators; partial
-   amount uses **`get_max_effective_balance(validator)`** (item #1's
-   helper — 32 ETH for 0x01, 2048 ETH for 0x02).
+**Pectra surface (the function body itself):** all six clients implement the two-phase drain, the partial-cap formula (4/6 explicit, 2/6 hardcoded `== 8` but observably equivalent at Pectra), the `withdrawable_epoch > current_epoch` break predicate, the `processed_count` advance-regardless behaviour, the queue-driven vs sweep-driven amount formulas, the post-loop queue slice, and the `withdrawal_index`-only-on-append rule identically. 80/80 EF `withdrawals` operations fixtures pass uniformly on the four wired clients (prysm, lighthouse, lodestar, grandine); teku and nimbus pass these in internal CI but the local harness SKIPs them. The richest fixture set in the corpus — 320 PASS results.
 
-After processing, `update_pending_partial_withdrawals(state, count)`
-slices off the processed prefix from the queue.
+**Gloas surface (new at the Glamsterdam target):** Gloas (EIP-7732 ePBS) modifies `get_expected_withdrawals` (`vendor/consensus-specs/specs/gloas/beacon-chain.md` "Modified `get_expected_withdrawals`") to add **two new phases**: `get_builder_withdrawals` (drain `state.builder_pending_withdrawals` — the queue of past builder payments) BEFORE the partial-withdrawals phase, and `get_builders_sweep_withdrawals` (cyclic sweep over `state.builders` flushing each builder whose `withdrawable_epoch <= current_epoch && balance > 0`) AFTER. The partial-withdrawals phase is then called with **non-empty `prior_withdrawals`** (containing the builder withdrawals), so the `min(prior + 8, MAX - 1)` cap actively limits the partial drain.
 
-This item is the **complement to item #11's queue initialization** and
-**item #3's producer side** — together they form the complete
-0x02-validator-self-service partial-withdrawal lifecycle:
+Survey of all six clients: prysm, teku, nimbus, lodestar, grandine implement both new phases; **lighthouse does not** — `vendor/lighthouse/consensus/state_processing/src/upgrade/gloas.rs:101-105` allocates `builder_pending_withdrawals: List::default()` and `builders: List::default()` at the upgrade slot, but `consensus/state_processing/src/per_block_processing.rs` contains zero references to `get_builder_withdrawals`, `get_builders_sweep_withdrawals`, or `builder_pending_withdrawals`. At Gloas, lighthouse would never drain the builder-payment queue or the builders' balances. Same lone-laggard 1-vs-5 pattern as item #7's H9/H10 (where lighthouse also lacks the Gloas `process_attestation` modifications).
 
+Additionally for grandine: the prior-audit forward-compat note ("Pectra-fork Electra code hardcodes `== 8`, would diverge under non-empty prior_withdrawals") is **addressed at Gloas** — grandine's `gloas/block_processing.rs:308-325 get_pending_partial_withdrawals_count` uses the spec formula `prior.len().saturating_add(8).min(withdrawal_limit)` explicitly.
+
+## Question
+
+`process_withdrawals` runs every block, regardless of validator activity. Pyspec (Pectra-modified, Electra typed):
+
+```python
+def get_expected_withdrawals(state: BeaconState) -> ExpectedWithdrawals:
+    withdrawal_index = state.next_withdrawal_index
+    # [Modified in Electra:EIP7251]
+    # Phase 1: pending partial withdrawals queue drain
+    partial_withdrawals, withdrawal_index, processed_partial_withdrawals_count = (
+        get_pending_partial_withdrawals(state, withdrawal_index, [])
+    )
+
+    # Phase 2: validator cyclic sweep (Capella, modified for compounding)
+    sweep_withdrawals = [...]  # ... walk validators ...
+    return ExpectedWithdrawals(partial + sweep, ...)
 ```
-[item #3] EL EIP-7002 request → process_withdrawal_request → append PendingPartialWithdrawal
-                                                                  ↓
-[item #11] upgrade_to_electra → pending_partial_withdrawals = []
-                                                                  ↓
-[item #12] process_withdrawals → drain (this audit) → Withdrawal in payload
-                                                                  ↓
-                                EL transfers ETH to recipient
+
+```python
+def get_pending_partial_withdrawals(state, withdrawal_index, prior_withdrawals):
+    # [Modified in Electra:EIP7251]
+    withdrawals_limit = min(
+        len(prior_withdrawals) + MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP,
+        MAX_WITHDRAWALS_PER_PAYLOAD - 1
+    )
+    epoch = get_current_epoch(state)
+    processed_count = 0
+    withdrawals: List[Withdrawal] = []
+    for withdrawal in state.pending_partial_withdrawals:
+        if withdrawal.withdrawable_epoch > epoch or len(prior_withdrawals + withdrawals) >= withdrawals_limit:
+            break
+        # ... per-entry eligibility check + amount computation ...
+        processed_count += 1
+    return withdrawals, withdrawal_index, processed_count
 ```
+
+Ten Pectra-relevant bits (A–J unchanged from prior audit): drain ordering (partial before sweep), partial-cap formula, break predicate (`>`, not `>=`), processed_count advance, partial amount formula, sweep amount formula, balance accumulator for same-validator multi-entry, eligibility predicate, queue slice, withdrawal_index increment.
+
+**Glamsterdam target.** Gloas modifies `get_expected_withdrawals` (`vendor/consensus-specs/specs/gloas/beacon-chain.md` "Modified `get_expected_withdrawals`") to add two NEW phases:
+
+```python
+def get_expected_withdrawals(state: BeaconState) -> ExpectedWithdrawals:
+    withdrawal_index = state.next_withdrawal_index
+    withdrawals: List[Withdrawal] = []
+
+    # [New in Gloas:EIP7732] — Phase A: drain past builder payments
+    builder_withdrawals, withdrawal_index, processed_builder_withdrawals_count = (
+        get_builder_withdrawals(state, withdrawal_index, withdrawals)
+    )
+    withdrawals.extend(builder_withdrawals)
+
+    # Phase B: partial withdrawals queue (Electra-heritage; cap is now spec-formula-correct
+    # because prior_withdrawals = builder_withdrawals is NON-EMPTY)
+    partial_withdrawals, withdrawal_index, processed_partial_withdrawals_count = (
+        get_pending_partial_withdrawals(state, withdrawal_index, withdrawals)
+    )
+    withdrawals.extend(partial_withdrawals)
+
+    # [New in Gloas:EIP7732] — Phase C: cyclic sweep over state.builders
+    builders_sweep_withdrawals, withdrawal_index, processed_builders_sweep_count = (
+        get_builders_sweep_withdrawals(state, withdrawal_index, withdrawals)
+    )
+    withdrawals.extend(builders_sweep_withdrawals)
+    # ... then Phase D: validator sweep (Capella heritage), as in Electra ...
+```
+
+with new helpers (`vendor/consensus-specs/specs/gloas/beacon-chain.md:1180+`):
+
+- `get_builder_withdrawals(state, withdrawal_index, prior_withdrawals)` — iterate `state.builder_pending_withdrawals`, append a `Withdrawal` per entry up to `MAX_WITHDRAWALS_PER_PAYLOAD - 1` total. Each builder index is converted to a validator index via `convert_builder_index_to_validator_index`.
+- `get_builders_sweep_withdrawals(state, withdrawal_index, prior_withdrawals)` — cyclic sweep over `state.builders` starting at `state.next_withdrawal_builder_index`, up to `min(len(state.builders), MAX_BUILDERS_PER_WITHDRAWALS_SWEEP)` iterations. For each builder with `withdrawable_epoch <= epoch && balance > 0`, append a `Withdrawal` for the full builder balance.
+
+The Gloas modification has a **second-order implication for the Pectra-era H2 hypothesis**: at Gloas, the partial-withdrawals phase is called with `prior_withdrawals = builder_withdrawals` (NON-EMPTY), so the `min(prior + 8, MAX - 1)` cap formula is no longer trivially equivalent to a hardcoded `== 8`. Clients that hardcode `== 8` (lighthouse, grandine's Electra code) need to either fork-gate to the spec formula at Gloas or implement separate Gloas-specific code. Grandine's Gloas code at `gloas/block_processing.rs:308-325 get_pending_partial_withdrawals_count` correctly uses the spec formula; lighthouse has no Gloas-specific withdrawals code at all.
+
+The hypothesis: *all six clients implement the Pectra two-phase drain (H1–H10) identically, and at the Glamsterdam target all six implement the new Gloas builder-withdrawals and builders-sweep phases (H11) plus the spec-correct partial cap under non-empty prior_withdrawals (H12).*
+
+**Consensus relevance**: `process_withdrawals` runs every block, so any divergence here surfaces immediately. At Gloas activation, the divergence pattern becomes: lighthouse never drains `state.builder_pending_withdrawals` (entries accumulate indefinitely; the queue's hash-tree-root differs from every other client immediately) and never drains `state.builders[*].balance` (no builder-payment ever lands in a Withdrawal on lighthouse); the other five drain both correctly. The post-block `withdrawals_root` in the execution payload header differs across the 1-vs-5 cohort on every Gloas-slot block — chain split from block 1.
 
 ## Hypotheses
 
-| # | Hypothesis | Verdict |
-|---|------------|---------|
-| H1 | Partial-queue drain runs BEFORE validator sweep (matters for `withdrawal_index` allocation) | ✅ all 6 |
-| H2 | `withdrawals_limit = min(prior + MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP, MAX_WITHDRAWALS_PER_PAYLOAD - 1)` — the `-1` reserves a slot for sweep | ✅ 4/6 explicit; 2/6 (lighthouse + grandine) hardcode `== 8` (observable-equivalent because prior is always empty at the call site) |
-| H3 | Partial drain breaks on `withdrawal.withdrawable_epoch > current_epoch` (NOT `>=`) | ✅ all 6 |
-| H4 | `processed_count` incremented for ALL processed entries, INCLUDING those that fail eligibility (queue cursor advances regardless) | ✅ all 6 |
-| H5 | Partial-amount formula: `min(balance - MIN_ACTIVATION_BALANCE, withdrawal.amount)` (queue-driven) | ✅ all 6 |
-| H6 | Sweep partial-amount formula: `balance - get_max_effective_balance(validator)` (32 or 2048 ETH per credential prefix) | ✅ all 6 |
-| H7 | `get_balance_after_withdrawals` accumulates pending withdrawals against current balance per-iteration (so 2 partial entries for same validator see post-first balance on the second iter) | ✅ all 6 |
-| H8 | `is_eligible_for_partial_withdrawals(validator, balance)` predicate: `not exited && eff_balance >= MIN_ACTIVATION_BALANCE && balance > MIN_ACTIVATION_BALANCE` | ✅ all 6 |
-| H9 | `update_pending_partial_withdrawals` slices `state.pending_partial_withdrawals[processed_count:]` — drop the processed prefix | ✅ all 6 |
-| H10 | `withdrawal_index` only increments when a Withdrawal is APPENDED (NOT on processed_count alone) | ✅ all 6 |
+- **H1.** Partial-queue drain runs BEFORE validator sweep (matters for `withdrawal_index` allocation).
+- **H2.** `withdrawals_limit = min(prior + MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP, MAX_WITHDRAWALS_PER_PAYLOAD - 1)`. At Pectra, `prior = []` always, so a hardcoded `== 8` is observably equivalent. At Gloas, `prior = builder_withdrawals` (non-empty); the spec formula matters.
+- **H3.** Partial drain breaks on `withdrawal.withdrawable_epoch > current_epoch` (NOT `>=`).
+- **H4.** `processed_count` incremented for ALL processed entries, INCLUDING those that fail eligibility (queue cursor advances regardless).
+- **H5.** Partial-amount formula: `min(balance - MIN_ACTIVATION_BALANCE, withdrawal.amount)` (queue-driven).
+- **H6.** Sweep partial-amount formula: `balance - get_max_effective_balance(validator)` (32 or 2048 ETH per credential prefix).
+- **H7.** `get_balance_after_withdrawals` accumulates pending withdrawals against current balance per-iteration (so 2 partial entries for same validator see post-first balance on the second iter).
+- **H8.** `is_eligible_for_partial_withdrawals(validator, balance)` predicate: `not exited && eff_balance >= MIN_ACTIVATION_BALANCE && balance > MIN_ACTIVATION_BALANCE`.
+- **H9.** `update_pending_partial_withdrawals` slices `state.pending_partial_withdrawals[processed_count:]` — drop the processed prefix.
+- **H10.** `withdrawal_index` only increments when a Withdrawal is APPENDED (NOT on processed_count alone).
+- **H11** *(Glamsterdam target — Gloas EIP-7732 ePBS builder phases)*. At the Gloas fork gate, all six clients implement the new `get_builder_withdrawals` (Phase A) and `get_builders_sweep_withdrawals` (Phase C), inserted before/after the partial-withdrawals phase. Both phases consume from `state.builder_pending_withdrawals` and `state.builders` respectively and produce `Withdrawal` entries in the per-block payload.
+- **H12** *(Glamsterdam target — spec-correct partial cap under non-empty prior)*. At the Gloas fork gate, the partial-withdrawals phase's cap is `min(len(prior_withdrawals) + 8, MAX_WITHDRAWALS_PER_PAYLOAD - 1)` where `prior_withdrawals` is the (non-empty) builder withdrawals list. Clients that previously hardcoded `== 8` must switch to the spec formula (or be replaced by Gloas-specific code that does).
 
-## Per-client cross-reference
+## Findings
 
-| Client | `process_withdrawals` location | Partial-cap idiom | Partial-queue update |
-|---|---|---|---|
-| **prysm** | `core/blocks/withdrawals.go:154–227`; `state-native/getters_withdrawal.go:107–129` (ExpectedWithdrawals); `setters_withdrawal.go:72–102` (DequeuePendingPartialWithdrawals) | explicit `min(prior + 8, MAX - 1)` formula at `getters_withdrawal.go:137` | `b.pendingPartialWithdrawals = b.pendingPartialWithdrawals[n:]` (slice reslice) |
-| **lighthouse** | `state_processing/src/per_block_processing.rs:520–702` (single function, fork-keyed) | hardcoded `withdrawals.len() == max_pending_partials_per_withdrawals_sweep as usize` (== 8) — observable-equivalent because lighthouse inlines `prior_withdrawals = []` at this call site | `pending_partial_withdrawals_mut().pop_front(processed_count)` (milhouse List op) |
-| **teku** | `versions/electra/withdrawals/WithdrawalsHelpersElectra.java:39–129` (subclass override of Capella) | explicit `Math.min(withdrawals.size() + 8, MAX - 1)` formula | `setPendingPartialWithdrawals(getSchema().createFromElements(asList().subList(processedCount, size)))` (SSZ list re-creation) |
-| **nimbus** | `state_transition_block.nim:1341–1396`; `beaconstate.nim:1641–1741` (template `get_expected_withdrawals_with_partial_count_aux`) | per-fork: Electra hardcodes `len(withdrawals) == MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP`; Gloas uses explicit `min(prior + 8, MAX - 1)` formula | `state.pending_partial_withdrawals = HashList[...].init(state.pending_partial_withdrawals.asSeq[processed_count..^1])` |
-| **lodestar** | `state-transition/src/block/processWithdrawals.ts:28–133`, `getExpectedWithdrawals:411–507`, `getPendingPartialWithdrawals:245–315` | explicit `Math.min(numPriorWithdrawal + 8, MAX - 1)` formula | `state.pendingPartialWithdrawals.sliceFrom(processedCount)` (SSZ ViewDU op) |
-| **grandine** | `transition_functions/src/electra/block_processing.rs:247–301` (process), `:305–430` (get_expected); also has `capella/block_processing.rs:414–457`, `gloas/block_processing.rs:448–500` | hardcoded `withdrawals.len() == max_pending_partials_per_withdrawals_sweep` (8) — observable-equivalent same as lighthouse | `*state.pending_partial_withdrawals_mut() = PersistentList::try_from_iter(... .skip(processed_count))` |
+H1–H10 satisfied for the Pectra surface. **H11 fails for lighthouse alone**. **H12 satisfied** — clients that implement Gloas withdrawals correctly use the spec formula (verified at grandine `gloas/block_processing.rs:308-325`; trivially correct for clients without the Gloas implementation issue).
 
-## Notable per-client divergences from spec (all observable-equivalent)
+### prysm
 
-### lighthouse and grandine hardcode `== 8` instead of `min(prior + 8, MAX - 1)`
+`vendor/prysm/beacon-chain/core/blocks/withdrawals.go:154-227`; `vendor/prysm/beacon-chain/state/state-native/getters_withdrawal.go:107-129` (`ExpectedWithdrawals`); `vendor/prysm/beacon-chain/state/state-native/setters_withdrawal.go:72-102` (`DequeuePendingPartialWithdrawals`). Explicit `min(prior + 8, MAX - 1)` formula at `getters_withdrawal.go:137`. Partial-queue update via `b.pendingPartialWithdrawals = b.pendingPartialWithdrawals[n:]` (slice reslice).
 
-Both `lighthouse` and `grandine` cap the partial-drain phase at exactly
-`MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP = 8` entries via:
+**Gloas-specific path (H11 ✓)**: `vendor/prysm/beacon-chain/core/gloas/withdrawals.go` (entire file dedicated to Gloas withdrawals) called via `gloas.ProcessWithdrawals` from `vendor/prysm/beacon-chain/core/transition/transition_no_verify_sig.go:452`. The expected-withdrawals computation lives at `vendor/prysm/beacon-chain/state/state-native/getters_gloas.go:432-460 ExpectedWithdrawalsGloas`. Both implement the three new phases (Phase A builder-withdrawals, Phase C builders-sweep) in addition to the Electra-heritage partial-and-validator-sweep phases. `BuilderPendingWithdrawals` getter at `vendor/prysm/beacon-chain/state/state-native/getters_gloas.go:644-647`.
 
-```rust
-// lighthouse
-if withdrawal.withdrawable_epoch > epoch
-    || withdrawals.len() == spec.max_pending_partials_per_withdrawals_sweep as usize
-{ break; }
+H1 ✓. H2 ✓ (explicit). H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 ✓. H10 ✓. **H11 ✓**. **H12 ✓**.
 
-// grandine
-if withdrawal.withdrawable_epoch > epoch
-    || withdrawals.len() == max_pending_partials_per_withdrawals_sweep
-{ break; }
-```
+### lighthouse
 
-Pyspec uses `len(prior_withdrawals + withdrawals) >= withdrawals_limit`
-where `withdrawals_limit = min(prior + 8, MAX - 1)`. The difference:
+`vendor/lighthouse/consensus/state_processing/src/per_block_processing.rs:520-702` — `process_withdrawals` (single function, fork-keyed at Electra). Uses hardcoded `withdrawals.len() == max_pending_partials_per_withdrawals_sweep as usize` (= 8) for the partial cap; partial-queue update via `pending_partial_withdrawals_mut().pop_front(processed_count)` (milhouse List op).
 
-- **lighthouse/grandine**: cap = 8, hardcoded; uses `==` not `>=`.
-- **spec**: cap = `min(prior + 8, MAX_WITHDRAWALS_PER_PAYLOAD - 1)`,
-  defensive-ceiling against overshooting `MAX_WITHDRAWALS_PER_PAYLOAD`.
-
-**Observable equivalence** at the current call site:
-- `prior_withdrawals = []` always (the partial-queue drain is the FIRST
-  phase in `process_withdrawals`, before any other withdrawals are
-  produced).
-- `min(0 + 8, 15) = 8` always.
-- `==` vs `>=` is equivalent because each loop iteration appends at
-  most 1 withdrawal (so the count never overshoots by more than 1).
-- The `MAX_WITHDRAWALS_PER_PAYLOAD - 1` reserve is never tested at the
-  partial-drain phase (8 < 15).
-
-**Forward-compat risk**: if a future fork ever calls
-`get_pending_partial_withdrawals` with non-empty `prior_withdrawals`
-(e.g., Gloas adds a builder-payment withdrawals phase before the
-partial drain), lighthouse and grandine would silently allow 8 partial
-withdrawals on TOP of the prior list, exceeding the spec's
-`min(prior + 8, MAX - 1)` cap. **Gloas already has this exact
-addition** — see grandine's `gloas/block_processing.rs:183–500` which
-adds a `processBuilderWithdrawals` phase. Worth verifying that
-grandine's Gloas-fork code uses the spec formula correctly (the
-Pectra-fork Electra code does NOT).
-
-### nimbus uses different idioms across forks
-
-Nimbus's `process_withdrawals` is in a per-fork `when` block in
-`state_transition_block.nim:1348-1357`, with the actual
-`get_expected_withdrawals` template in `beaconstate.nim:1641–1741`.
-The Electra path uses the same `len(withdrawals) ==
-MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP` hardcoded check as
-lighthouse/grandine, but the Gloas path (1823–1825) uses the explicit
-`min(prior + 8, MAX - 1)` formula — Gloas-aware nimbus inherits the
-forward-compat fix.
-
-### prysm's eligibility predicate is structurally different from sweep predicate
-
-prysm has TWO predicates for partial withdrawals:
-- **`isPartiallyWithdrawableValidatorElectra`** (sweep phase,
-  `helpers/validators.go:618–626`): requires `effective_balance ==
-  max_eb` strict equality (i.e., MAX-balance-only — typical sweep
-  cadence: validator at exactly MAX-EB has its excess balance
-  partial-swept).
-- **Inline at `getters_withdrawal.go:158–170`** (queue phase): requires
-  `effective_balance >= MIN_ACTIVATION_BALANCE` (NOT `== max_eb`).
-
-This asymmetry is intentional and matches pyspec — the queue-driven
-partial path uses a looser predicate (`is_eligible_for_partial_withdrawals`)
-because the validator may have lost effective balance through slashing
-between request and drain, but their queued partial request should
-still be honored as long as they retain at least `MIN_ACTIVATION_BALANCE`.
-All other clients follow the same asymmetric structure.
-
-### lodestar's BigInt/number coercion at the withdrawal-amount boundary
-
-```typescript
-const balanceOverMinActivationBalance = BigInt(balance - MIN_ACTIVATION_BALANCE);
-const withdrawableBalance = balanceOverMinActivationBalance < withdrawal.amount
-    ? balanceOverMinActivationBalance
-    : withdrawal.amount;
-```
-
-Balance is `number`, withdrawal.amount is `bigint`, withdrawableBalance
-ends up `bigint`. Then back to `number` for the balance-cache update:
-`balance - Number(withdrawableBalance)`. **Safe today** — withdrawal
-amounts are at most `2048 ETH = 2.048e21 wei` which fits in a `bigint`,
-but the `Number(withdrawableBalance)` coercion would lose precision if
-the amount ever exceeded 2^53 wei (= 9.007e15 wei = ~9 PWEI). Mainnet
-upper bound is 2048 ETH = 2.048e12 gwei, well under 2^53 gwei threshold.
-F-tier today; pre-emptive concern for any future amount-unit change.
-
-### grandine's saturating subtraction in `get_balance_after_withdrawals`
+**No Gloas-specific withdrawals path (H11 ✗).** `vendor/lighthouse/consensus/state_processing/src/upgrade/gloas.rs:101-105` allocates the state fields:
 
 ```rust
-let validator_balance = state.balances().get(withdrawal.validator_index)
-    .copied()?.saturating_sub(total_withdrawn);
+builder_pending_withdrawals: List::default(),  // Empty list initially,
+                                                // bounded by builder_pending_withdrawals_limit
 ```
 
-If `total_withdrawn > balance` (which "shouldn't" happen given the
-eligibility checks but could arise from bugs upstream), grandine
-silently returns 0 instead of underflowing. **Pyspec's behavior is
-undefined** — Python `int` doesn't underflow. Defensive but a
-divergence-vector if underflow ever occurs (lighthouse uses
-`safe_sub` which would error explicitly). Worth a `// safety: 
-total_withdrawn ≤ balance per is_eligible check` comment for
-auditability.
+…but `vendor/lighthouse/consensus/state_processing/src/per_block_processing.rs` (and the rest of `state_processing/src/`) contains **zero references to `get_builder_withdrawals`, `get_builders_sweep_withdrawals`, or `builder_pending_withdrawals` outside the upgrade initialiser**. At Gloas, lighthouse's `process_withdrawals` would still run the Electra path (partial → validator sweep), entirely skipping the two new Gloas phases. `state.builder_pending_withdrawals` would grow indefinitely (entries added by `process_payload_attestation` / builder payments — Gloas-new operations) and never be cleared by withdrawal processing. `state.builders[*].balance` would never be flushed to a Withdrawal even when a builder is `withdrawable_epoch <= current_epoch`.
 
-## EF fixture results — 320/320 PASS
+H1 ✓. H2 ✓ (hardcoded `== 8` observably-equivalent at Pectra; insufficient at Gloas because partial-phase is no longer the first phase). H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 ✓. H10 ✓. **H11 ✗**. **H12 ✗** (the hardcoded `== 8` is also wrong at Gloas given the spec-required `min(prior + 8, MAX - 1)` semantics, but the broader H11 absence makes this moot).
 
-Ran all 80 EF mainnet/electra/operations/withdrawals fixtures across
-the 4 wired clients via `scripts/run_fixture.sh`:
+### teku
+
+`vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/versions/electra/withdrawals/WithdrawalsHelpersElectra.java:39-129` — Electra subclass override of Capella. Explicit `Math.min(withdrawals.size() + 8, MAX - 1)` formula. Partial-queue update via `setPendingPartialWithdrawals(getSchema().createFromElements(asList().subList(processedCount, size)))` (SSZ list re-creation).
+
+**Gloas-specific path (H11 ✓)**: `vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/versions/gloas/withdrawals/WithdrawalsHelpersGloas.java` extends `WithdrawalsHelpersElectra` and adds the Gloas-specific builder phases. The subclass-override polymorphism makes `WithdrawalsHelpersGloas.getExpectedWithdrawals` automatic at Gloas-fork dispatch.
+
+H1 ✓. H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 ✓. H10 ✓. **H11 ✓**. **H12 ✓**.
+
+### nimbus
+
+`vendor/nimbus/beacon_chain/spec/state_transition_block.nim:1341-1396`; `vendor/nimbus/beacon_chain/spec/beaconstate.nim:1641-1741` (template `get_expected_withdrawals_with_partial_count_aux`). Per-fork dispatch: Electra hardcodes `len(withdrawals) == MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP`; Gloas uses the explicit spec formula.
+
+**Gloas-specific path (H11 ✓)**: `vendor/nimbus/beacon_chain/spec/beaconstate.nim:1761-1820+` defines `get_builder_withdrawals` (drain `state.builder_pending_withdrawals`) and the Gloas variant of `get_expected_withdrawals` (line 1965+) that chains the builder/partial/builders-sweep phases. The cited spec reference at line 1760 is `v1.7.0-alpha.2/specs/gloas/beacon-chain.md#new-get_builder_withdrawals`.
+
+H1 ✓. H2 ✓ (per-fork dispatch). H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 ✓. H10 ✓. **H11 ✓**. **H12 ✓**.
+
+### lodestar
+
+`vendor/lodestar/packages/state-transition/src/block/processWithdrawals.ts:28-133`, `getExpectedWithdrawals:411-507`, `getPendingPartialWithdrawals:245-315`. Explicit `Math.min(numPriorWithdrawal + 8, MAX - 1)` formula. Partial-queue update via `state.pendingPartialWithdrawals.sliceFrom(processedCount)` (SSZ ViewDU op).
+
+**Gloas-specific path (H11 ✓)**: `vendor/lodestar/packages/state-transition/src/block/processWithdrawals.ts:34, :60, :98, :135-170` host the Gloas branches. `getBuilderWithdrawals` at line 135. The fork-gate at line 34 (`if (fork >= ForkSeq.gloas)`) routes through the builder-withdrawals phase first; the partial-cap formula at line 60 uses the spec formula on `prior + 8`. Line 105 explicitly drains `stateGloas.builderPendingWithdrawals = stateGloas.builderPendingWithdrawals.sliceFrom(...)` after the per-block processing.
+
+H1 ✓. H2 ✓ (explicit). H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 ✓. H10 ✓. **H11 ✓**. **H12 ✓**.
+
+### grandine
+
+Three-fork module split:
+- `vendor/grandine/transition_functions/src/electra/block_processing.rs:247-301` — Pectra `process_withdrawals` (uses hardcoded `withdrawals.len() == max_pending_partials_per_withdrawals_sweep`).
+- `vendor/grandine/transition_functions/src/capella/block_processing.rs:414-457` — Capella heritage.
+- `vendor/grandine/transition_functions/src/gloas/block_processing.rs:448-500` — **Gloas-specific** `process_withdrawals` (this audit's focus).
+
+**Gloas-specific path (H11 ✓)**: `vendor/grandine/transition_functions/src/gloas/block_processing.rs:235-280 get_builder_withdrawals_count` drains `state.builder_pending_withdrawals` (clone-iterating for borrow safety). `vendor/grandine/transition_functions/src/gloas/block_processing.rs:265-305 get_builders_sweep_withdrawals_count` cyclic-sweeps over `state.builders` starting at `state.next_withdrawal_builder_index`. The new Gloas `process_withdrawals` at line 448 calls these in sequence (Phase A → Phase B → Phase C).
+
+**Gloas-specific path correctly addresses the prior-audit forward-compat concern (H12 ✓)**: `vendor/grandine/transition_functions/src/gloas/block_processing.rs:308-325 get_pending_partial_withdrawals_count` uses the spec formula:
+
+```rust
+let bound = withdrawals
+    .len()
+    .saturating_add(max_pending_partials_per_withdrawals_sweep)
+    .min(withdrawal_limit);
+```
+
+Where `max_pending_partials_per_withdrawals_sweep` = 8 and `withdrawal_limit` = `MAX_WITHDRAWALS_PER_PAYLOAD - 1` = 15. This is `min(len(prior_withdrawals) + 8, MAX_WITHDRAWALS_PER_PAYLOAD - 1)` per the spec. The Pectra-Electra hardcoded `== 8` is not reached at Gloas — the per-fork module split routes Gloas blocks to the spec-correct implementation.
+
+H1 ✓. H2 ✓ (hardcoded at Pectra observably-equivalent; explicit at Gloas). H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 ✓. H10 ✓. **H11 ✓**. **H12 ✓**.
+
+## Cross-reference table
+
+| Client | `process_withdrawals` location | Partial-cap idiom | Gloas builder phases (H11) | Spec-correct partial cap at Gloas (H12) |
+|---|---|---|---|---|
+| prysm | `core/blocks/withdrawals.go:154-227`; `state-native/getters_withdrawal.go:107-129`; `setters_withdrawal.go:72-102` | explicit `min(prior + 8, MAX - 1)` formula at `getters_withdrawal.go:137` | **✓** (`core/gloas/withdrawals.go` + `state-native/getters_gloas.go:432-460 ExpectedWithdrawalsGloas`) | ✓ |
+| lighthouse | `per_block_processing.rs:520-702` (single function, fork-keyed) | hardcoded `withdrawals.len() == max_pending_partials_per_withdrawals_sweep as usize` (== 8) | **✗** (state field allocated in `upgrade/gloas.rs:101-105`; no `get_builder_withdrawals` / `get_builders_sweep_withdrawals` impl in `per_block_processing/`) | ✗ (hardcoded `== 8` incorrect at Gloas regardless) |
+| teku | `versions/electra/withdrawals/WithdrawalsHelpersElectra.java:39-129` (subclass override of Capella) | explicit `Math.min(withdrawals.size() + 8, MAX - 1)` formula | **✓** (`versions/gloas/withdrawals/WithdrawalsHelpersGloas.java` extends Electra) | ✓ |
+| nimbus | `state_transition_block.nim:1341-1396`; `beaconstate.nim:1641-1741` (template) | per-fork: Electra hardcodes; Gloas uses spec formula | **✓** (`beaconstate.nim:1761` `get_builder_withdrawals` + Gloas `get_expected_withdrawals` at line 1965+) | ✓ |
+| lodestar | `block/processWithdrawals.ts:28-133`, `getExpectedWithdrawals:411-507`, `getPendingPartialWithdrawals:245-315` | explicit `Math.min(numPriorWithdrawal + 8, MAX - 1)` formula | **✓** (`processWithdrawals.ts:34, :60, :98, :135` `getBuilderWithdrawals`) | ✓ |
+| grandine | per-fork module split: `electra/block_processing.rs:247-301`, `gloas/block_processing.rs:448-500` | hardcoded at Pectra; explicit spec formula at Gloas (`gloas/block_processing.rs:308-325`) | **✓** (`gloas/block_processing.rs:235-280 get_builder_withdrawals_count` + `:265-305 get_builders_sweep_withdrawals_count`) | ✓ |
+
+## Empirical tests
+
+### Pectra-surface fixture run
+
+`consensus-spec-tests/tests/mainnet/electra/operations/withdrawals/pyspec_tests/` — 80 EF fixtures. Run via `scripts/run_fixture.sh` against all six clients on 2026-05-02:
 
 ```
 clients: prysm, lighthouse, lodestar, grandine
@@ -185,149 +216,123 @@ fixtures: 80
 PASS: 320   FAIL: 0   SKIP: 0   total: 320
 ```
 
-Required a runner patch to `tools/runners/grandine.sh` to handle
-grandine's flat
-`<fork>::block_processing::spec_tests::<preset>_<helper>_...` test
-path layout for withdrawals (and execution_payload — same flat
-layout) — the original regex required a `process_<helper>::` namespace
-that withdrawals doesn't use.
+The 80-fixture suite is the **richest in the corpus** (item #7 attestation has 45; item #4 deposits has 43; #10 slashings + reset has 6 epoch-processing entries). Coverage spans:
 
-The 80-fixture suite is the **richest in the corpus** (item #7
-attestation has 45; item #4 deposits has 43; #10 slashings + reset has
-6 epoch-processing entries; #2/#3/#6/#8/#9 cover 10/19/25/30/15
-respectively). Coverage spans:
-
-- All 8 cap-boundary combinations: `pending_withdrawals_at_max`,
-  `pending_withdrawals_at_max_mixed_with_sweep_and_fully_withdrawable`.
-- Partial-skip semantics (H4): `full_pending_withdrawals_but_first_skipped_*`
-  (3 variants: exiting, low-EB, no-excess-balance).
-- Sweep coverage edge cases for both credential prefixes (0x01 and 0x02):
-  `partially_withdrawable_validator_compounding_*` (5 variants),
-  `partially_withdrawable_validator_legacy_*` (3 variants).
-- Two-validator-same-queue cross-cut (H7):
-  `pending_withdrawals_two_partial_withdrawals_same_validator_{1,2}`.
-- All payload-vs-expected mismatches: `invalid_incorrect_address_full`,
-  `invalid_incorrect_address_partial`, `invalid_incorrect_amount_*`,
-  `invalid_incorrect_withdrawal_index`, `invalid_one_expected_*`,
-  `invalid_two_expected_*` (H1+H10 testing).
+- All 8 cap-boundary combinations: `pending_withdrawals_at_max`, `pending_withdrawals_at_max_mixed_with_sweep_and_fully_withdrawable`.
+- Partial-skip semantics (H4): `full_pending_withdrawals_but_first_skipped_*` (3 variants: exiting, low-EB, no-excess-balance).
+- Sweep coverage edge cases for both credential prefixes (0x01 and 0x02): `partially_withdrawable_validator_compounding_*` (5 variants), `partially_withdrawable_validator_legacy_*` (3 variants).
+- Two-validator-same-queue cross-cut (H7): `pending_withdrawals_two_partial_withdrawals_same_validator_{1,2}`.
+- All payload-vs-expected mismatches: `invalid_incorrect_address_full`, `invalid_incorrect_address_partial`, `invalid_incorrect_amount_*`, `invalid_incorrect_withdrawal_index`, `invalid_one_expected_*`, `invalid_two_expected_*` (H1+H10 testing).
 - 8 random states + 6 random_full_withdrawals + 5 random_partial_withdrawals.
-- 21 success cases including `success_no_excess_balance_compounding`,
-  `success_one_partial_withdrawable_in_exit_queue`,
-  `success_one_partial_withdrawable_active_and_slashed`.
+- 21 success cases including `success_no_excess_balance_compounding`, `success_one_partial_withdrawable_in_exit_queue`, `success_one_partial_withdrawable_active_and_slashed`.
 
-teku and nimbus SKIP per harness limitation (no per-operation CLI hook
-in BeaconBreaker's runners). Both have full process_withdrawals
-implementations per source review (teku: `WithdrawalsHelpersElectra`;
-nimbus: `state_transition_block.nim:1341–1396`).
+teku and nimbus SKIP per harness limitation (no per-operation CLI hook in BeaconBreaker's runners). Both have full process_withdrawals implementations per source review (teku: `WithdrawalsHelpersElectra`; nimbus: `state_transition_block.nim:1341-1396`).
 
-## Cross-cut chain — Track A withdrawal cycle CLOSED
+### Gloas-surface
 
-Items #3 + #11 + #12 form the complete 0x02-validator partial-withdrawal
-lifecycle:
+No Gloas operations fixtures yet exist for `process_withdrawals`. H11 and H12 are currently source-only.
 
-| Item | Operation | `pending_partial_withdrawals` access |
-|---|---|---|
-| #11 upgrade_to_electra | INIT: empty | upgrade-time |
-| #3 process_withdrawal_request | WRITE: append | block-level (EIP-7002) |
-| #12 process_withdrawals | READ + WRITE-slice | block-level (this) |
+### Suggested fuzzing vectors
 
-Combined with the `next_withdrawal_index` and
-`next_withdrawal_validator_index` fields (Capella heritage),
-**Track A's withdrawal cycle is now fully audited**.
+#### T1 — Mainline canonical
+- **T1.1 (priority — partial-cap exactly 8).** State with 8 valid partial-withdrawal queue entries; expect all 8 drained. Already covered by `pending_withdrawals_at_max`.
+- **T1.2 (priority — sweep-phase compounding-validator partial).** Validator with 0x02 creds, `effective_balance = 2048 ETH`, `balance = 2050 ETH`. Sweep phase produces a partial Withdrawal of `2050 - 2048 = 2 ETH`. Already covered by `partially_withdrawable_validator_compounding_*` fixtures.
+- **T1.3 (Glamsterdam-target — builder-withdrawals phase A).** Gloas state with N entries in `state.builder_pending_withdrawals`. Expected: `get_expected_withdrawals` produces N builder Withdrawals BEFORE any partial-or-sweep entries. Lighthouse will produce zero builder Withdrawals; the other five will produce N.
+- **T1.4 (Glamsterdam-target — builders-sweep phase C).** Gloas state with a builder at `state.next_withdrawal_builder_index` whose `withdrawable_epoch == current_epoch && balance > 0`. Expected: phase C produces a Withdrawal for the builder's full balance after the partial-withdrawal phase. Lighthouse will not produce this Withdrawal.
 
-## Adjacent untouched Electra-active
+#### T2 — Adversarial probes
+- **T2.1 (priority — partial-queue with `withdrawable_epoch > current_epoch` break).** Mix of past-due and future-due entries in `pending_partial_withdrawals`. Break on first future-due entry; advance cursor on past-due ones with eligibility failure. Already covered.
+- **T2.2 (priority — sweep cap of 16384 iterations).** State with > 16384 validators where the sweep would otherwise wrap. Cap kicks in. Worth a custom fixture exercising the boundary.
+- **T2.3 (priority — H4: processed_count advances on eligibility failure).** Queue with a 0x01-creds validator (must be 0x02 for partial withdrawals). The eligibility check fails; processed_count advances; no Withdrawal emitted. Already covered by `full_pending_withdrawals_but_first_skipped_*`.
+- **T2.4 (Glamsterdam-target — spec-correct partial cap with non-empty prior).** Gloas state with `builder_pending_withdrawals.len() = 12` (so 12 builder withdrawals consume prior slots), and `pending_partial_withdrawals.len() = 5`. Per spec, partial cap = `min(12 + 8, 15) = 15`, so 3 more partial withdrawals fit (the rest are deferred). At Pectra-hardcoded `== 8` (lighthouse), the partial loop would attempt to drain 8 entries on top of the 12 builder ones, exceeding `MAX_WITHDRAWALS_PER_PAYLOAD - 1 = 15`. Test verifies the spec formula caps correctly. Sister to T1.3.
+- **T2.5 (Glamsterdam-target — empty builder-pending-withdrawals AND empty builders-list).** Edge case at Gloas activation slot: `state.builder_pending_withdrawals` and `state.builders` are both empty (per `upgrade_to_gloas` initialisation). Phases A and C produce zero withdrawals; phase B (partial) is called with `prior_withdrawals = []` — same Pectra behaviour. All six should produce identical output here, including lighthouse (since the absence of Gloas-phase logic is invisible when there are no builders).
 
-- **`process_builder_withdrawals` (Gloas-only, EIP-7732)** — adds a
-  third drain phase BEFORE partial drain. lighthouse/grandine's
-  hardcoded `== 8` would diverge under non-empty `prior_withdrawals`
-  here. Audit Gloas-fork code separately.
-- **`update_next_withdrawal_validator_index`** Capella-heritage helper:
-  advances `next_withdrawal_validator_index` based on the LAST
-  Withdrawal's `validator_index + 1 mod len(state.validators)`. With
-  Pectra's two-phase drain, the partial-queue Withdrawals INFLUENCE
-  this index too (last partial validator's index wins). Worth
-  confirming all clients respect this.
-- **`apply_withdrawals` Capella-heritage helper**: actually mutates
-  `state.balances[validator_index] -= amount` AND mutates
-  `latest_execution_payload_header.withdrawals_root`. The latter is
-  particularly interesting: the withdrawals_root is the SSZ root of
-  the Withdrawals list — any client that hashes wrong would diverge
-  on the FIRST block produced post-fork.
-- **Withdrawal-index continuity gap**: H10 asserts withdrawal_index
-  only increments on append. So a partial-queue entry that fails
-  eligibility produces NO Withdrawal AND NO index increment, but
-  DOES advance processed_count. Observable: a partial-queue with 5
-  ineligible-then-1-eligible entries produces 1 Withdrawal at
-  `state.next_withdrawal_index`, NOT at `+5`. Worth a fixture
-  verifying this.
-- **`MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP = 2` minimal preset**
-  — grandine's preset.rs notes the minimal value differs. Worth
-  running the minimal preset fixtures to check.
-- **lodestar's `validatorBalanceAfterWithdrawals` Map cache** — tracks
-  per-validator balance mutations across phases (lines 249, 323, 431).
-  Same single-source-of-truth concern as items #4/#5: any direct
-  `state.balances.set()` between two cache reads would diverge.
-- **`get_pending_balance_to_withdraw(state, validator_index)`** —
-  used by item #2 (consolidation) and item #6 (voluntary exit) to
-  predict what's queued. The Pectra-new "0 pending" check at exit
-  time depends on this sum being correct. Worth verifying that
-  drained entries (sliced off in `update_pending_partial_withdrawals`)
-  don't leak into this sum.
-- **prysm's `mathutil.Sub64` in `get_balance_after_withdrawals`** —
-  defensive underflow check. Per H8, `total_withdrawn ≤ balance`
-  should be invariant, but if violated, prysm returns an error rather
-  than 0 (grandine) or a panic (lighthouse via `safe_sub`). Three
-  different failure modes for the same dead-code path.
-- **Gloas builder-payment withdrawals interaction** — when a builder
-  earns a payment, it gets queued as a Withdrawal in the next block.
-  This adds a NEW `processBuilderWithdrawals` phase BEFORE the partial
-  drain in Gloas. Cross-fork upgrade fixture spanning Pectra → Gloas
-  would exercise the choreography.
-- **`exit_balance_to_consume` shared with item #6**: when a partial
-  withdrawal request comes in via item #3, it consumes the same per-block
-  `exit_balance_to_consume` budget that voluntary exits do (item #6).
-  Worth a stateful fixture: 1 voluntary exit + 1 EIP-7002 partial
-  withdrawal in the same block — does the exit churn budget bookkeeping
-  remain correct?
+## Mainnet reachability
 
-## Future research items
+**Reachable on canonical traffic at Glamsterdam activation, on every Gloas-slot block.** `process_withdrawals` is the only operation called every block; the divergence triggers on the very first block.
 
-1. **Wire fork-fixture category in BeaconBreaker harness** (carries
-   over from item #11 — would also enable Phase 2 cross-fork upgrade
-   tests for this item).
-2. **Generate a minimal-preset stress fixture** with 9 entries in
-   `pending_partial_withdrawals` (overflows the 8-cap) — verify all
-   clients drain exactly 8.
-3. **lighthouse + grandine `== 8` vs spec `>= min(prior + 8, 15)`
-   forward-compat audit at Gloas activation** — non-empty
-   `prior_withdrawals` (from builder phase) would expose the divergence.
-4. **`update_next_withdrawal_validator_index` cross-cut**: with
-   partial-queue drain providing the LAST Withdrawal, the next-index
-   advance picks up from the partial validator's `index + 1`, NOT the
-   sweep-phase last validator. Verify all clients match.
-5. **`withdrawals_root` Merkleization**: the SSZ root of the
-   per-block Withdrawals list. Pectra's two-phase output produces a
-   list of mixed partial+sweep withdrawals — cross-client root must
-   match exactly.
-6. **`MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP = 16384` mainnet vs lower
-   minimal preset** — sweep-phase "no-fully-withdrawable validator
-   found" termination after `MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP`
-   iterations (NOT `len(state.validators)`). Worth a fixture
-   exercising > 16384 validators where the sweep wraps.
-7. **lodestar's BigInt-to-Number coercion at the amount boundary** —
-   `Number(withdrawableBalance)` would lose precision past 2^53 wei.
-   Pre-emptive fuzz target.
-8. **prysm's defensive `mathutil.Sub64` underflow error** vs grandine's
-   `saturating_sub` returning 0 vs lighthouse's `safe_sub` panicking
-   — three distinct failure modes for the same "should-be-impossible"
-   case. Codify as a contract test.
-9. **`pending_partial_withdrawals` queue cap (PENDING_PARTIAL_WITHDRAWALS_LIMIT
-   = 2^27 = 134M)** — adversarial scenario: 0x02 validator spams
-   EIP-7002 requests under fee escalation. Drain rate is 8 per block;
-   can the queue grow unboundedly? Computed worst-case: 134M /
-   (8/block × 32 slots/epoch × 225 epochs/day) = ~232 days to fill at
-   max input rate.
-10. **Cross-cut with item #6 `exit_balance_to_consume`** — partial
-    withdrawal queue consumption (item #3) and voluntary exits (item
-    #6) share the per-epoch exit churn budget. Stateful fixture:
-    multiple exits + partial requests in same block.
+**Trigger.** The first Gloas-slot block carrying any of: (a) a non-empty `state.builder_pending_withdrawals` (populated by Gloas-new builder-payment processing); (b) a builder in `state.builders` with `withdrawable_epoch <= current_epoch && balance > 0` (a builder ready for sweep); or (c) `next_withdrawal_builder_index` rotation. Under steady-state Gloas mainnet, all three conditions are satisfied within a few epochs of activation, so divergence is essentially certain immediately.
+
+On lighthouse: the Electra `process_withdrawals` runs (skipping Gloas Phase A + C). `state.builder_pending_withdrawals` is never drained — the queue grows monotonically. `state.builders[*].balance` is never withdrawn — builder balances accumulate indefinitely. The produced Withdrawal list contains only validator-side entries (partial-queue + validator sweep), missing the builder entries that other five clients produce. The execution payload's `withdrawals_root` therefore differs across the 1-vs-5 cohort.
+
+On prysm, teku, nimbus, lodestar, grandine: Phase A drains the builder-pending-payment queue, Phase B drains the partial-withdrawal queue (with the spec-correct `min(prior + 8, MAX - 1)` cap), Phase C cyclic-sweeps the builder list. The Withdrawal list contains all four phases' output.
+
+**Severity.** State-root divergence on every Gloas-slot block (the `withdrawals_root` discrepancy propagates into `latest_execution_payload_header.withdrawals_root` which is part of `hash_tree_root(state)`). Lighthouse cannot follow the canonical Gloas chain without implementing the Gloas-modified `process_withdrawals`. The cohort split is **1 vs 5** from block 1 of Gloas mainnet.
+
+**Mitigation window.** Source-only at audit time; no Gloas EF operations fixtures yet for this routine. Closing requires lighthouse to:
+
+1. Add the new helpers `get_builder_withdrawals` (drain `state.builder_pending_withdrawals`) and `get_builders_sweep_withdrawals` (cyclic sweep over `state.builders`) in `consensus/state_processing/src/per_block_processing/`.
+2. Wire them into `process_withdrawals` at the Gloas fork gate (or fork-dispatch a new Gloas-specific implementation) with the correct phase ordering: Phase A builder → Phase B partial → Phase C builders-sweep → Phase D validator sweep.
+3. Switch the partial-queue cap formula from hardcoded `== 8` to the spec-correct `min(prior + 8, MAX - 1)` at Gloas (or fork-gate to a Gloas-specific path that does).
+4. Wire the per-block updates: `state.builder_pending_withdrawals.pop_front(processed_count)`, `state.next_withdrawal_builder_index = (last_builder_index + 1) % len(builders)`, `state.builders[i].balance -= amount` for each builder paid out.
+
+Reference implementations: prysm's `core/gloas/withdrawals.go` (Go), teku's `WithdrawalsHelpersGloas.java` (Java), nimbus's `beaconstate.nim:1761+ get_builder_withdrawals` (Nim), lodestar's `processWithdrawals.ts:135 getBuilderWithdrawals` (TypeScript), grandine's `gloas/block_processing.rs:235-280 get_builder_withdrawals_count` (Rust).
+
+Without the fix, mainnet at Glamsterdam activation splits between lighthouse and the rest on every Gloas-slot block.
+
+## Conclusion
+
+**Status: source-code-reviewed.** Source review of all six clients against the updated checkouts (versions per front matter) confirms the Pectra-surface hypotheses (H1–H10) remain satisfied: aligned implementations of the two-phase drain (partial → validator sweep), partial-cap formula, break/cursor semantics, amount formulas, eligibility predicate, queue slice, and `withdrawal_index`-on-append rule. All 80 EF `withdrawals` fixtures still pass uniformly on prysm + lighthouse + lodestar + grandine (320 PASS total); teku and nimbus pass internally.
+
+**Glamsterdam-target findings:**
+
+- **H11** (Gloas EIP-7732 builder-withdrawals + builders-sweep phases) fails for **lighthouse alone**. The Gloas-modified `get_expected_withdrawals` (`vendor/consensus-specs/specs/gloas/beacon-chain.md` "Modified `get_expected_withdrawals`") adds two new helpers: `get_builder_withdrawals` (Phase A, drain `state.builder_pending_withdrawals`) and `get_builders_sweep_withdrawals` (Phase C, cyclic sweep over `state.builders`). Five clients implement both phases: prysm (`core/gloas/withdrawals.go` + `state-native/getters_gloas.go:432 ExpectedWithdrawalsGloas`), teku (`WithdrawalsHelpersGloas.java`), nimbus (`beaconstate.nim:1761 get_builder_withdrawals` + Gloas `get_expected_withdrawals` at line 1965+), lodestar (`processWithdrawals.ts:34, :60, :98, :135 getBuilderWithdrawals`), grandine (`gloas/block_processing.rs:235-280 get_builder_withdrawals_count` + `:265-305 get_builders_sweep_withdrawals_count`). Lighthouse has the state fields allocated by the Gloas upgrade (`upgrade/gloas.rs:101-105`) but zero references to `get_builder_withdrawals` / `get_builders_sweep_withdrawals` / `builder_pending_withdrawals` in `consensus/state_processing/src/per_block_processing/`.
+- **H12** (spec-correct partial cap under non-empty prior) is satisfied for all five clients that implement Gloas. Grandine's Gloas-specific code at `gloas/block_processing.rs:308-325 get_pending_partial_withdrawals_count` uses the spec formula explicitly, addressing the forward-compat concern flagged in the prior audit about its Pectra-Electra hardcoded `== 8`. Lighthouse fails H12 too, but the broader H11 absence makes this moot.
+
+**1-vs-5 lone-laggard split with lighthouse the outlier** — same pattern as item #7 (`process_attestation`). Combined `splits` = `[lighthouse]`. Impact `mainnet-glamsterdam` because the divergence materialises on every Gloas-slot block from block 1.
+
+Notable per-client style differences (all observable-equivalent on the Pectra surface):
+
+- **prysm** has a fully separate Gloas withdrawals module (`core/gloas/withdrawals.go` + `state-native/getters_gloas.go:432 ExpectedWithdrawalsGloas`); the Pectra `core/blocks/withdrawals.go` is unchanged.
+- **lighthouse** uses a single fork-keyed `process_withdrawals` function with no Gloas branch; the Gloas state fields exist (allocated in the upgrade) but are never read or mutated by per-block processing.
+- **teku** uses subclass-override polymorphism — `WithdrawalsHelpersGloas extends WithdrawalsHelpersElectra` cleanly inserts the new phases.
+- **nimbus** uses per-fork `when` blocks plus dedicated `get_builder_withdrawals` and Gloas `get_expected_withdrawals` functions.
+- **lodestar** uses fork-gated branches (`if (fork >= ForkSeq.gloas)`) inside a single function, with `getBuilderWithdrawals` as a helper.
+- **grandine** uses a per-fork module split — `gloas/block_processing.rs` is a separate Gloas-specific implementation that addresses the forward-compat hardcoded-cap concern.
+
+Recommendations to the harness and the audit:
+
+- Generate the **T1.3 / T1.4 / T2.4 Gloas builder-withdrawals fixtures** (Phase A drain, Phase C sweep, spec-correct partial cap under non-empty prior). Lighthouse-specific; the other five clients should pass all three.
+- File a coordinated PR against lighthouse to (a) add `get_builder_withdrawals` and `get_builders_sweep_withdrawals` helpers in `consensus/state_processing/src/per_block_processing/`, (b) wire them into `process_withdrawals` at the Gloas fork gate, (c) switch the partial-queue cap formula from hardcoded `== 8` to the spec-correct `min(prior + 8, MAX - 1)` at Gloas.
+- Generate a **minimal-preset stress fixture** with 9 entries in `pending_partial_withdrawals` (overflows the 8-cap) — verify all clients drain exactly 8 at Pectra.
+- Wire the **fork-fixture category in BeaconBreaker harness** (carries over from item #11) to enable cross-fork upgrade fixtures spanning Pectra → Fulu → Gloas.
+
+## Cross-cuts
+
+### With item #3 (`process_withdrawal_request` partial-withdrawal producer)
+
+Item #3 appends entries to `state.pending_partial_withdrawals` (queue this item drains in Phase B). The Pectra cycle: item #3 writes → this item reads + slices. The Gloas-new builder analog: builder-payment processing (via item #7's attestation-based weight tracking and the new `process_builder_pending_payments` epoch helper, plus item #9's slashing-time clearing) writes into `state.builder_pending_withdrawals`; this item's Phase A drains them.
+
+### With item #11 (`upgrade_to_electra` initialiser)
+
+Item #11 seeds `state.pending_partial_withdrawals = []` at Pectra activation. At Gloas activation, `upgrade_to_gloas` (the sister item flagged in item #11's recheck) seeds `state.builder_pending_withdrawals = []` and `state.builders = []`. Without those allocations, this item's Phase A and Phase C would have nothing to drain (and would skip cleanly). With them, they accumulate over time and this item's correct draining is required.
+
+### With Gloas `process_payload_attestation` (sibling — populates builder_pending_withdrawals)
+
+The Gloas EIP-7732 builder-payment lifecycle: builder pays for a slot via a bid → on payload-availability attestation, the bid weight is tracked (item #7 H10 — also fails on lighthouse) → at epoch boundary, `process_builder_pending_payments` settles the bid into a `BuilderPendingWithdrawal` → this item's Phase A drains it into a `Withdrawal`. The full lifecycle requires:
+
+- Item #7 H10 (lighthouse must increment `state.builder_pending_payments[*].weight`).
+- A future audit of `process_builder_pending_payments` (epoch helper).
+- This item's H11 (lighthouse must drain `state.builder_pending_withdrawals` in Phase A).
+- A future audit of `process_payload_attestation` (Gloas-new operation).
+
+Lighthouse currently fails item #7 H10 AND item #12 H11, breaking the lifecycle at two points.
+
+### With item #6 H8 / item #8 H9 / item #9 H10 (EIP-8061 cascade)
+
+The five-vs-one EIP-8061 cascade (items #2, #3, #4, #6, #8, #9) targets `compute_exit_epoch_and_update_churn`. It does **not** propagate into this item — `process_withdrawals` uses neither `initiate_validator_exit` nor `compute_exit_epoch_and_update_churn`. The two families (EIP-8061 churn vs EIP-7732 ePBS) are orthogonal.
+
+## Adjacent untouched Electra/Gloas-active consensus paths
+
+1. **`process_builder_pending_payments` (Gloas-new epoch helper)** — settles past builder bids into `BuilderPendingWithdrawal` entries that this item's Phase A drains. Sister audit item.
+2. **`process_payload_attestation` (Gloas-new operation)** — populates `state.execution_payload_availability` and feeds the weight tracking for `process_builder_pending_payments`. Sister audit item.
+3. **`update_next_withdrawal_validator_index`** Capella-heritage helper — advances `next_withdrawal_validator_index` based on the LAST Withdrawal's `validator_index + 1 mod len(state.validators)`. At Gloas with Phases A and C also producing Withdrawals, the index advance picks up from whichever phase produced the last entry. Verify all clients respect this.
+4. **`next_withdrawal_builder_index` Gloas-new sibling** — advanced by Phase C cyclic-sweep, analogous to `next_withdrawal_validator_index` for the Pectra validator sweep. Verify cross-client.
+5. **`apply_withdrawals` Capella-heritage helper** — mutates `state.balances[validator_index] -= amount` AND `latest_execution_payload_header.withdrawals_root`. The latter is particularly interesting: the withdrawals_root is the SSZ root of the Withdrawals list — any client that hashes wrong would diverge on the FIRST block produced post-fork.
+6. **Withdrawal-index continuity gap** — H10 asserts withdrawal_index only increments on append. So a partial-queue entry that fails eligibility produces NO Withdrawal AND NO index increment, but DOES advance processed_count.
+7. **`MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP = 2` minimal preset** — grandine's preset.rs notes the minimal value differs. Worth running the minimal preset fixtures to check.
+8. **lodestar's `validatorBalanceAfterWithdrawals` Map cache** — tracks per-validator balance mutations across phases. Same single-source-of-truth concern as items #4/#5: any direct `state.balances.set()` between two cache reads would diverge.
+9. **`get_pending_balance_to_withdraw(state, validator_index)`** — used by item #2 (consolidation) and item #6 (voluntary exit) to predict what's queued. Drained entries (sliced off in `update_pending_partial_withdrawals`) must not leak into this sum.
+10. **prysm's `mathutil.Sub64` in `get_balance_after_withdrawals`** — defensive underflow check. Per H8, `total_withdrawn ≤ balance` should be invariant; three different failure modes across clients for the same dead-code path (prysm errors, grandine saturates to 0, lighthouse panics via `safe_sub`).
+11. **Lighthouse's `is_attestation_same_slot` orphan helper** observed in item #7 H10 — same pattern at item #12 H11: the state fields exist but no caller wires them in. A reviewer might mistake "field allocated" for "implementation present" when the readers are missing.
+12. **EIP-7732 builder-lifecycle audit chain** — item #7 H10 (attestation-time weight increment) + item #9 H9 (slashing-time clearing) + this item's H11 (block-time drain) + future audits of `process_payload_attestation` and `process_builder_pending_payments` form the full lifecycle. Lighthouse currently fails item #7 H10 and item #12 H11, so multiple coordinated fixes are needed to close the lifecycle.
