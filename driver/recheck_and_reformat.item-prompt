@@ -1,0 +1,102 @@
+Recheck item ${ITEM}. Note that
+* We have updated the client code in the checked out directories.
+* Consider that we are now targeting the Glamsterdam fork (Gloas on the CL, Amsterdam on the EL)
+* When analyzing code, add those code snippets and directly mention the backing file. If this is not already present.
+* For the `*_version` front-matter fields, run `driver/get_versions.sh` from
+  the repo root and copy the version string it prints for each client
+  verbatim — do not derive versions from `git describe` or any other
+  source. The script handles the per-client quirks (build-time injection,
+  release tags on hotfix branches, props files) that ad-hoc commands miss.
+
+Also update the item header to almost match the following layout. The
+front-matter block goes at the very top of the file (Jekyll-style); GitHub
+recognizes that position and renders it as a metadata table. Putting it
+after the H1 breaks rendering — the closing `---` becomes a setext H2
+underline that swallows the front matter.
+
+---
+status: <drafting|hypotheses-formed|source-code-reviewed|fuzzed|final>
+impact: <unknown|none|contained|synthetic-state|custom-chain|mainnet-proposer|mainnet-everyone>
+last_update: <YYYY-MM-DD>
+builds_on: [<item-number>, <item-number>, ...]
+eips: [EIP-<number>, EIP-<number>, ...]
+splits: [<client>, <client>, ...]   # only when impact != none
+# main_md_summary: <one-line summary>   # YAML comment, only when impact != none
+remediated: true                     # optional; set when the divergence is fixed upstream
+prysm_version: <version_tag>
+lighthouse_version: <version_tag>
+teku_version: <version_tag>
+nimbus_version: <version_tag>
+lodestar_version: <version_tag>
+grandine_version: <version_tag>
+---
+
+# <item number>: <item description>
+
+## Summary
+<short summary>
+
+## Question
+<broad description of the research question>
+
+## Hypotheses
+<concrete hypotheses, numerated H1, H2, etc>
+
+## Findings
+<source code findings>
+### prysm
+### lighthouse
+### teku
+### nimbus
+### lodestar
+### grandine
+
+## Cross-reference table
+<a table with the rows being the clients and columns being the hypotheses, and the cell being a comment on what was found>
+
+## Empirical tests
+<suggested empirical tests, or when we actually carried out tests put the results>
+
+## Mainnet reachability
+<only include this section when impact is mainnet-proposer or mainnet-everyone — describe who can exploit this and how>
+
+## Conclusion
+<conclusions and suggestions for next steps>
+
+Notes on the front matter:
+* `impact` ladder: `none` = no divergence anywhere; `contained` = divergence
+  in EVM/state code but caught by an upstream layer (newPayload validation,
+  RLP decoding, tx-pool admission) before it can produce a state-root
+  mismatch; `synthetic-state` = would fork given crafted state with no
+  upstream guard; `custom-chain` = exists but only triggerable on a custom
+  chain configuration, or on mainnet only at thresholds unreachable given
+  realistic capital; `mainnet-proposer` = mainnet-reachable by a block
+  proposer; `mainnet-everyone` = mainnet-reachable by any tx sender.
+* `builds_on` lists item numbers this audit assumes findings from. Use `[]`
+  if none.
+* `eips` lists the relevant EIP numbers (e.g. `[EIP-4844, EIP-7702]`). Use
+  `[]` if none.
+* `main_md_summary` is a short one-line summary of the divergence in the
+  same shape as the main README.md's Findings-table "Finding" column
+  (e.g. `lodestar accepts column sidecar with malformed kzg proof`). It lives
+  as a YAML comment line `# main_md_summary: <text>` inside the front
+  matter, so GitHub's metadata-table renderer skips it. Required when
+  `impact != none`; omitted when `impact: none`.
+* `remediated` is an optional flag; set to `true` (the only allowed value)
+  when the divergence has been fixed upstream and the audit's role on this
+  item is closed. Omit otherwise.
+* `splits` lists the clients that would follow a divergent path away from
+  correct mainnet behaviour. They don't all have to follow the same
+  divergent path — just split off. Required when `impact != none` (use
+  `[]` if `impact: unknown` and you don't know yet); the field must be
+  omitted when `impact: none`. Valid entries: `prysm`, `lighthouse`,
+  `teku`, `nimbus`, `lodestar`, `grandine`.
+  E.g. `[prysm, grandine]` describes a 2-vs-4 split; `[teku]` is 1-vs-5.
+* `## Mainnet reachability` is only present when `impact` is one of the
+  `mainnet-*` values; omit the heading entirely otherwise.
+* H3 client headings under `## Findings` use the short codebase names:
+  `prysm`, `lighthouse`, `teku`, `nimbus`, `lodestar`, `grandine`. No
+  file names or other parenthetical detail in the heading itself — put
+  those in the body of the section.
+
+git commit when done.
