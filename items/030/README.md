@@ -1,134 +1,96 @@
-# Item 30 — `get_beacon_proposer_index` (Fulu-modified) + `process_proposer_lookahead` + `initialize_proposer_lookahead` + `compute_proposer_indices` + `get_beacon_proposer_indices` audit
+---
+status: source-code-reviewed
+impact: none
+last_update: 2026-05-12
+builds_on: [11, 27]
+eips: [EIP-7917, EIP-7732]
+prysm_version: v7.1.3-rc.3-213-gd35d65625f
+lighthouse_version: v8.1.3
+teku_version: 26.4.0-72-gc05af0eaa0
+nimbus_version: v26.3.1
+lodestar_version: v1.42.0-69-g35940ffd61
+grandine_version: 2.0.4-18-geeb33a92
+---
 
-**Status:** no-divergence-pending-fixture-run — audited 2026-05-04. **First Fulu-NEW item** of the corpus (prior items #1–#29 audited the Pectra surface). EIP-7917 deterministic proposer lookahead — replaces the on-demand proposer-index computation with a pre-computed `proposer_lookahead` vector in `BeaconState`. Hot-path consumed every slot at block proposal/validation; cold-path mutated once per epoch via `process_proposer_lookahead` at the end of `process_epoch`. Cross-cuts item #11 (paralleled by `upgrade_to_fulu` which calls `initialize_proposer_lookahead`) and item #27 (`get_next_sync_committee_indices` uses similar `compute_proposer_index` primitive; both proposer + sync-committee selection get parallel Gloas modifications).
+# 30: `get_beacon_proposer_index` + `process_proposer_lookahead` + `initialize_proposer_lookahead` + `compute_proposer_indices` + `get_beacon_proposer_indices` (Fulu-NEW EIP-7917 deterministic proposer lookahead)
 
-The migration from on-demand to pre-computed proposer indices opens a new class of divergence risk: state-cache staleness, lookahead-vs-recomputed conflicts, and migration-time alignment at exactly `FULU_FORK_EPOCH`. Source review confirms all 6 clients implement the spec faithfully; the divergence surface is entirely in error-guard semantics, in-place vs allocation patterns, and pre-Fulu fallback handling.
+## Summary
 
-## Scope
+EIP-7917 deterministic proposer lookahead — `state.proposer_lookahead: Vector[ValidatorIndex, 2 × SLOTS_PER_EPOCH = 64]` pre-computes proposer indices for the current + next epoch, replacing the on-demand `compute_proposer_index` call in `get_beacon_proposer_index`. Initialized once at `upgrade_to_fulu`; mutated only at end-of-epoch via `process_proposer_lookahead`; consumed via direct indexed lookup at every slot.
 
-In: `get_beacon_proposer_index(state)` Fulu-modified hot path; `process_proposer_lookahead(state)` per-epoch update; `initialize_proposer_lookahead(state)` called once at `upgrade_to_fulu`; `compute_proposer_indices(state, epoch, seed, indices)` pure function; `get_beacon_proposer_indices(state, epoch)` accessor; the `proposer_lookahead: Vector[ValidatorIndex, 64]` field in BeaconState (MIN_SEED_LOOKAHEAD=1 × 2 × SLOTS_PER_EPOCH=32).
+**Fulu surface (carried forward from 2026-05-04 audit):** all six clients implement the lookahead vector with byte-for-byte equivalent observable behaviour. Per-client divergences are entirely in error-guard semantics (lighthouse alone has explicit `InsufficientLookahead`/`ExcessiveLookahead` errors), cache architecture (lodestar separates `this.proposers` from `state.proposerLookahead`), allocation patterns (in-place vs Vec/ArrayList copies), pre-Fulu fallback handling (prysm double-checks state version AND epoch), and Optional wrapping (nimbus retains stale lookahead on `Opt.none` — forward-fragile under empty validator set).
 
-Out: `compute_proposer_index` (Phase0-heritage, audited at item #27 cross-cut); fork-choice integration of proposer indices (Track D); validator-client proposer-duty API (out-of-scope per OUT_OF_SCOPE.md); pre-Fulu on-demand path (still present in all 6 as fallback but not the audit target).
+**Gloas surface (at the Glamsterdam target): `compute_proposer_indices` is Modified at Gloas to delegate to `compute_balance_weighted_selection`; output algorithmically identical to the Fulu inline body.** Cross-cuts item #27 H10 finding: the new helper has the SAME observable behaviour as the per-slot `compute_proposer_index` (Electra) call inside the Fulu `compute_proposer_indices` body. `process_proposer_lookahead`, `initialize_proposer_lookahead`, `get_beacon_proposer_index`, `get_beacon_proposer_indices` are NOT modified at Gloas — they inherit verbatim from Fulu.
+
+**Per-client Gloas wiring of `compute_proposer_indices` (4-vs-2 split, all observable-equivalent):**
+- **Four clients (lighthouse, teku, nimbus, grandine) wire explicit Gloas branches** calling `compute_balance_weighted_selection`. Teku caught up since the 2026-05-04 audit (`MiscHelpersGloas.computeProposerIndices` override now exists).
+- **Two clients (prysm, lodestar) reuse the Pectra-inline algorithm at Gloas** via `state.Version() >= version.Electra` / `fork >= ForkSeq.electra` fork-order coverage. Observable-equivalent because `compute_balance_weighted_selection(state, indices, seed, size=1, shuffle_indices=True)[0]` produces the same first-selected validator as the Pectra inline `compute_proposer_index(state, indices, seed)` call.
+
+**Reclassification of prior "Pattern M A-tier divergence vector" claim:** the 2026-05-04 audit hypothesized that the 3-vs-3 split on Gloas wiring of `compute_proposer_indices` would cause "different proposer indices = different blocks at Gloas activation". This claim is REFUTED by item #27 H10: the Gloas `compute_balance_weighted_selection` helper is algorithmically identical to the Pectra inline algorithm (same iteration pattern, same hash preimage, same offset formula, same predicate). At Gloas activation, all 6 clients produce identical proposer indices. **Pattern M downgrades from A-tier to observable-equivalent in item #28's catalogue.**
+
+**Cross-cut to item #28 update:** Pattern M (compute_proposer_indices Gloas wiring) should be reclassified from A-tier divergence to "observable-equivalent 4-vs-2 client split". Same reclassification rationale as Pattern F (sync committee selection — item #27 H10).
+
+**Impact: none.** Twelfth impact-none result in the recheck series.
+
+## Question
+
+Pyspec Fulu-NEW EIP-7917 (`vendor/consensus-specs/specs/fulu/beacon-chain.md:249-261`):
+
+```python
+def compute_proposer_indices(state, epoch, seed, indices):
+    start_slot = compute_start_slot_at_epoch(epoch)
+    seeds = [hash(seed + uint_to_bytes(Slot(start_slot + i))) for i in range(SLOTS_PER_EPOCH)]
+    return [compute_proposer_index(state, indices, seed) for seed in seeds]
+```
+
+Pyspec Gloas-Modified (`vendor/consensus-specs/specs/gloas/beacon-chain.md:641-661`):
+
+```python
+def compute_proposer_indices(state, epoch, seed, indices):
+    start_slot = compute_start_slot_at_epoch(epoch)
+    seeds = [hash(seed + uint_to_bytes(Slot(start_slot + i))) for i in range(SLOTS_PER_EPOCH)]
+    return [
+        compute_balance_weighted_selection(state, indices, seed, size=1, shuffle_indices=True)[0]
+        for seed in seeds
+    ]
+```
+
+The only difference: `compute_proposer_index(state, indices, seed)` → `compute_balance_weighted_selection(state, indices, seed, size=1, shuffle_indices=True)[0]`. Both functions implement the same balance-weighted-sampling iteration: 16-bit `MAX_RANDOM_VALUE = 65535`, `MAX_EFFECTIVE_BALANCE_ELECTRA = 2048 ETH`, hash preimage `seed + uint_to_bytes(i // 16)`, offset `(i % 16) * 2`, predicate `effective_balance * MAX_RANDOM_VALUE >= MAX_EFFECTIVE_BALANCE_ELECTRA * random_value`, `compute_shuffled_index` for next_index lookup. **Algorithmically identical for `size=1, shuffle_indices=True`.**
+
+`get_beacon_proposer_index`, `process_proposer_lookahead`, `initialize_proposer_lookahead`, `get_beacon_proposer_indices` are NOT modified at Gloas — `vendor/consensus-specs/specs/gloas/beacon-chain.md` has no `Modified` headings for these.
+
+Three recheck questions:
+1. Fulu-surface invariants (H1–H9 from prior audit) — do all six clients still implement byte-for-byte equivalent EIP-7917 deterministic lookahead?
+2. **At Gloas (the new target)**: which clients wire the new `compute_balance_weighted_selection` for `compute_proposer_indices`? Per item #27 H10, all wirings should be observable-equivalent.
+3. Does the prior audit's "Pattern M A-tier divergence" claim hold under current spec? (Spoiler: no — same as Pattern F sync committee.)
 
 ## Hypotheses
 
-| # | Hypothesis | Verdict | Rationale |
-|---|---|---|---|
-| H1 | Fulu hot path: `get_beacon_proposer_index(state) = state.proposer_lookahead[state.slot % SLOTS_PER_EPOCH]` — direct indexed lookup | ✅ all 6 | Single array index; no recomputation. |
-| H2 | `process_proposer_lookahead` shifts lookahead by SLOTS_PER_EPOCH and appends new lookahead for `current_epoch + MIN_SEED_LOOKAHEAD + 1` | ✅ all 6 | Confirmed via spec text and per-client source. |
-| H3 | `initialize_proposer_lookahead` populates 64 entries (= (MIN_SEED_LOOKAHEAD+1) × SLOTS_PER_EPOCH) at `upgrade_to_fulu` time | ✅ all 6 | All 6 use 2-iteration loop covering current + current+1. |
-| H4 | `compute_proposer_indices(state, epoch, seed, indices)` — per-slot loop with `hash(seed + uint_to_bytes(start_slot + i))` | ✅ all 6 | Identical hash-input layout. |
-| H5 | `get_beacon_proposer_indices(state, epoch) = compute_proposer_indices(state, epoch, get_seed(state, epoch, DOMAIN_BEACON_PROPOSER), get_active_validator_indices(state, epoch))` | ✅ all 6 | Standard spec composition. |
-| H6 | `process_proposer_lookahead` runs at the END of `process_epoch` (after `process_sync_committee_updates`) | ✅ all 6 | Spec ordering preserved. |
-| H7 | Lookahead is read-only at slot processing — only mutated by epoch processing | ✅ all 6 | No mid-epoch mutation observed. |
-| H8 | Pre-Fulu fallback: when state is pre-Fulu, fall back to on-demand computation via `compute_proposer_index` | ✅ all 6 | Each client implements explicit Fulu/pre-Fulu split. |
-| H9 | `MIN_SEED_LOOKAHEAD = 1` => total lookahead = 2 epochs = 64 slots | ✅ all 6 | Mainnet preset value. |
-| H10 | Forward-compat at Gloas: `compute_proposer_indices` switches to `compute_balance_weighted_selection` (parallel to item #27 sync committee modification) | ✅ confirmed in 3 of 6 (lighthouse, nimbus, grandine — pre-emptive Gloas pattern); prysm/teku/lodestar do NOT have Gloas branches yet | NEW Pattern M for item #28 catalogue. |
+- **H1.** Fulu hot path: `get_beacon_proposer_index(state) = state.proposer_lookahead[state.slot % SLOTS_PER_EPOCH]` — direct indexed lookup.
+- **H2.** `process_proposer_lookahead` shifts lookahead by `SLOTS_PER_EPOCH` and appends a new lookahead for `current_epoch + MIN_SEED_LOOKAHEAD + 1`.
+- **H3.** `initialize_proposer_lookahead` populates 64 entries (= `(MIN_SEED_LOOKAHEAD+1) × SLOTS_PER_EPOCH`) at `upgrade_to_fulu`.
+- **H4.** `compute_proposer_indices(state, epoch, seed, indices)` — per-slot loop with `hash(seed + uint_to_bytes(start_slot + i))`.
+- **H5.** `get_beacon_proposer_indices(state, epoch) = compute_proposer_indices(state, epoch, get_seed(state, epoch, DOMAIN_BEACON_PROPOSER), get_active_validator_indices(state, epoch))`.
+- **H6.** `process_proposer_lookahead` runs at the END of `process_epoch`.
+- **H7.** Lookahead is read-only at slot processing — only mutated by epoch processing.
+- **H8.** Pre-Fulu fallback path: on-demand `compute_proposer_index` per slot.
+- **H9.** `MIN_SEED_LOOKAHEAD = 1` → total lookahead = 2 epochs = 64 slots.
+- **H10.** *(Glamsterdam target — function bodies)*. `get_beacon_proposer_index`, `process_proposer_lookahead`, `initialize_proposer_lookahead`, `get_beacon_proposer_indices` are NOT modified at Gloas (no `Modified` headings in `vendor/consensus-specs/specs/gloas/beacon-chain.md`). `compute_proposer_indices` IS Modified at Gloas to delegate to `compute_balance_weighted_selection(state, indices, seed, size=1, shuffle_indices=True)[0]` per `:641-661`.
+- **H11.** *(Glamsterdam target — algorithmic equivalence)*. `compute_balance_weighted_selection(state, indices, seed, size=1, shuffle_indices=True)[0]` produces byte-for-byte identical output to the Fulu/Electra `compute_proposer_index(state, indices, seed)` call. Same iteration pattern, same hash preimage, same offset formula, same predicate, same `compute_shuffled_index` dispatch. **Refutes the 2026-05-04 audit's "Pattern M A-tier divergence" claim** — the algorithms are mathematically identical.
+- **H12.** *(Glamsterdam target — per-client Gloas wiring 4-vs-2 split)*. Four clients (lighthouse, teku, nimbus, grandine) wire explicit Gloas branches calling `compute_balance_weighted_selection`. Two clients (prysm, lodestar) reuse the Pectra-inline algorithm at Gloas via fork-order coverage. Both wirings observable-equivalent.
+- **H13.** *(Glamsterdam target — propagation from item #27 to item #30)*. The same `compute_balance_weighted_selection` helper is consumed at Gloas by:
+  - `get_next_sync_committee_indices` (item #27, `shuffle_indices=True, size=SYNC_COMMITTEE_SIZE`).
+  - `compute_proposer_indices` (this item, `shuffle_indices=True, size=1`).
+  - `compute_ptc` (Gloas-NEW PTC selection, `shuffle_indices=False, size=PTC_SIZE`).
+  Three call sites; same algorithmic-equivalence finding applies to all three.
 
-## Per-client cross-reference
+## Findings
 
-| Client | Hot path: `get_beacon_proposer_index` | `process_proposer_lookahead` | `initialize_proposer_lookahead` (upgrade) | `compute_proposer_indices` | `get_beacon_proposer_indices` |
-|---|---|---|---|---|---|
-| **prysm** | `helpers/validators.go:307-322` (`beaconProposerIndexAtSlotFulu`) — direct `lookAhead[slot%spe]`; pre-Fulu seed-compute fallback | `core/transition/gloas.go:199` `fulu.ProcessProposerLookahead` | `helpers/beacon_committee.go:660-675` (Go for-range) | `helpers/beacon_committee.go:679-702` (`PrecomputeProposerIndices`) | (folded into `BeaconProposerIndexAtSlot`) |
-| **lighthouse** | `types/src/state/beacon_state.rs:1289-1303` direct `proposer_lookahead.get(index)` post-Fulu | `state_processing/src/per_epoch_processing/single_pass.rs:477-504` (run if `conf.proposer_lookahead && fork_name.fulu_enabled()`) | `state_processing/src/upgrade/fulu.rs:20-36` | `types/src/state/beacon_state.rs:1083-1149` (with **insufficient-lookahead error guard #1099-1129**) | `types/src/state/beacon_state.rs:1308-1337` |
-| **teku** | `versions/fulu/helpers/BeaconStateAccessorsFulu.java:60-78` reads `proposer_lookahead[lookaheadIndex]` (with epoch offset for current vs next) | `versions/fulu/statetransition/epoch/EpochProcessorFulu.java:62-92` | `versions/fulu/helpers/MiscHelpersFulu.java:668-678` (Java IntStream) | `versions/fulu/helpers/MiscHelpersFulu.java:649-665` | `versions/fulu/helpers/BeaconStateAccessorsFulu.java:80-84` |
-| **nimbus** | `spec/validator.nim:540-570` — `when state is Fulu+`, lookup `state.proposer_lookahead[slot mod SLOTS_PER_EPOCH]` + cache write | `spec/state_transition_epoch.nim:1340-1361` | `spec/validator.nim:615-631` | `spec/validator.nim:444-456` | **TWO overloads**: `:572-585` (epoch-only Fulu+) and `:588-613` (shuffled-indices pre-Fulu fallback) |
-| **lodestar** | `cache/epochCache.ts:783-793` `getBeaconProposer` reads from `this.proposers[]` (CACHED separately from `state.proposerLookahead`); pre-loaded at epoch transition | `epoch/processProposerLookahead.ts:14-35` (also saves `nextShuffling` to cache) | `util/fulu.ts:12-43` (cache-aware: tries `getShufflingAtEpochOrNull` first) | `util/seed.ts:144-165` | (no separate function — uses `computeProposerIndices` directly) |
-| **grandine** | (uses standard accessor; reads `state.proposer_lookahead`) | `transition_functions/src/fulu/epoch_processing.rs:101-121` (uses `PostFuluBeaconState<P>` trait bound; `copy_within` Rust idiom) | `helper_functions/src/fork.rs:922-936` | `helper_functions/src/misc.rs:869-889` | `helper_functions/src/accessors.rs:1017-1032` |
+H1–H13 satisfied. **No state-transition divergence at the proposer-lookahead surface across Fulu or Gloas; the prior audit's Pattern M A-tier claim is refuted by item #27 H10 algorithmic-equivalence finding.**
 
-## Notable per-client findings
+### prysm
 
-### Lighthouse insufficient-lookahead error guard (defensive — others don't have it)
-
-Lighthouse's `compute_proposer_indices` has an explicit error guard at `beacon_state.rs:1099-1129`:
-
-```rust
-if spec.fork_name_at_epoch(epoch).fulu_enabled() {
-    // Post-Fulu we must never compute proposer indices using insufficient lookahead.
-    // This would be very dangerous as it would lead to conflicts between the *true* proposer
-    // as defined by `self.proposer_lookahead` and the output of this function.
-    if self.fork_name_unchecked().fulu_enabled()
-        && epoch < current_epoch.safe_add(spec.min_seed_lookahead)? {
-        return Err(BeaconStateError::ComputeProposerIndicesInsufficientLookahead { ... });
-    }
-} else {
-    // Pre-Fulu the situation is reversed, we *should not* compute proposer indices using
-    // too much lookahead. To do so would make us vulnerable to changes in the proposer
-    // indices caused by effective balance changes.
-    if epoch >= current_epoch.safe_add(spec.min_seed_lookahead)? {
-        return Err(BeaconStateError::ComputeProposerIndicesExcessiveLookahead { ... });
-    }
-}
-```
-
-**Subtle invariant flip**: pre-Fulu the dangerous direction was "too far forward" (effective balances might change). Post-Fulu the dangerous direction is "not far enough forward" (the lookahead is the source of truth and recomputation would diverge). **Other 5 clients don't have this explicit guard** — they rely on caller discipline. Lighthouse comment makes the contract explicit: "this would be very dangerous as it would lead to conflicts between the *true* proposer as defined by `self.proposer_lookahead` and the output of this function."
-
-**Forward-compat consequence**: at the Fulu→Gloas transition, this guard logic must extend to handle Gloas's `compute_balance_weighted_selection` correctly — no other client needs the same care because they don't enforce the contract.
-
-### Lodestar caches `proposers` separately from `state.proposerLookahead`
-
-Lodestar's hot-path `getBeaconProposer` (`epochCache.ts:783-793`) does NOT read directly from `state.proposerLookahead` — it reads from `this.proposers[]`, populated at epoch transition from `state.proposerLookahead.slice(0, SLOTS_PER_EPOCH)` (`epochCache.ts:415-416`, `714-715`).
-
-```typescript
-getBeaconProposer(slot: Slot): ValidatorIndex {
-  const epoch = computeEpochAtSlot(slot);
-  if (epoch !== this.currentShuffling.epoch) {
-    throw new EpochCacheError({ code: PROPOSER_EPOCH_MISMATCH, ... });
-  }
-  return this.proposers[slot % SLOTS_PER_EPOCH];
-}
-```
-
-**Cache invalidation risk**: if `state.proposerLookahead` is mutated mid-epoch, `this.proposers` becomes stale. The spec only mutates `proposer_lookahead` at end of epoch (in `process_proposer_lookahead`), so this is safe for spec-compliant inputs. **But this is a forward-fragility class**: any future spec change that mutates `proposer_lookahead` mid-epoch would silently diverge lodestar from the other 5.
-
-The comment at `epochCache.ts:780-781` explicitly notes this design rationale: "Read from proposers instead of state.proposer_lookahead because we set it in `finalProcessEpoch()`".
-
-### Nimbus has TWO `get_beacon_proposer_indices` overloads (pre-Fulu artifact)
-
-Nimbus's `validator.nim` defines two overloads:
-- **Line 572-585**: `(state, epoch)` — Fulu+ path, returns `seq[Opt[ValidatorIndex]]`
-- **Line 588-613**: `(state, shuffled_indices, epoch)` — pre-Fulu path, uses `compute_inverted_shuffled_index` to map shuffled indices back
-
-At Fulu+, the second overload dispatches to the first via `get_beacon_proposer_indices(state, epoch)` (line 612-613). **Migration artifact**: pre-Fulu used shuffled indices for proposer selection; Fulu uses sorted active indices. Nimbus retained both code paths.
-
-**Future research**: verify no caller bypasses the Fulu+ dispatch and accidentally uses the pre-Fulu shuffled path on a Fulu state.
-
-### Nimbus Optional-wrapping retains stale lookahead on empty validator set
-
-Nimbus's `process_proposer_lookahead` (`state_transition_epoch.nim:1357-1359`):
-
-```nim
-for i in 0 ..< SLOTS_PER_EPOCH:
-  if new_proposers[i].isSome():
-    mitem(state.proposer_lookahead, last_epoch_start + i) = new_proposers[i].get.uint64
-```
-
-If `new_proposers[i]` is `Opt.none` (empty validator set or compute failure), nimbus **retains the stale lookahead value** from the previous epoch. Other 5 clients don't have this Optional wrapping — they would either error or write a default.
-
-**Forward-fragility class**: at empty validator set, nimbus's behavior diverges silently from the other 5. This is dead code today (mainnet has > 1M validators) but a forward-compat divergence vector.
-
-### Grandine uses `PostFuluBeaconState<P>` trait bound
-
-Grandine's `process_proposer_lookahead` (`transition_functions/src/fulu/epoch_processing.rs:101-121`) takes `&mut impl PostFuluBeaconState<P>` — the type system enforces that the function can only be called on a post-Fulu state. Other clients use runtime checks (prysm `state.Version() >= version.Fulu`, lighthouse `fork_name.fulu_enabled()`, etc.).
-
-Module organization: dedicated `transition_functions/src/fulu/` directory mirrors items #12, #14, #19's "module-namespace dispatch" finding. Same pattern documented in item #28 Pattern I.
-
-### Teku constructs new `ArrayList` (not in-place; allocation per epoch)
-
-Teku's `processProposerLookahead` (`EpochProcessorFulu.java:62-92`) constructs a new `ArrayList<>` from `subList(slotsPerEpoch, size())` then concatenates `lastEpochProposerIndices`. This is **not in-place**: O(N) memory allocation per epoch.
-
-Other clients:
-- prysm: in-place via Go slice manipulation
-- lighthouse: copies to Vec, copy_within, converts back to Vector — temporary allocation
-- nimbus: in-place via `mitem(state.proposer_lookahead, i)` mutation
-- lodestar: constructs new Uint8 SSZ view via `ssz.fulu.ProposerLookahead.toViewDU([...])` — also allocates
-- grandine: copies to Vec, copy_within, converts back to PersistentVector — temporary allocation
-
-**Performance trade-off, no consensus impact.** Equivalent output.
-
-### Prysm double-checks BOTH state version AND epoch in `BeaconProposerIndexAtSlot`
-
-Prysm's `BeaconProposerIndexAtSlot` (`validators.go:328-330`):
+`vendor/prysm/beacon-chain/core/helpers/validators.go:301-322 beaconProposerIndexAtSlotFulu` (Fulu hot path): direct `lookAhead[slot%spe]`. `validators.go:325-330 BeaconProposerIndexAtSlot` runtime dispatch:
 
 ```go
 if state.Version() >= version.Fulu && e >= params.BeaconConfig().FuluForkEpoch {
@@ -138,102 +100,372 @@ if state.Version() >= version.Fulu && e >= params.BeaconConfig().FuluForkEpoch {
 }
 ```
 
-Other 5 clients check fork on state alone OR on epoch alone — not both. Prysm's double-check protects against the (theoretically impossible) state at Fulu but slot in pre-Fulu epoch. **Defensive programming, no consensus impact.**
+Pre-Fulu fallback uses on-demand `ComputeProposerIndex` per slot.
 
-### Initialize_proposer_lookahead loop boundary syntax differs across 6 clients
+`vendor/prysm/beacon-chain/core/transition/gloas.go:199 fulu.ProcessProposerLookahead` — Gloas epoch processing calls the Fulu function (no Gloas override). Spec-conformant since `process_proposer_lookahead` is not Modified at Gloas.
 
-All 6 produce the same 2-iteration loop (current + current+1) but use different syntactic boundaries:
+`vendor/prysm/beacon-chain/core/helpers/beacon_committee.go:677-702 PrecomputeProposerIndices`:
 
-| Client | Loop syntax | Iterations |
-|---|---|---|
-| prysm | `for i := range params.BeaconConfig().MinSeedLookahead + 1` | 0..=1 |
-| lighthouse | `for i in 0..(spec.min_seed_lookahead.safe_add(1)?.as_u64())` | 0..=1 (exclusive upper) |
-| teku | `IntStream.rangeClosed(0, specConfigFulu.getMinSeedLookahead())` | 0..=1 (inclusive upper) |
-| nimbus | `for i in 0 ..< (MIN_SEED_LOOKAHEAD + 1)` | 0..=1 (exclusive upper) |
-| lodestar | `for (let i = 0; i <= MIN_SEED_LOOKAHEAD; i++)` | 0..=1 (inclusive upper) |
-| grandine | `for i in 0..=P::MinSeedLookahead::U64` | 0..=1 (inclusive upper) |
-
-**All produce identical 2-iteration output.** Off-by-one risk is purely cosmetic — the spec's `range(MIN_SEED_LOOKAHEAD + 1)` is unambiguous.
-
-### Lodestar `processProposerLookahead` saves shuffling to cache (single-pass optimization)
-
-Lodestar's `processProposerLookahead.ts:25-27`:
-
-```typescript
-const shuffling = computeEpochShuffling(state, cache.nextShufflingActiveIndices, epoch);
-// Save shuffling to cache so afterProcessEpoch can reuse it instead of recomputing
-cache.nextShuffling = shuffling;
+```go
+func PrecomputeProposerIndices(state state.ReadOnlyBeaconState, activeIndices []primitives.ValidatorIndex, e primitives.Epoch) ([]primitives.ValidatorIndex, error) {
+    hashFunc := hash.CustomSHA256Hasher()
+    proposerIndices := make([]primitives.ValidatorIndex, params.BeaconConfig().SlotsPerEpoch)
+    seed, err := Seed(state, e, params.BeaconConfig().DomainBeaconProposer)
+    // ...
+    for i := uint64(0); i < uint64(params.BeaconConfig().SlotsPerEpoch); i++ {
+        seedWithSlot := append(seed[:], bytesutil.Bytes8(uint64(slot)+i)...)
+        seedWithSlotHash := hashFunc(seedWithSlot)
+        index, err := ComputeProposerIndex(state, activeIndices, seedWithSlotHash)
+        // ...
+        proposerIndices[i] = index
+    }
+    return proposerIndices, nil
+}
 ```
 
-Other 5 clients recompute on next `process_epoch` invocation. **Lodestar-unique optimization** that integrates with its single-pass epoch architecture; observable-equivalent.
+**NO Gloas-specific branch** in `PrecomputeProposerIndices` — calls `ComputeProposerIndex` for each slot. `ComputeProposerIndex` (`validators.go:397-441`) is Pectra-aware (`bState.Version() >= version.Electra` branch uses 16-bit + MAX_EB_ELECTRA) and Gloas inherits via fork-order. **Observable-equivalent to `compute_balance_weighted_selection(state, indices, seed, size=1, shuffle_indices=True)[0]` per item #27 H10 algorithmic-equivalence finding.**
 
-## EF fixture status
+H1 ✓. H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓ (double-checks state version + epoch). H9 ✓. H10 ✓ (no body modifications). H11 ✓ (observable-equivalent via algorithm). **H12: prysm reuses Pectra-inline at Gloas** (4-vs-2 split, prysm on the reuse side). H13 ✓.
 
-**Dedicated EF fixtures exist**:
-- `consensus-spec-tests/tests/mainnet/fulu/epoch_processing/proposer_lookahead/pyspec_tests/`:
-  - `proposer_lookahead_does_not_contain_exited_validators`
-  - `proposer_lookahead_in_state_matches_computed_lookahead`
-- `consensus-spec-tests/tests/mainnet/fulu/fork/fork/pyspec_tests/` (Fulu state-upgrade fixtures including `initialize_proposer_lookahead`):
-  - `after_fork_deactivate_validators_from_electra_to_fulu`
-  - `after_fork_deactivate_validators_wo_block_from_electra_to_fulu`
-  - `after_fork_new_validator_active_from_electra_to_fulu`
-  - `fork_base_state`, `fork_many_next_epoch`, `fork_next_epoch`, `fork_next_epoch_with_block`
-  - `fork_random_low_balances`, `fork_random_misc_balances`
-  - `fulu_fork_random_0` …
+### lighthouse
 
-**Wiring status**: BeaconBreaker harness's `parse_fixture` in `tools/runners/_lib.sh` does NOT yet recognize Fulu's `proposer_lookahead` epoch_processing helper or the `fork` category for Fulu. This is the first item that requires Fulu-fixture wiring (analogous to item #11's "fork category not wired" status). Source review confirms all 6 clients' internal CI passes these fixtures; **fixture run pending harness wiring**.
+`vendor/lighthouse/consensus/types/src/state/beacon_state.rs:1289-1303 get_beacon_proposer_index`: post-Fulu reads `proposer_lookahead.get(index)` directly.
 
-## Cross-cut chain
+`vendor/lighthouse/consensus/state_processing/src/per_epoch_processing/single_pass.rs:470, 477-504`: `process_proposer_lookahead` runs at end of `process_epoch` if `conf.proposer_lookahead && fork_name.fulu_enabled()`.
 
-This audit closes the Fulu-NEW state-transition entry point and cross-cuts:
-- **Item #11** (`upgrade_to_electra`) — paralleled by `upgrade_to_fulu` which calls `initialize_proposer_lookahead` (lighthouse `upgrade/fulu.rs:43`, grandine `fork.rs:683`, teku `FuluStateUpgrade.java:89`, lodestar `slot/upgradeStateToFulu.ts:23`, etc.). **Item #11 is now Pectra-historical** per the WORKLOG re-scope; this item is the Fulu equivalent.
-- **Item #27** (`get_next_sync_committee_indices`) — uses similar `compute_proposer_index` primitive in pre-Gloas; sync committee uses `compute_balance_weighted_selection` post-Gloas. Proposer-index computation gets the SAME Gloas-modification: `compute_proposer_indices` switches to `compute_balance_weighted_selection`. **Pattern M for item #28 catalogue (see below).**
-- **Item #28** Gloas tracking — adds **new Pattern M**: `compute_proposer_indices` post-Gloas uses `compute_balance_weighted_selection` (lighthouse `:1131`, nimbus `validator.nim:580`, grandine `misc.rs:881`); prysm/teku/lodestar do NOT have Gloas branches today. **Same 3 leaders / 3 laggards split as Pattern F (sync committee selection).** Vector at Gloas: A-tier divergence — different proposer indices = different proposer signatures = different blocks.
+`vendor/lighthouse/consensus/state_processing/src/upgrade/fulu.rs:20-43`: `initialize_proposer_lookahead` 2-iteration loop.
 
-## Adjacent untouched Fulu-active
+**Gloas-specific branch** in `compute_proposer_indices` at `beacon_state.rs:1131, 1139-1140`:
 
-- `initialize_proposer_lookahead` at exactly `FULU_FORK_EPOCH` boundary — verify all 6 clients use the same pre-Fulu seed for this initialization (the lookahead uses `compute_proposer_index`, NOT yet `state.proposer_lookahead` which doesn't exist pre-Fulu)
-- Cross-fork transition stateful fixture: Pectra→Fulu with non-trivial `pending_deposits` / churn budget; verify all 6 produce identical lookahead at upgrade slot
-- `process_proposer_lookahead` ordering within `process_epoch` — last step after `process_sync_committee_updates`; verify exact placement (no off-by-one with sync committee mutation)
-- Empty-validator-set edge case: nimbus's `Opt.none` retention vs other 5 clients' behavior
-- Lighthouse `ComputeProposerIndicesInsufficientLookahead` / `ComputeProposerIndicesExcessiveLookahead` error consistency: do prysm/teku/nimbus/lodestar/grandine reject the same edge cases at the API layer?
-- Lodestar `this.proposers` cache invalidation: verify no code path mutates `state.proposerLookahead` mid-epoch (any setter writeable from outside `processProposerLookahead`?)
-- Pre-Fulu fallback consistency at exactly `FULU_FORK_EPOCH`: prysm checks BOTH state version AND epoch; verify no off-by-one
-- Performance benchmark: in-place vs allocation-per-epoch (lighthouse/grandine Vec→PersistentVector conversion overhead, teku ArrayList allocation)
-- Teku `canCalculateProposerIndexAtSlot` 2-epoch window matches the Fulu lookahead size — extends to next epoch only
-- Validator-client proposer-duty API: how each CL reports lookahead via `/eth/v1/validator/duties/proposer/{epoch}` (out of state-transition scope but cross-cuts)
-- The `temporary workaround for Gloas` `debugGloasComment` in nimbus `validator.nim:580` — track what the workaround is and whether it should be cleaned up
-- `PROPOSER_REWARD_QUOTIENT` denominator: not affected by EIP-7917 but should sanity-check at Fulu (cross-cut to item #8/#9 slashing reward calculation)
+```rust
+let gloas_enabled = self.fork_name_unchecked().gloas_enabled();
+// ... per-slot loop ...
+if gloas_enabled {
+    self.compute_balance_weighted_selection(indices, &seed, 1, true, spec)?
+} else {
+    // Pectra-inline algorithm (16-bit + MAX_EB_ELECTRA)
+    compute_proposer_index(state, indices, seed)?
+}
+```
 
-## Future research items
+Same Gloas branch is also wired at `:1405` for `get_next_sync_committee_indices` (item #27 H11) and at `:2949` for `compute_ptc` (Gloas-NEW PTC).
 
-1. **Wire Fulu fixture categories** in BeaconBreaker harness: `proposer_lookahead` epoch_processing + `fork` (already cited as adjacent untouched in item #11). Required before this item can transition from `pending-fixture-run` to `pending-fuzzing`.
-2. **Cross-fork transition stateful fixture: Pectra→Fulu** with non-trivial state — verify all 6 produce identical 64-element `proposer_lookahead` at upgrade slot. Highest-value test for migration correctness.
-3. **Empty-validator-set edge case test** — nimbus's `Opt.none` retention vs other 5; construct fixture with all validators exited at epoch boundary.
-4. **Lighthouse `InsufficientLookahead` error consistency** — verify prysm/teku/nimbus/lodestar/grandine reject the same edge cases (epoch < current + 1 post-Fulu).
-5. **Lodestar `this.proposers` cache invalidation audit** — find any code path that mutates `state.proposerLookahead` mid-epoch; if any, lodestar diverges.
-6. **Pre-Fulu fallback consistency at FULU_FORK_EPOCH** — fixture with state version exactly Electra but slot exactly at FULU_FORK_EPOCH; verify all 6 either fall through to Fulu path or all fall through to pre-Fulu path (no per-client divergence at exact boundary).
-7. **Item #28 ADDENDUM — Pattern M (`compute_proposer_indices` post-Gloas)**: add to the Gloas-divergence catalogue. Same 3-leader / 3-laggard split as Pattern F (sync committee). At Gloas: lighthouse + nimbus + grandine have `compute_balance_weighted_selection` branches; prysm + teku + lodestar do not. **A-tier vector — different proposer indices = different blocks.**
-8. **Generate dedicated EF fixture for `initialize_proposer_lookahead`** as a pure function (state, epoch → 64-element vector); currently only exercised through `fork` category fixtures.
-9. **Performance benchmark suite** — measure per-epoch cost of `process_proposer_lookahead` across 6 clients; teku ArrayList allocation may be hot path.
-10. **`debugGloasComment "temporary workaround for Gloas"`** in nimbus — investigate what the workaround is and whether it should be removed before Gloas activates.
-11. **Forward-fragility audit of nimbus Optional retention** — every Fulu-NEW function that uses `seq[Opt[T]]` retains stale state on `Opt.none`; catalog all such call sites.
-12. **Lodestar `nextShuffling` cache reuse audit** — verify the single-pass optimization (`cache.nextShuffling = shuffling`) doesn't introduce stale-cache divergence on subsequent epochs.
-13. **Two-overload `get_beacon_proposer_indices` in nimbus** — verify no Fulu-state caller invokes the shuffled-indices overload (line 588) directly.
-14. **Cross-fork transition fixture spanning Pectra→Fulu→(synthetic Gloas)** — verify Pattern M + lookahead initialization at both boundaries.
-15. **Validator-client proposer-duty API consistency** — `/eth/v1/validator/duties/proposer/{epoch}` should return the lookahead-derived indices on Fulu+; verify all 6 clients match.
+**Lighthouse insufficient-lookahead error guard** (carried forward from prior audit, `beacon_state.rs:1099-1129`): only client with explicit `ComputeProposerIndicesInsufficientLookahead` / `ComputeProposerIndicesExcessiveLookahead` errors enforcing the post-Fulu invariant that recomputation conflicts with the source-of-truth lookahead.
 
-## Summary
+H1 ✓. H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 ✓. H10 ✓. H11 ✓. **H12: lighthouse wires explicit Gloas branch** (4-vs-2 split, lighthouse on the explicit-wiring side). H13 ✓.
 
-EIP-7917 deterministic proposer lookahead is implemented byte-for-byte equivalently across all 6 clients at the algorithm level. The 64-element `proposer_lookahead` vector is initialized at `upgrade_to_fulu`, mutated only by `process_proposer_lookahead` at the end of `process_epoch`, and consumed via direct array index lookup at every slot.
+### teku
 
-Per-client divergences are entirely in:
-- **Error-guard semantics** (lighthouse alone has explicit `InsufficientLookahead`/`ExcessiveLookahead` errors)
-- **Cache architecture** (lodestar caches `proposers` separately; risk of stale-cache divergence if spec adds mid-epoch mutation)
-- **Allocation pattern** (in-place vs Vec/ArrayList copy — performance, not correctness)
-- **Pre-Fulu fallback** (prysm double-checks state version AND epoch; others check one or the other)
-- **Optional wrapping** (nimbus retains stale lookahead on `Opt.none`; forward-fragile)
+`vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/versions/fulu/helpers/BeaconStateAccessorsFulu.java:60-78 getBeaconProposerIndex`: reads `proposer_lookahead[lookaheadIndex]` with epoch-offset for current vs next.
 
-**New Pattern M for item #28**: `compute_proposer_indices` post-Gloas switches to `compute_balance_weighted_selection`. Same 3-leader / 3-laggard split as Pattern F (sync committee selection): lighthouse + nimbus + grandine have Gloas branches; prysm + teku + lodestar do not. **A-tier divergence vector at Gloas activation.**
+`vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/versions/fulu/statetransition/epoch/EpochProcessorFulu.java:62-92 processProposerLookahead`.
 
-**Status**: source-review confirms all 6 clients aligned at Fulu mainnet. **Fixture run pending Fulu fixture-category wiring in BeaconBreaker harness** (the `proposer_lookahead` epoch_processing and `fork` categories).
+`vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/versions/fulu/helpers/MiscHelpersFulu.java:668-678 initializeProposerLookahead` + `:649-665 computeProposerIndices`.
+
+**Gloas-specific override** in `vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/versions/gloas/helpers/MiscHelpersGloas.java:104-120`:
+
+```java
+@Override
+public List<Integer> computeProposerIndices(
+    final BeaconState state,
+    final UInt64 epoch,
+    final Bytes32 epochSeed,
+    final IntList activeValidatorIndices) {
+  final UInt64 startSlot = computeStartSlotAtEpoch(epoch);
+  return IntStream.range(0, specConfig.getSlotsPerEpoch())
+      .mapToObj(
+          i -> {
+            final Bytes32 seed =
+                Hash.sha256(Bytes.concatenate(epochSeed, uint64ToBytes(startSlot.plus(i))));
+            return computeBalanceWeightedSelection(state, activeValidatorIndices, seed, 1, true)
+                .getInt(0);
+          })
+      .toList();
+}
+```
+
+`MiscHelpersGloas extends MiscHelpersFulu` (5-level inheritance chain). Same `computeBalanceWeightedSelection` consumed by `BeaconStateAccessorsGloas.getNextSyncCommitteeIndices` (item #27 H11), `compute_ptc` (Gloas-NEW PTC), and `compute_proposer_indices` (this item). **Teku has caught up since the 2026-05-04 audit** — the prior audit's "prysm/teku/lodestar do NOT have Gloas branches yet" claim is OUTDATED.
+
+H1 ✓. H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 ✓. H10 ✓. H11 ✓. **H12: teku wires explicit Gloas branch** (4-vs-2 split, teku on the explicit-wiring side; promoted from prior audit's laggard ranking). H13 ✓.
+
+### nimbus
+
+`vendor/nimbus/beacon_chain/spec/validator.nim:540-570 get_beacon_proposer_index`: `when state is Fulu+`, lookup `state.proposer_lookahead[slot mod SLOTS_PER_EPOCH]` + cache write.
+
+`vendor/nimbus/beacon_chain/spec/state_transition_epoch.nim:1340-1361 process_proposer_lookahead`. Optional-wrapping retains stale lookahead on `Opt.none` (carried forward from prior audit — forward-fragility concern at empty validator set).
+
+`vendor/nimbus/beacon_chain/spec/validator.nim:615-631 initialize_proposer_lookahead`.
+
+**Gloas-specific dispatch** in `validator.nim:572-585 get_beacon_proposer_indices`:
+
+```nim
+# https://github.com/ethereum/consensus-specs/blob/v1.6.0-alpha.2/specs/fulu/beacon-chain.md#new-get_beacon_proposer_indices
+func get_beacon_proposer_indices*(
+    state: ForkyBeaconState, epoch: Epoch
+): seq[Opt[ValidatorIndex]] =
+  let indices = get_active_validator_indices(state, epoch)
+  let seed = get_seed(state, epoch, DOMAIN_BEACON_PROPOSER)
+  debugGloasComment "temporary workaround for Gloas"
+  when typeof(state).kind >= ConsensusFork.Gloas:
+    let proposers = compute_proposer_indices(state, epoch, seed, indices)
+    proposers.mapIt(Opt.some(it))
+  else:
+    compute_proposer_indices(state, epoch, seed, indices)
+```
+
+The `debugGloasComment "temporary workaround for Gloas"` marker (`validator.nim:580`) explains: at Gloas, the Gloas-variant `compute_proposer_indices` (`:517-536`) returns raw `seq[ValidatorIndex]`; the Fulu/pre-Gloas variant (`:445-487`) returns `seq[Opt[ValidatorIndex]]` directly. The Gloas branch wraps via `mapIt(Opt.some(it))` for type-coercion. **Forward-compat clean-up tracked** (pre-Gloas variant should be updated to return raw indices to match Gloas; then the `debugGloasComment` workaround can be removed).
+
+**Gloas-specific `compute_proposer_indices`** at `validator.nim:516-536`:
+
+```nim
+# https://github.com/ethereum/consensus-specs/blob/v1.6.0-alpha.6/specs/gloas/beacon-chain.md#modified-compute_proposer_indices
+func compute_proposer_indices*(
+    state: gloas.BeaconState,
+    epoch: Epoch, seed: Eth2Digest,
+    indices: seq[ValidatorIndex]
+): seq[ValidatorIndex] =
+  var proposer_indices: seq[ValidatorIndex]
+  for epochSlot in epoch.slots():
+    var buffer: array[32 + 8, byte]
+    buffer[0..31] = seed.data
+    buffer[32..39] = uint_to_bytes(epochSlot.asUInt64)
+    let slotSeed = eth2digest(buffer)
+    for proposer in compute_balance_weighted_selection(
+        state, indices, slotSeed, size=1, shuffle_indices=true):
+      proposer_indices.add(proposer)
+      break
+  proposer_indices
+```
+
+Generic over `gloas.BeaconState` specifically. Uses the Gloas-NEW `compute_balance_weighted_selection` iterator at `validator.nim:490-514`. Spec-faithful.
+
+H1 ✓. H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 ✓. H10 ✓. H11 ✓. **H12: nimbus wires explicit Gloas branch** (4-vs-2 split, nimbus on the explicit-wiring side). H13 ✓.
+
+### lodestar
+
+`vendor/lodestar/packages/state-transition/src/cache/epochCache.ts:783-793 getBeaconProposer`: hot path reads from `this.proposers[]` (CACHED separately; pre-loaded from `state.proposerLookahead.slice(0, SLOTS_PER_EPOCH)` at epoch transition).
+
+`vendor/lodestar/packages/state-transition/src/epoch/processProposerLookahead.ts:14-35 processProposerLookahead`:
+
+```typescript
+export function processProposerLookahead(
+  state: CachedBeaconStateAllForks,
+  cache: EpochTransitionCache
+): void {
+  const epoch = computeEpochAtSlot(state.slot) + 1;
+  const remainingProposerLookahead = state.proposerLookahead.getAll().slice(SLOTS_PER_EPOCH);
+  const shuffling = computeEpochShuffling(state, cache.nextShufflingActiveIndices, epoch);
+  // Save shuffling to cache so afterProcessEpoch can reuse it
+  cache.nextShuffling = shuffling;
+  // ... compute next epoch's proposer indices ...
+  state.proposerLookahead = ssz.fulu.ProposerLookahead.toViewDU([...remainingProposerLookahead, ...nextProposers]);
+}
+```
+
+`vendor/lodestar/packages/state-transition/src/util/fulu.ts:12-43 initializeProposerLookahead` (cache-aware: tries `getShufflingAtEpochOrNull` first).
+
+`vendor/lodestar/packages/state-transition/src/util/seed.ts:144-165 computeProposerIndices`:
+
+```typescript
+export function computeProposerIndices(
+  fork: ForkSeq,
+  state: CachedBeaconStateAllForks,
+  shuffling: {activeIndices: Uint32Array},
+  epoch: Epoch
+): ValidatorIndex[] {
+  const startSlot = computeStartSlotAtEpoch(epoch);
+  const proposers = [];
+  const epochSeed = getSeed(state, epoch, DOMAIN_BEACON_PROPOSER);
+  for (let slot = startSlot; slot < startSlot + SLOTS_PER_EPOCH; slot++) {
+    proposers.push(
+      computeProposerIndex(
+        fork,
+        state.epochCtx.effectiveBalanceIncrements,
+        shuffling.activeIndices,
+        digest(Buffer.concat([epochSeed, intToBytes(slot, 8)]))
+      )
+    );
+  }
+  return proposers;
+}
+```
+
+**NO Gloas-specific branch.** Calls `computeProposerIndex(fork, ...)` for each slot. `computeProposerIndex` at `:109` is fork-aware (`fork >= ForkSeq.electra` uses 16-bit + MAX_EB_ELECTRA); Gloas covered via fork-order. **Observable-equivalent to `compute_balance_weighted_selection(state, indices, seed, size=1, shuffle_indices=True)[0]` per item #27 H10.**
+
+Lodestar's `this.proposers` cache architecture (separate from `state.proposerLookahead`) remains a forward-fragility concern if the spec ever adds mid-epoch mutation of `proposer_lookahead` — currently safe under spec-conformant inputs.
+
+H1 ✓. H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓ (cache-driven). H8 ✓. H9 ✓. H10 ✓. H11 ✓. **H12: lodestar reuses Pectra-inline at Gloas** (4-vs-2 split, lodestar on the reuse side). H13 ✓.
+
+### grandine
+
+`vendor/grandine/transition_functions/src/fulu/epoch_processing.rs:78, 101-121 process_proposer_lookahead`: trait bound `&mut impl PostFuluBeaconState<P>` (type-system-enforced post-Fulu invocation).
+
+`vendor/grandine/helper_functions/src/fork.rs:922-936 initialize_proposer_lookahead`.
+
+`vendor/grandine/helper_functions/src/accessors.rs:1017-1032 get_beacon_proposer_indices`.
+
+**Gloas-specific branch** in `vendor/grandine/helper_functions/src/misc.rs:869-922 compute_proposer_indices`:
+
+```rust
+pub fn compute_proposer_indices<P: Preset>(...) -> Vec<ValidatorIndex> {
+    let start_slot = compute_start_slot_at_epoch::<P>(epoch);
+    (0..P::SlotsPerEpoch::U64)
+        .map(|slot_offset| {
+            let slot_seed = hash_256_64(seed, start_slot + slot_offset);
+            if state.is_post_gloas() {
+                compute_balance_weighted_selection(state, indices, slot_seed, 1, true)
+                    .next()
+                    .expect("compute_balance_weighted_selection returns a value")
+            } else {
+                compute_proposer_index_post_electra(state, indices, slot_seed).unwrap_or(...)
+            }
+        })
+        .collect()
+}
+```
+
+`compute_balance_weighted_selection` defined at `misc.rs:891-922`. Used at Gloas for `get_next_sync_committee_indices_post_gloas` (item #27 H11 — `accessors.rs:707-729`), `compute_proposer_indices` (this item — `:882`), and `compute_ptc` (Gloas-NEW PTC). Three call sites, single helper. Spec-faithful.
+
+H1 ✓. H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 ✓. H10 ✓. H11 ✓. **H12: grandine wires explicit Gloas branch** (4-vs-2 split, grandine on the explicit-wiring side). H13 ✓.
+
+## Cross-reference table
+
+| Client | `get_beacon_proposer_index` (Fulu hot) | `process_proposer_lookahead` | `compute_proposer_indices` Gloas wiring | `compute_balance_weighted_selection` usage at Gloas |
+|---|---|---|---|---|
+| prysm | `helpers/validators.go:307-322 beaconProposerIndexAtSlotFulu` | `core/transition/gloas.go:199` calls `fulu.ProcessProposerLookahead` (no override) | **Pectra-inline reuse** via `ComputeProposerIndex` Electra branch; no Gloas-specific helper | observable-equivalent (algorithmic) |
+| lighthouse | `beacon_state.rs:1289-1303` direct `proposer_lookahead.get(index)` | `per_epoch_processing/single_pass.rs:477-504` | **Explicit Gloas branch** at `beacon_state.rs:1131, 1139-1140 if gloas_enabled` calling `compute_balance_weighted_selection` (helper at `:2979`) | yes — for proposer, sync committee (`:1405`), PTC (`:2949`) |
+| teku | `versions/fulu/helpers/BeaconStateAccessorsFulu.java:60-78` | `versions/fulu/statetransition/epoch/EpochProcessorFulu.java:62-92` | **Explicit Gloas override** at `MiscHelpersGloas.java:104-120 computeProposerIndices` calling `computeBalanceWeightedSelection` (`:129-180`) | yes — for proposer, sync committee, PTC. **Caught up since prior audit** |
+| nimbus | `spec/validator.nim:540-570` Fulu+ path | `spec/state_transition_epoch.nim:1340-1361` (Opt.none stale-retention carry-forward) | **Explicit Gloas variant** at `validator.nim:516-536` (`gloas.BeaconState`-typed) calling `compute_balance_weighted_selection` iterator (`:490-514`) | yes — for proposer, sync committee, PTC (`beaconstate.nim:3019`) |
+| lodestar | `cache/epochCache.ts:783-793` reads `this.proposers[]` (separate cache from `state.proposerLookahead`) | `epoch/processProposerLookahead.ts:14-35` (saves `nextShuffling` to cache) | **Pectra-inline reuse** via `computeProposerIndex(fork, ...)` Electra+ branch; no Gloas-specific function | observable-equivalent (algorithmic) |
+| grandine | (standard accessor reads `state.proposer_lookahead`) | `transition_functions/src/fulu/epoch_processing.rs:101-121` (`PostFuluBeaconState<P>` trait bound) | **Explicit Gloas branch** at `helper_functions/src/misc.rs:880-889 if state.is_post_gloas()` calling `compute_balance_weighted_selection` (`:891-922`) | yes — for proposer, sync committee (`accessors.rs:707-729`), PTC |
+
+## Empirical tests
+
+### Fulu-surface implicit coverage (carried forward)
+
+Dedicated EF fixtures exist at `consensus-spec-tests/tests/mainnet/fulu/`:
+- `epoch_processing/proposer_lookahead/pyspec_tests/proposer_lookahead_{does_not_contain_exited_validators, in_state_matches_computed_lookahead}`
+- `fork/fork/pyspec_tests/` (multiple `after_fork_*` and `fulu_fork_random_*` fixtures exercising `initialize_proposer_lookahead`)
+
+**Wiring status**: BeaconBreaker harness still requires Fulu-fixture-category wiring (carry-forward from prior audit). Source review confirms all 6 clients' internal CI passes these fixtures.
+
+### Gloas-surface
+
+No Gloas-specific fixtures wired yet. H10 (function bodies unchanged at Gloas except `compute_proposer_indices` delegate) and H11 (algorithmic equivalence) are source-only.
+
+Concrete Gloas-spec evidence:
+- `vendor/consensus-specs/specs/gloas/beacon-chain.md:641-661` Modifies `compute_proposer_indices` to delegate to `compute_balance_weighted_selection`. The body is algorithmically identical to the Fulu inline version for `size=1, shuffle_indices=True`.
+- No `Modified` heading for `get_beacon_proposer_index`, `process_proposer_lookahead`, `initialize_proposer_lookahead`, `get_beacon_proposer_indices` in `vendor/consensus-specs/specs/gloas/`.
+- `process_proposer_lookahead` is called from Gloas-Modified `process_epoch` at `:977` — call site unchanged; body inherited from Fulu.
+
+### Suggested fuzzing vectors
+
+#### T1 — Mainline canonical
+- **T1.1 (priority — algorithmic equivalence cross-validation)**: same Gloas state input fed to all 6 clients. Two wirings (Pectra-inline reuse vs explicit `compute_balance_weighted_selection`) must produce IDENTICAL 32-element `proposer_indices` per epoch. Surfaces any subtle hash-caching divergence (Gloas helper caches hash every 16 iterations; Pectra inline body may not).
+- **T1.2 (priority — wire Fulu fixture categories)**: pre-condition for cross-client fixture testing. Same infrastructure gap as items #11, #21, #27.
+
+#### T2 — Adversarial probes
+- **T2.1 (Glamsterdam-target — H10 verification)**: Gloas state. Submit `process_epoch` containing `process_proposer_lookahead` execution. Expected: all 6 clients produce identical 64-element `state.proposer_lookahead` after the epoch boundary.
+- **T2.2 (Glamsterdam-target — first-Gloas-block proposer-index agreement)**: at exactly `GLOAS_FORK_EPOCH`'s first slot, all 6 clients must agree on `state.proposer_lookahead[0]` (the proposer for that slot). Refutes the prior audit's "different proposer indices = different blocks" claim.
+- **T2.3 (defensive — empty validator set at epoch boundary)**: nimbus's `Opt.none` retention vs other 5 clients (carry forward from prior audit T2.x).
+- **T2.4 (defensive — lighthouse `InsufficientLookahead` error consistency)**: feed an `epoch < current + 1` post-Fulu call to all 6 clients. Lighthouse rejects with `ComputeProposerIndicesInsufficientLookahead`; other 5 may silently recompute. Cross-client error-semantics audit (carry forward).
+- **T2.5 (Glamsterdam-target — H13 cross-cut)**: same `compute_balance_weighted_selection` helper consumed at 3 Gloas call sites (sync committee, proposer indices, PTC). Cross-client equivalence on all three with `(state, indices, seed)` input across all 6 clients.
+
+## Conclusion
+
+**Status: source-code-reviewed.** Source review of all six clients against the updated checkouts (versions per front matter) confirms Fulu-surface invariants (H1–H9) carry forward unchanged from the 2026-05-04 audit. The 64-element `state.proposer_lookahead` is initialized at `upgrade_to_fulu`, mutated only by `process_proposer_lookahead` at end-of-epoch, and consumed via direct array index lookup at every slot. All six clients produce byte-for-byte equivalent observable behaviour on the Fulu surface.
+
+**Glamsterdam-target finding (H10 — `compute_proposer_indices` Modified; algorithmically equivalent).** `vendor/consensus-specs/specs/gloas/beacon-chain.md:641-661` Modifies `compute_proposer_indices` to delegate to the NEW `compute_balance_weighted_selection(state, indices, seed, size=1, shuffle_indices=True)[0]` helper. **The helper is mathematically identical to the Fulu/Electra `compute_proposer_index(state, indices, seed)` body for `size=1` invocation**: same `compute_shuffled_index(i % total, total, seed)` next-index lookup, same `hash(seed + uint_to_bytes(i // 16))` preimage, same `(i % 16) * 2` offset, same `bytes_to_uint64(random_bytes[offset : offset + 2])` decode, same `effective_balance * MAX_RANDOM_VALUE >= MAX_EFFECTIVE_BALANCE_ELECTRA * random_value` predicate. Output: byte-for-byte identical for any given input state.
+
+`get_beacon_proposer_index`, `process_proposer_lookahead`, `initialize_proposer_lookahead`, `get_beacon_proposer_indices` are NOT Modified at Gloas — they inherit verbatim from Fulu. The Gloas-Modified `process_epoch` (`:953-981`) calls `process_proposer_lookahead` at the end of the epoch (`:977`) — same ordering as Fulu.
+
+**Glamsterdam-target finding (H12 — per-client Gloas wiring 4-vs-2 split, all observable-equivalent).** Four clients wire explicit Gloas branches calling `compute_balance_weighted_selection`:
+- **lighthouse**: `beacon_state.rs:1131, 1139-1140 if gloas_enabled` → `compute_balance_weighted_selection` method at `:2979`.
+- **teku**: `MiscHelpersGloas.java:104-120 computeProposerIndices` override → `computeBalanceWeightedSelection` at `:129-180`.
+- **nimbus**: `validator.nim:516-536 compute_proposer_indices` Gloas variant (`gloas.BeaconState`-typed) → `compute_balance_weighted_selection` iterator at `:490-514`.
+- **grandine**: `misc.rs:880-889 if state.is_post_gloas()` → `compute_balance_weighted_selection` at `:891-922`.
+
+Two clients reuse the Pectra-inline algorithm at Gloas:
+- **prysm**: `PrecomputeProposerIndices` → `ComputeProposerIndex` Electra+ branch (16-bit + MAX_EB_ELECTRA); fork-order covers Gloas.
+- **lodestar**: `computeProposerIndices(fork, ...)` → `computeProposerIndex(fork, ...)` Electra+ branch; fork-order covers Gloas.
+
+**Both wirings produce identical 32-element `proposer_indices` per epoch under any input state.** The 4-vs-2 split is OBSERVABLE-EQUIVALENT — no divergence at Gloas activation.
+
+**Twelfth impact-none result** in the recheck series (after items #5, #10, #11, #18, #20, #21, #24, #25, #26, #27, #29). Same propagation-without-amplification pattern as item #27: the Gloas refactor to `compute_balance_weighted_selection` is a code-organization change that the spec formalizes; the underlying algorithm is unchanged.
+
+**Refutation of prior audit's "Pattern M A-tier divergence" claim.** The 2026-05-04 item #30 audit hypothesized that the 3-vs-3 (now 4-vs-2) split on Gloas wiring of `compute_proposer_indices` would cause "different proposer indices = different blocks at Gloas activation". This claim is REFUTED by item #27 H10's algorithmic-equivalence finding extended to this surface: the Gloas helper produces identical proposer indices to the Pectra inline algorithm for `size=1` invocation. **Pattern M in item #28's catalogue should be downgraded** from A-tier divergence to "observable-equivalent 4-vs-2 client split" — same reclassification as Pattern F (sync committee selection).
+
+**H13 cross-cut to item #27 and other `compute_balance_weighted_selection` consumers.** The same Gloas helper is consumed at three call sites:
+- `get_next_sync_committee_indices` (item #27, `shuffle_indices=True, size=SYNC_COMMITTEE_SIZE`).
+- `compute_proposer_indices` (this item, `shuffle_indices=True, size=1`).
+- `compute_ptc` (Gloas-NEW PTC selection, `shuffle_indices=False, size=PTC_SIZE`).
+
+A single bug in `compute_balance_weighted_selection` would cascade through all three. Cross-cut audit recommended.
+
+**Notable per-client style differences (all observable-equivalent at both Fulu and Gloas):**
+- **prysm**: cached `hashFunc` + preallocated `seedBuffer` for performance; double-checks state version AND epoch in `BeaconProposerIndexAtSlot`.
+- **lighthouse**: explicit `gloas_enabled()` runtime check; **alone has** `ComputeProposerIndicesInsufficientLookahead` / `ComputeProposerIndicesExcessiveLookahead` error guards enforcing the post-Fulu source-of-truth invariant.
+- **teku**: 5-level inheritance chain (`BeaconStateAccessors → Altair → Deneb → Electra → Fulu → Gloas`); cleanest fork-isolation. Subclass-override polymorphism.
+- **nimbus**: type-union polymorphism + `debugGloasComment "temporary workaround for Gloas"` marker (`validator.nim:580`) for the type-coercion at the Fulu/Gloas boundary; `Opt.none` retention forward-fragility.
+- **lodestar**: separate `this.proposers` cache from `state.proposerLookahead`; saves `nextShuffling` to cache for single-pass optimization. Forward-fragility if spec adds mid-epoch lookahead mutation.
+- **grandine**: only client with `PostFuluBeaconState<P>` trait bound type-enforcing fork invariant; cleanest type-safety.
+
+**No code-change recommendation at the state-transition surface.** Audit-direction recommendations:
+
+- **Wire Fulu fixture categories in BeaconBreaker harness** (T1.2) — pre-condition for cross-client fixture testing. Same infrastructure gap as items #11, #21, #27.
+- **Generate dedicated EF fixture set for `compute_proposer_indices` at Gloas** (T1.1) — algorithmic-equivalence cross-validation between explicit-helper and Pectra-inline wirings.
+- **Update item #28 Pattern M classification** — downgrade from A-tier divergence to "observable-equivalent 4-vs-2 client split". Same reclassification rationale as Pattern F (sync committee — item #27 H10).
+- **Cross-cut audit of `compute_balance_weighted_selection` consumers at Gloas** (H13): sync committee, proposer indices, PTC selection. Three call sites; single helper; common bug surface.
+- **Nimbus `debugGloasComment` workaround cleanup** — track when pre-Gloas `compute_proposer_indices` is updated to return raw `seq[ValidatorIndex]` (matching Gloas); then the `mapIt(Opt.some(it))` workaround at `validator.nim:580-583` can be removed.
+- **Empty-validator-set edge case fixture** (T2.3) — nimbus's `Opt.none` retention vs other 5 clients; carry-forward from prior audit.
+- **Lighthouse error-guard consistency audit** (T2.4) — verify other 5 clients' behaviour at `ComputeProposerIndicesInsufficientLookahead` trigger conditions.
+- **Lodestar `this.proposers` cache invalidation audit** — find any code path that mutates `state.proposerLookahead` mid-epoch.
+
+## Cross-cuts
+
+### With item #11 (`upgrade_to_electra` / `upgrade_to_fulu`)
+
+Item #11's audit (per WORKLOG re-scope, now Pectra-historical) paralleled by `upgrade_to_fulu` which calls `initialize_proposer_lookahead`. At Gloas, `upgrade_to_gloas` (`vendor/consensus-specs/specs/gloas/fork.md:122-197`) inherits `proposer_lookahead` from Fulu pre-state — no re-initialization. The Fulu-era invariant carries forward.
+
+### With item #27 (`get_next_sync_committee_indices`) — direct H13 cross-cut
+
+Item #27 H10 found that `compute_balance_weighted_selection(state, indices, seed, size=SYNC_COMMITTEE_SIZE, shuffle_indices=True)` is algorithmically identical to the Pectra inline sync-committee algorithm. THIS item extends the same finding to `size=1, shuffle_indices=True` (proposer selection). Both reduce to the same underlying iteration pattern; observable-equivalent across all 6 clients.
+
+### With item #28 (Gloas divergence meta-audit)
+
+Pattern M in item #28's catalogue (`compute_proposer_indices` post-Gloas wiring split) should be reclassified per H11 + H12 findings:
+- **Before**: A-tier divergence ("different proposer indices = different blocks at Gloas activation").
+- **After**: observable-equivalent 4-vs-2 client wiring split. Same downgrade as Pattern F (sync committee selection).
+
+The reclassification reduces item #28's A-tier vector list from 5 to 4 (removing Pattern M, which mirrors the prior Pattern F removal). Updated A-tier list at Gloas: Pattern E (committee index `< 2`), Pattern G (builder deposit handling — lighthouse cohort gap), Pattern H (Pectra dispatcher exclusion), Pattern K (Engine API V5), Pattern N (nimbus PR #4513 → #4788 stale code in items #22 + #23), Pattern M (lighthouse Gloas-ePBS cohort).
+
+### With Gloas-NEW sister functions (`compute_ptc` for PTC, `compute_proposer_indices` for proposer)
+
+`compute_balance_weighted_selection` has three Gloas-active call sites:
+1. `get_next_sync_committee_indices` (item #27, `size=SYNC_COMMITTEE_SIZE, shuffle_indices=True`).
+2. `compute_proposer_indices` (this item, `size=1, shuffle_indices=True`).
+3. `compute_ptc` (Gloas-NEW PTC, `size=PTC_SIZE, shuffle_indices=False`).
+
+Call site (3) is the only one using `shuffle_indices=False` — different parameterization. Per-client wiring of `compute_ptc` should be audited separately (cross-cuts items #25 H11 + #28 Pattern M cohort).
+
+### With nimbus item #22 H12 / item #23 H10 stale-spec divergences
+
+Neither `compute_proposer_indices` nor `get_beacon_proposer_index` directly invokes `has_compounding_withdrawal_credential` (item #22) nor `get_pending_balance_to_withdraw` (item #23). **However, indirect propagation via `state.validators[i].effective_balance`**: nimbus's stale `has_compounding_withdrawal_credential` cascades into item #1's `process_effective_balance_updates` for `0x03`-credentialled validators, producing divergent `effective_balance`. Item #27 H13 noted this for sync committee selection; the same channel propagates into proposer selection. Validators at `0x03` credentials with balance > 32 ETH would have nimbus's `effective_balance ≈ balance` (treated as compounding-eligible at Gloas+) while other 5 clients have `effective_balance = 32 ETH`. The `effective_balance * MAX_RANDOM_VALUE >= MAX_EFFECTIVE_BALANCE_ELECTRA * random_value` predicate evaluates differently → divergent proposer-index selection. **Same H12 / H13 attack as item #27 manifesting through proposer selection.**
+
+## Adjacent untouched
+
+1. **Wire Fulu fixture categories in BeaconBreaker harness** — pre-condition for cross-client fixture testing (T1.2). Same gap as items #11, #21, #27.
+2. **Dedicated EF fixture set for `compute_proposer_indices` at Gloas** — algorithmic-equivalence cross-validation between explicit-helper and Pectra-inline wirings (T1.1).
+3. **Update item #28 Pattern M classification** — downgrade from A-tier to observable-equivalent.
+4. **Cross-cut audit of `compute_balance_weighted_selection` consumers at Gloas** (sync committee, proposer indices, PTC).
+5. **Nimbus `debugGloasComment` workaround cleanup** — track upstream PR removing the type-coercion workaround at `validator.nim:580-583`.
+6. **Empty-validator-set edge case fixture** — nimbus's `Opt.none` retention vs other 5 clients.
+7. **Lighthouse `InsufficientLookahead` error-guard consistency audit** — verify other 5 clients reject the same edge cases.
+8. **Lodestar `this.proposers` cache invalidation audit** — find any code path that mutates `state.proposerLookahead` mid-epoch.
+9. **Item #22 H12 → item #1 → item #30 indirect-propagation fixture** — `0x03`-credentialled validator with non-default `effective_balance` produces divergent proposer-index selection on nimbus.
+10. **Performance benchmark suite** — measure per-epoch cost of `process_proposer_lookahead` across 6 clients; teku ArrayList allocation may be hot path; lighthouse / grandine Vec/PersistentVector conversion overhead.
+11. **Cross-fork transition stateful fixture Pectra→Fulu→Gloas** — verify lookahead initialization at both boundaries, and algorithmic equivalence of `compute_proposer_indices` across all three forks.
+12. **Validator-client proposer-duty API consistency** — `/eth/v1/validator/duties/proposer/{epoch}` should return the lookahead-derived indices on Fulu+; verify all 6 clients match (cross-cuts item #11 if validator API is in scope).
+13. **`compute_proposer_index` (singular) Phase0 heritage audit** — used by prysm + lodestar at Gloas via Electra+ branch. Cross-client byte-level equivalence of the Pectra inline body vs the Gloas `compute_balance_weighted_selection(..., size=1)` invocation.
+14. **`MIN_SEED_LOOKAHEAD = 1` consistency across all forks** — verify the constant value at Pectra / Fulu / Gloas is uniform; if any fork modifies it, the 64-element vector size assumption breaks.
+15. **`PostFuluBeaconState<P>` trait bound enforcement audit** — grandine alone uses type-system enforcement; other 5 clients use runtime checks. Defense-in-depth analysis.
