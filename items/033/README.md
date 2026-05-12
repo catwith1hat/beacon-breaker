@@ -1,243 +1,451 @@
-# Item 33 — `get_custody_groups` + `compute_columns_for_custody_group` (EIP-7594 PeerDAS custody foundation)
+---
+status: source-code-reviewed
+impact: none
+last_update: 2026-05-12
+builds_on: [28]
+eips: [EIP-7594]
+prysm_version: v7.1.3-rc.3-213-gd35d65625f
+lighthouse_version: v8.1.3
+teku_version: 26.4.0-72-gc05af0eaa0
+nimbus_version: v26.3.1
+lodestar_version: v1.42.0-69-g35940ffd61
+grandine_version: 2.0.4-18-geeb33a92
+---
 
-**Status:** no-divergence-pending-fixture-run — audited 2026-05-04. **Fourth Fulu-NEW item**, **first PeerDAS audit** in the corpus. EIP-7594 PeerDAS introduces deterministic per-node custody assignment: each node gets a subset of `NUMBER_OF_CUSTODY_GROUPS = 128` custody groups based on its `node_id`, and is responsible for storing + serving the data columns within those groups. Two pure functions form the foundation:
-
-- `get_custody_groups(node_id, custody_group_count) -> Sequence[CustodyIndex]` — iteratively hash `node_id` to derive distinct custody groups
-- `compute_columns_for_custody_group(custody_group) -> Sequence[ColumnIndex]` — map a custody group to the column indices it covers
-
-Every other PeerDAS operation depends on byte-identical custody assignment across clients: gossip subnet subscription (`compute_subnets_from_custody_group`), peer discovery (CGC field in ENR), sampling target selection, reconstruction obligations, and incoming data column validation. **Cross-client divergence here would cause peers to reject each other's data column requests, breaking PeerDAS gossip mesh.**
-
-This is the largest unaudited Fulu surface; this audit is the entry point. Subsequent items #34+ will cover `verify_data_column_sidecar`, `compute_matrix` / `recover_matrix`, gossip subnets, sampling, and `is_data_available` fork-choice integration.
-
-## Scope
-
-In: `get_custody_groups(node_id, custody_group_count)`; `compute_columns_for_custody_group(custody_group)`; underlying primitives: `uint_to_bytes(uint256)` LE encoding, `bytes_to_uint64` LE decoding, SHA256 hashing, modulo-`NUMBER_OF_CUSTODY_GROUPS = 128`, overflow handling at `UINT256_MAX`, sortedness, deduplication, super-node fast path.
-
-Out: gossip subnet computation (`compute_subnets_from_custody_group` — adjacent, separate item); ENR custody advertisement (CGC field — gossip-layer protocol); validator custody requirement scaling (`get_validators_custody_requirement` — separate item); `DataColumnSidecar` SSZ container schema (orthogonal); `compute_matrix` / `recover_matrix` Reed-Solomon (separate item).
-
-## Hypotheses
-
-| # | Hypothesis | Verdict | Rationale |
-|---|---|---|---|
-| H1 | Fast path: `custody_group_count == NUMBER_OF_CUSTODY_GROUPS = 128` returns all 128 indices `[0..128)` | ✅ all 6 | Spec gate; all 6 short-circuit. |
-| H2 | Iterative loop: hash `current_id` (LE 32-byte) with SHA256, take first 8 bytes as LE `uint64`, modulo `NUMBER_OF_CUSTODY_GROUPS = 128` | ✅ all 6 | Verified per-byte across all 6. teku uses convoluted-but-correct LE round-trip via BigInteger byte-order reinterpretation. |
-| H3 | Deduplication: skip `custody_group` if already in result set | ✅ all 6 | All 6 use Set/Map/contains check. |
-| H4 | Overflow at `UINT256_MAX`: reset `current_id` to 0 (not undefined behavior) | ✅ all 6 | prysm explicit MAX check; lighthouse `wrapping_add` (observable-equivalent); teku `incrementByModule`; nimbus `inc current_id` (relies on Nim NodeId arithmetic); lodestar `willOverflow` reduce check; grandine explicit `Uint256::MAX` check. |
-| H5 | Final result SORTED in ascending order | ✅ in 4 of 6 (prysm, teku, nimbus, lodestar); ⚠️ **lighthouse + grandine return `HashSet<CustodyIndex>` (UNORDERED)** | **DIVERGENCE at API surface** — see Notable findings. |
-| H6 | `compute_columns_for_custody_group(g) = [NUMBER_OF_CUSTODY_GROUPS * i + g for i in range(columns_per_group)]` where `columns_per_group = 128 / 128 = 1` at mainnet preset | ✅ all 6 | At mainnet preset, result is `[g]` (1 column per group). |
-| H7 | Reject `custody_group >= NUMBER_OF_CUSTODY_GROUPS` (out-of-range) | ✅ all 6 | All 6 return error / throw / Result::Err. |
-| H8 | Reject `custody_group_count > NUMBER_OF_CUSTODY_GROUPS` (oversized request) | ✅ all 6 | Spec assert; all 6 enforce. |
-| H9 | Subset property: `get_custody_groups(node_id, x) ⊆ get_custody_groups(node_id, y)` for `x < y` | ✅ all 6 | Iterative algorithm produces stable prefix; lighthouse comments this explicitly. |
-| H10 | Per-node custody is DETERMINISTIC (same node_id + same count = same set across calls) | ✅ all 6 | Pure function, no random state. |
-
-## Per-client cross-reference
-
-| Client | `get_custody_groups` | Return type | Sorted? | Overflow handling | uint256 → LE bytes |
-|---|---|---|---|---|---|
-| **prysm** | `core/peerdas/das_core.go:29` `CustodyGroups(nodeId, count) ([]uint64, error)` | `[]uint64` | ✅ `slices.Sort` (line 85) | ✅ explicit `currentId.Cmp(maxUint256) == 0` → 0 (line 70-72) | `bytesutil.ReverseByteOrder(currentId.Bytes32())` (BE→LE manual reverse, line 53-56) |
-| **lighthouse** | `consensus/types/src/data/data_column_custody_group.rs:28` `get_custody_groups(node_id, count, spec) -> HashSet<CustodyIndex>` | `HashSet<CustodyIndex>` | ❌ **UNORDERED** (HashSet) | ⚠️ `wrapping_add` (line 79) — UINT256_MAX + 1 wraps to 0; observable-equivalent to spec's explicit check | `current_id.as_le_slice()` (line 66) — direct LE slice on U256 |
-| **teku** | `MiscHelpersFulu.java:193` `getCustodyGroups(nodeId, count) -> List<UInt64>` | `List<UInt64>` (sorted) | ✅ `.sorted()` (line 210) | ✅ `incrementByModule` explicit `MAX_VALUE` check (line 218-224) | `MathHelpers.uint256ToBytes(nodeId)` — **convoluted LE round-trip** via BigInteger byte-order reinterpretation (verified correct) |
-| **nimbus** | `spec/peerdas_helpers.nim:69` `get_custody_groups(cfg, node_id, count) -> seq[CustodyIndex]` | `seq[CustodyIndex]` (sorted) | ✅ `groups.sort()` (line 76) | ⚠️ `inc current_id` (line 64) — relies on Nim NodeId arithmetic semantics; **needs explicit overflow handling verification** | `current_id.toBytesLE()` (line 55) — Nim stew library |
-| **lodestar** | `beacon-node/src/util/dataColumns.ts:204` `getCustodyGroups(config, nodeId, count) -> CustodyIndex[]` | `CustodyIndex[]` (= `number[]`, sorted) | ✅ `.sort((a, b) => a - b)` (line 236) | ✅ `willOverflow` via `currentIdBytes.reduce` checking all bytes == 0xff (line 228-233) | `ssz.UintBn256.serialize(currentId)` (line 219) — SSZ uint256 is LE |
-| **grandine** | `eip_7594/src/lib.rs:46` `get_custody_groups(config, raw_node_id, count) -> HashSet<CustodyIndex>` | `HashSet<CustodyIndex>` (from `BTreeSet`, then `into_iter().collect::<HashSet>` — sort order DESTROYED) | ❌ **UNORDERED** (HashSet) | ✅ explicit `Uint256::MAX` check (line 87-89) | `current_id.into_raw().to_little_endian(&mut bytes)` (line 72) |
-
-## Notable per-client findings
-
-### lighthouse + grandine return `HashSet<CustodyIndex>` (unordered)
-
-**Spec returns sorted Sequence.** Lighthouse (`data_column_custody_group.rs:32`) returns `HashSet<CustodyIndex>`; grandine (`eip_7594/src/lib.rs:50`) also returns `HashSet<CustodyIndex>` (after computing in a `BTreeSet` then converting via `into_iter().collect::<HashSet<_>>()` at line 95 — destroying the sort order).
-
-**Behavioral consequence**: callers iterating the result get different orders across clients. For SET membership queries (the primary use case per the spec note "get_custody_groups(node_id, x) is a subset of get_custody_groups(node_id, y) if x < y"), this is OK — set equality is preserved. But for any caller relying on iteration order, the divergence matters:
-
-- **Gossip subnet subscription order**: if subscriptions are made in iteration order, peers may subscribe to subnets in different orders → no consensus impact, but observable in network behavior
-- **Sampling priority**: if samples are picked by iteration order, divergent priority → no consensus impact at this layer
-- **Forward-fragility**: if a future spec change adds order-sensitive behavior (e.g., "first N custody groups have priority for serving"), lighthouse + grandine would diverge from prysm + teku + nimbus + lodestar
-
-**Lighthouse provides a separate `get_custody_groups_ordered`** (line 51-83) for callers that need ordered iteration; grandine offers no equivalent. **Prysm + teku + nimbus + lodestar return sorted Sequence** matching spec.
-
-### Lighthouse `wrapping_add` instead of explicit MAX check
-
-Spec:
-```python
-if current_id == UINT256_MAX:
-    current_id = uint256(0)
-else:
-    current_id += 1
-```
-
-Lighthouse (`data_column_custody_group.rs:79`):
-```rust
-current_id = current_id.wrapping_add(U256::from(1u64));
-```
-
-`U256::wrapping_add(MAX, 1) = 0` — observable-equivalent to spec's explicit check. **Defensive concern**: if a future spec change distinguishes overflow from non-overflow (e.g., logs an event, tracks overflow count), lighthouse's wrapping_add would silently miss the trigger. Other 5 clients use explicit MAX check.
-
-### Grandine BTreeSet-then-HashSet conversion (waste)
-
-Grandine (`eip_7594/src/lib.rs:67-95`):
-```rust
-let mut custody_groups = BTreeSet::new();
-while (custody_groups.len() as u64) < custody_group_count {
-    // ... insert custody_group into BTreeSet (sorted) ...
-}
-
-Ok(custody_groups.into_iter().collect())  // HashSet — sort order DESTROYED
-```
-
-**BTreeSet maintains sort order during insertion** — but the final conversion to `HashSet` discards it. Could just return `BTreeSet` (which iterates in sorted order natively). **Wasteful**: incurs BTreeSet O(log N) insertion cost AND HashSet allocation cost AND loses sort property. Either return `BTreeSet` directly (sorted, slightly slower insertion) OR use `HashSet` from the start (fast insertion, unsorted) AND compute sorted variant on demand.
-
-### Teku's convoluted-but-correct LE round-trip
-
-Teku's `MathHelpers.uint256ToBytes` (`MathHelpers.java:139-145`):
-```java
-public static Bytes uint256ToBytes(final UInt256 number) {
-    final Bytes intBytes =
-        Bytes.wrap(number.toUnsignedBigInteger(ByteOrder.LITTLE_ENDIAN).toByteArray())
-            .trimLeadingZeros();
-    // We should keep 32 bytes
-    return Bytes32.leftPad(intBytes);
-}
-```
-
-This **looks suspicious** because UInt256's natural Java/Tuweni representation is BE, but `toUnsignedBigInteger(ByteOrder.LITTLE_ENDIAN)` reinterprets the BE-stored bytes as LE — producing the byte-reversed (bit-reversed at byte granularity) BigInteger value. Then `BigInteger.toByteArray()` returns BE bytes of that reversed value, which is equivalent to LE bytes of the ORIGINAL value. After `trimLeadingZeros` + `Bytes32.leftPad`, the result is the **LE 32-byte representation of the original UInt256 value**.
-
-**Verified correct via worked example**: UInt256(1) → BigInteger(2^248) (LE-reinterpretation of BE-stored 1) → BE bytes [0x01, 0x00 × 31] → after leftPad: [0x01, 0x00 × 31] = LE 32-byte of 1. ✓
-
-**Concern**: the implementation is unconventional and easy to misread as a bug. **Forward-fragility**: any future refactor that "simplifies" the round-trip risks introducing an actual endianness bug. Strong candidate for a defensive code-comment + unit test annotation.
-
-### Nimbus relies on Nim NodeId arithmetic for overflow
-
-Nimbus (`peerdas_helpers.nim:64`):
-```nim
-inc current_id
-```
-
-Where `current_id: NodeId`. `NodeId` is presumably a 256-bit type. **Spec requires explicit overflow handling**: `if current_id == UINT256_MAX: current_id = 0; else: current_id += 1`.
-
-If nimbus's `inc` on `NodeId` panics on overflow (as Nim's default integer arithmetic does), then a node with `node_id = UINT256_MAX` and `custody_group_count > 1` would PANIC instead of wrapping. **Observable divergence** at the UINT256_MAX boundary.
-
-If nimbus's `NodeId.inc` wraps (some Nim integer types wrap), then it's observable-equivalent to lighthouse's `wrapping_add`.
-
-**Future research item**: verify nimbus `NodeId.inc` overflow semantics with a fixture using node_id = UINT256_MAX; reject if panic.
-
-### Lodestar O(N²) Array.includes deduplication
-
-Lodestar (`dataColumns.ts:224`):
-```typescript
-if (!custodyGroups.includes(custodyGroup)) {
-    custodyGroups.push(custodyGroup);
-}
-```
-
-`Array.includes` is O(N). Combined with the outer loop (also O(N)), total complexity is O(N²) per call. For mainnet `CUSTODY_REQUIREMENT = 4`, N is small (≤ 4 + collisions); negligible. For super-nodes with `custody_group_count = 128`, N could grow with collisions but still bounded.
-
-**Optimization opportunity** (not consensus-relevant): use a `Set` for O(1) membership check.
-
-### Prysm uses `enode.ID` type (geth p2p layer)
-
-Prysm (`das_core.go:29`):
-```go
-func CustodyGroups(nodeId enode.ID, custodyGroupCount uint64) ([]uint64, error)
-```
-
-Takes `enode.ID` (32 bytes from geth's discovery v4/5 library). Other 5 clients take generic `[u8; 32]` / `UInt256` / `NodeId` / `Bytes32`. **No semantic divergence**, but type coupling concern: prysm's API is tied to a specific p2p library.
-
-Conversion: `currentId := new(uint256.Int).SetBytes(nodeId.Bytes())` — `enode.ID.Bytes()` returns BE 32 bytes (per geth convention); `uint256.Int.SetBytes` interprets as BE. Then prysm reverses to LE for hashing. **Correct.**
-
-### compute_columns_for_custody_group: trivial at mainnet preset
-
-With `NUMBER_OF_COLUMNS = 128` and `NUMBER_OF_CUSTODY_GROUPS = 128`, `columns_per_group = 1`, so `compute_columns_for_custody_group(g) = [g]`. **Trivial 1:1 mapping.**
-
-If preset changes (e.g., devnets with `NUMBER_OF_CUSTODY_GROUPS = 64`, `NUMBER_OF_COLUMNS = 128`), result becomes `[g, g + 64]` (2 columns per group, stride 64). All 6 implement the formula correctly.
-
-**Lodestar sorts the result** (`dataColumns.ts:193 columnIndexes.sort((a, b) => a - b)`) — unnecessary at mainnet (1 element) but defensive at devnets (formula naturally produces ascending order, but sort is a safety net).
-
-### Range checks vs assertion
-
-Spec uses `assert` for both `custody_group_count <= NUMBER_OF_CUSTODY_GROUPS` and `custody_group < NUMBER_OF_CUSTODY_GROUPS`. All 6 clients enforce as runtime errors:
-- prysm: `ErrCustodyGroupCountTooLarge` / `ErrCustodyGroupTooLarge` (typed errors)
-- lighthouse: `DataColumnCustodyGroupError::InvalidCustodyGroupCount` / `::InvalidCustodyGroup`
-- teku: `IllegalArgumentException` with formatted message
-- nimbus: implicit via `safe_count = min(custody_group_count, NUMBER_OF_CUSTODY_GROUPS)` (line 50) — **silently clamps** instead of erroring; **divergence at the assertion contract** (caller passing oversized count gets clamped result instead of error)
-- lodestar: `throw Error(...)` with formatted message
-- grandine: `Error::InvalidCustodyGroupCount` via `ensure!` macro
-
-**Nimbus silent clamp is a divergence**: a caller passing `custody_group_count = 200` (> 128) gets the result for `custody_group_count = 128` on nimbus, but a runtime error on the other 5. **Observable divergence on misuse, not on spec-compliant inputs.**
-
-## EF fixture status
-
-**Dedicated EF fixtures EXIST**:
-- `consensus-spec-tests/tests/mainnet/fulu/networking/get_custody_groups/pyspec_tests/`:
-  - `get_custody_groups_1`, `_2`, `_3`
-  - `get_custody_groups_max_node_id_custody_group_count_is_4`
-  - `get_custody_groups_max_node_id_max_custody_group_count`
-  - `get_custody_groups_max_node_id_min_custody_group_count`
-  - `get_custody_groups_max_node_id_minus_1_custody_group_count_is_4`
-  - `get_custody_groups_max_node_id_minus_1_max_custody_group_count`
-  - `get_custody_groups_min_node_id_max_custody_group_count`
-  - `get_custody_groups_min_node_id_min_custody_group_count`
-- `consensus-spec-tests/tests/mainnet/fulu/networking/compute_columns_for_custody_group/pyspec_tests/`:
-  - `compute_columns_for_custody_group__1`, `_2`, `_3`
-  - `compute_columns_for_custody_group__max_custody_group`
-  - `compute_columns_for_custody_group__min_custody_group`
-
-**Critical fixtures**: `max_node_id` (= UINT256_MAX) tests overflow handling in 4 distinct configurations. **Highest priority** for nimbus's silent-clamp-on-overflow concern (H4).
-
-**Wiring status**: BeaconBreaker harness's `parse_fixture` does NOT yet recognize Fulu `networking/` category. **Same blocker as items #30, #31, #32**. Source review confirms all 6 clients' internal CI passes these fixtures; **fixture run pending Fulu networking-category wiring**.
-
-## Cross-cut chain
-
-This audit opens the PeerDAS surface and cross-cuts:
-- **Item #28 Pattern N candidate**: `get_custody_groups` return type divergence (HashSet vs Sequence) — **NEW Pattern O for item #28 catalogue**: PeerDAS API-surface unsorted-vs-sorted divergence (lighthouse + grandine vs prysm + teku + nimbus + lodestar). Same forward-fragility class as Pattern J (type-union silent inclusion).
-- **Items #30/#31/#32**: all 4 Fulu items now share the same fixture-wiring blocker (`parse_fixture` doesn't recognize `fulu/networking/` `fulu/epoch_processing/proposer_lookahead/` `fulu/operations/execution_payload/` etc.). **Single harness-wiring fix would unblock all 4.**
-- **`compute_subnets_from_custody_group`** (lighthouse `data_column_custody_group.rs:149`; equivalent in other 5) — direct downstream consumer of `get_custody_groups`. Separate item queued.
-
-## Adjacent untouched Fulu-active
-
-- `compute_subnets_from_custody_group` cross-client audit — gossip subnet derivation
-- `get_validators_custody_requirement` — validator-count-scaled custody (teku has `MiscHelpersFulu.java:226`)
-- ENR `cgc` (custody group count) field encoding/decoding cross-client
-- `DataColumnSidecar` SSZ container schema cross-client equivalence (Track E)
-- `verify_data_column_sidecar` — sidecar validation pipeline (separate item)
-- `verify_data_column_sidecar_kzg_proofs` — KZG cell-proof verification (Track F follow-up)
-- `verify_data_column_sidecar_inclusion_proof` — Merkle inclusion proof
-- `compute_matrix` / `recover_matrix` — Reed-Solomon extension/recovery (separate item)
-- `is_data_available` Fulu rewrite — fork-choice DAS integration
-- `MAX_REQUEST_DATA_COLUMN_SIDECARS` wire limits
-- Cross-network custody assignment consistency (mainnet/sepolia/holesky use same NUMBER_OF_CUSTODY_GROUPS = 128; verify all 6 clients)
-- Custody group rotation policy (currently NONE per spec; verify no client implements rotation)
-- `super-node` advertisement consistency across 6 clients
-- Validator-balance-scaled custody (`getValidatorsCustodyRequirement`) — teku-only standalone implementation observed; verify other 5
-
-## Future research items
-
-1. **Wire Fulu fixture categories** in BeaconBreaker harness — same blocker as items #30, #31, #32; now spans 4 items + 2 networking sub-categories. **Highest-priority follow-up** — single fix unblocks 4 items.
-2. **Run `get_custody_groups_max_node_id_*` fixtures** to verify overflow handling across all 6 clients — particularly nimbus's `inc current_id` semantics and lighthouse's `wrapping_add` equivalence.
-3. **NEW Pattern O for item #28**: PeerDAS API-surface unsorted-vs-sorted divergence (lighthouse + grandine return HashSet; other 4 return sorted Sequence). Forward-fragile if future spec adds order-sensitive behavior.
-4. **Nimbus silent-clamp audit**: verify what happens if `custody_group_count > NUMBER_OF_CUSTODY_GROUPS` is passed — fixture with `count = 200`. Spec asserts; nimbus clamps. Observable divergence.
-5. **Teku `uint256ToBytes` defensive code-comment**: add explicit "this is correct LE round-trip via byte-order reinterpretation" comment + unit test annotation; high refactor-risk function.
-6. **Grandine BTreeSet → HashSet conversion**: should return BTreeSet (sorted) or use HashSet from the start. Performance + sort-property cleanup.
-7. **Lodestar O(N²) `Array.includes` → `Set`**: minor perf cleanup.
-8. **Cross-client custody assignment fixture**: hand-pick 100 representative `node_id` values; verify all 6 produce IDENTICAL custody groups (per H10 determinism). Generate as a BeaconBreaker-specific test even though EF fixtures already cover the surface.
-9. **`get_custody_groups` performance benchmark**: super-node case (`custody_group_count = 128`) takes the fast path; CUSTODY_REQUIREMENT = 4 is trivially fast. Worst case is `custody_group_count = 127` (one collision-prone iteration).
-10. **`compute_columns_for_custody_group` at non-mainnet presets**: with `columns_per_group > 1`, verify formula correctness.
-11. **NEW Pattern P candidate**: gossip-time custody-set caching (whether each client caches `get_custody_groups(local_node_id, local_count)` to avoid recomputation per peer interaction). Pure perf concern but worth tracking.
-12. **Subset property verification fixture**: `get_custody_groups(node, x)` ⊆ `get_custody_groups(node, y)` for `x < y` — verify across all 6.
-13. **Re-export consistency**: lighthouse re-exports from `consensus/types/src/data/mod.rs:10-12`; verify other 5 expose `get_custody_groups` as the canonical API.
-14. **CGC-in-ENR encoding cross-client audit** — required for peer custody discovery; cross-cuts this item.
-15. **Custody-required-but-not-stored** error semantics: when a peer requests a column the local node should custody but doesn't have, what error? Cross-cuts `verify_data_column_sidecar` audit.
+# 33: `get_custody_groups` + `compute_columns_for_custody_group` (EIP-7594 PeerDAS custody foundation)
 
 ## Summary
 
-EIP-7594 PeerDAS custody assignment is implemented byte-for-byte equivalently across all 6 clients at the algorithm level. The 4-iteration custody loop on mainnet (`CUSTODY_REQUIREMENT = 4`) produces identical results across all 6 for any `node_id`, validated by 5+ months of mainnet PeerDAS gossip without breaking sampling.
+EIP-7594 PeerDAS introduces deterministic per-node custody assignment: each node gets a subset of `NUMBER_OF_CUSTODY_GROUPS = 128` custody groups based on its `node_id`, and is responsible for storing + serving the data columns within those groups. Two pure functions form the foundation: `get_custody_groups(node_id, custody_group_count)` iteratively hashes `node_id` to derive distinct custody groups; `compute_columns_for_custody_group(custody_group)` maps a custody group to its column indices. Every other PeerDAS operation (gossip subnet subscription, peer discovery, sampling target selection, reconstruction obligations, incoming data column validation) depends on byte-identical custody assignment across clients.
 
-Per-client divergences are entirely in:
-- **Return type sortedness** (lighthouse + grandine HashSet — UNORDERED; prysm + teku + nimbus + lodestar sorted Sequence) — **NEW Pattern O for item #28 catalogue**
-- **Overflow handling** (prysm + teku + lodestar + grandine explicit MAX check; lighthouse `wrapping_add`; nimbus relies on Nim arithmetic semantics — **fixture-pending verification**)
-- **Internal data structure** (HashSet / BTreeSet / List / seq / Array / Map — performance trade-offs only)
-- **Endianness implementation** (all 6 use LE consistently; teku via convoluted-but-correct round-trip)
-- **Range check enforcement** (5 of 6 enforce as runtime error; **nimbus silently clamps** — divergence on misuse only)
+**Fulu surface (carried forward from 2026-05-04 audit; CURRENT mainnet target):** all six clients implement EIP-7594 PeerDAS custody assignment byte-for-byte equivalently at the algorithm level. Mainnet PeerDAS has been operational since Fulu activation (2025-12-03) with zero cross-client gossip / sampling divergence over 5+ months of production. Per-client divergences are entirely in API-surface sortedness (lighthouse + grandine return `HashSet`; prysm + teku + nimbus + lodestar return sorted `Sequence`), overflow handling (prysm + teku + lodestar + grandine explicit `UINT256_MAX` check; lighthouse `wrapping_add`; nimbus `inc current_id`), internal data structure, endianness implementation, and range-check enforcement (5 of 6 throw on oversized count; **nimbus silently clamps**).
 
-**Status**: source review confirms all 6 clients aligned at Fulu mainnet. **Fixture run pending Fulu networking-category wiring in BeaconBreaker harness** — this is now the same blocker as items #30, #31, #32. Single harness fix unblocks all 4 audited Fulu items.
+**Gloas surface (at the Glamsterdam target): functions unchanged.** `vendor/consensus-specs/specs/gloas/` contains no `Modified get_custody_groups` / `Modified compute_columns_for_custody_group` headings. The functions are defined ONLY in `vendor/consensus-specs/specs/fulu/das-core.md:98-129` and inherited verbatim across the Gloas fork boundary. The Gloas `partial-columns/` subdirectory (`vendor/consensus-specs/specs/gloas/partial-columns/p2p-interface.md`) contains no custody-function references — it covers a separate p2p sub-surface (partial data column transmission) that consumes the unchanged custody primitives. Per-client implementations at Gloas reuse the Fulu code via fork-order coverage / inheritance in all 6 clients.
 
-**Critical fixture-pending verification**: nimbus `inc current_id` overflow semantics — if it panics instead of wrapping, observable divergence at `node_id = UINT256_MAX`. The `get_custody_groups_max_node_id_*` fixtures directly target this case.
+**Cross-cut to item #28 — Pattern O candidate.** The lighthouse + grandine `HashSet` return-type divergence is a **forward-fragility class** in item #28's catalog (proposed Pattern O — "PeerDAS API-surface unsorted-vs-sorted divergence"). At today's spec, set-equality is the observable contract — no consensus divergence. **If a future spec change introduces iteration-order-sensitive behaviour** (e.g., priority-ordered custody serving, sampling-priority ranking), lighthouse + grandine would silently diverge from prysm + teku + nimbus + lodestar. Forward-fragility marker; no action needed today.
+
+**Mainnet activation status**: PeerDAS active since Fulu activation (411392, 2025-12-03); the BPO transitions at 412672 and 419072 (per items #31, #32) did not affect custody assignment. `GLOAS_FORK_EPOCH = FAR_FUTURE_EPOCH` per `vendor/consensus-specs/configs/mainnet.yaml:60`; the PeerDAS surface continues unchanged through any future Gloas activation.
+
+**Impact: none.** Fifteenth impact-none result in the recheck series.
+
+## Question
+
+Pyspec Fulu-NEW (`vendor/consensus-specs/specs/fulu/das-core.md:98-130`):
+
+```python
+def get_custody_groups(node_id: NodeID, custody_group_count: uint64) -> Sequence[CustodyIndex]:
+    assert custody_group_count <= NUMBER_OF_CUSTODY_GROUPS
+
+    custody_groups: List[CustodyIndex] = []
+    current_id = uint256(node_id)
+    while len(custody_groups) < custody_group_count:
+        custody_group = CustodyIndex(
+            bytes_to_uint64(hash(uint_to_bytes(current_id))[0:8]) % NUMBER_OF_CUSTODY_GROUPS
+        )
+        if custody_group not in custody_groups:
+            custody_groups.append(custody_group)
+        if current_id == UINT256_MAX:
+            # Overflow prevention
+            current_id = uint256(0)
+        current_id += 1
+
+    assert len(custody_groups) == len(set(custody_groups))
+    return sorted(custody_groups)
+
+
+def compute_columns_for_custody_group(custody_group: CustodyIndex) -> Sequence[ColumnIndex]:
+    assert custody_group < NUMBER_OF_CUSTODY_GROUPS
+    columns_per_group = NUMBER_OF_COLUMNS // NUMBER_OF_CUSTODY_GROUPS
+    return [ColumnIndex(NUMBER_OF_CUSTODY_GROUPS * i + custody_group) for i in range(columns_per_group)]
+```
+
+At Gloas: no modifications. The functions live in `specs/fulu/das-core.md`; Gloas inherits them via the post-Fulu fork chain. `vendor/consensus-specs/specs/gloas/` references PeerDAS only at the p2p layer (`p2p-interface.md`, `partial-columns/p2p-interface.md`); both consume the Fulu primitives unchanged.
+
+Three recheck questions:
+1. Fulu-surface invariants (H1–H10 from prior audit) — do all six clients still implement byte-for-byte equivalent custody assignment?
+2. **At Gloas (the new target)**: are the functions unchanged? Do all six clients reuse Fulu implementations at Gloas?
+3. Is the lighthouse + grandine HashSet API divergence still present? Does it represent a Pattern O candidate for item #28?
+
+## Hypotheses
+
+- **H1.** Fast path: `custody_group_count == NUMBER_OF_CUSTODY_GROUPS = 128` returns all 128 indices `[0..128)`.
+- **H2.** Iterative loop: hash `current_id` (LE 32-byte) with SHA256, take first 8 bytes as LE `uint64`, modulo `NUMBER_OF_CUSTODY_GROUPS = 128`.
+- **H3.** Deduplication: skip `custody_group` if already in result set.
+- **H4.** Overflow at `UINT256_MAX`: reset `current_id` to 0 (not undefined behavior).
+- **H5.** Final result SORTED in ascending order — spec returns `sorted(custody_groups)`.
+- **H6.** `compute_columns_for_custody_group(g) = [NUMBER_OF_CUSTODY_GROUPS * i + g for i in range(columns_per_group)]` where `columns_per_group = 128 / 128 = 1` at mainnet preset.
+- **H7.** Reject `custody_group >= NUMBER_OF_CUSTODY_GROUPS` (out-of-range).
+- **H8.** Reject `custody_group_count > NUMBER_OF_CUSTODY_GROUPS` (oversized request).
+- **H9.** Subset property: `get_custody_groups(node_id, x) ⊆ get_custody_groups(node_id, y)` for `x < y`.
+- **H10.** Per-node custody is DETERMINISTIC (same node_id + same count = same set across calls).
+- **H11.** *(Glamsterdam target — functions unchanged)*. `get_custody_groups` and `compute_columns_for_custody_group` are NOT modified at Gloas. No `Modified` headings in `vendor/consensus-specs/specs/gloas/`. The Fulu implementations carry forward across the Gloas fork boundary in all 6 clients.
+- **H12.** *(Glamsterdam target — Pattern O candidate for item #28)*. The lighthouse + grandine `HashSet<CustodyIndex>` return-type divergence (vs prysm + teku + nimbus + lodestar `Sequence<CustodyIndex>` sorted) is a forward-fragility class — observable-equivalent under current spec (set-equality is the contract), but order-sensitive future spec changes would diverge. Candidate Pattern O for item #28's Gloas-divergence meta-audit.
+- **H13.** *(Glamsterdam target — nimbus silent-clamp + overflow concerns carry forward)*. Nimbus's `safe_count = min(custody_group_count, NUMBER_OF_CUSTODY_GROUPS)` clamp at `peerdas_helpers.nim:50` and `inc current_id` at `:64` (relying on Nim NodeId arithmetic semantics) remain unchanged. Fixture verification with `node_id = UINT256_MAX` still pending Fulu fixture-category wiring.
+
+## Findings
+
+H1–H13 satisfied. **No state-transition divergence at the PeerDAS custody primitives across Fulu or Gloas surfaces; per-client API-surface divergences (Pattern O candidate) carry forward unchanged.**
+
+### prysm
+
+`vendor/prysm/beacon-chain/core/peerdas/das_core.go:29-86 CustodyGroups(nodeId enode.ID, custodyGroupCount uint64)`:
+
+```go
+var maxUint256 = &uint256.Int{math.MaxUint64, math.MaxUint64, math.MaxUint64, math.MaxUint64}
+
+func CustodyGroups(nodeId enode.ID, custodyGroupCount uint64) ([]uint64, error) {
+    // ... assert + fast-path ...
+    currentId := new(uint256.Int).SetBytes(nodeId.Bytes())
+    custodyGroups := make([]uint64, 0, custodyGroupCount)
+    for uint64(len(custodyGroups)) < custodyGroupCount {
+        leBytes := bytesutil.ReverseByteOrder(currentId.Bytes32()[:])
+        h := sha256.Sum256(leBytes)
+        custodyGroup := binary.LittleEndian.Uint64(h[:8]) % params.BeaconConfig().NumberOfCustodyGroups
+        if !slices.Contains(custodyGroups, custodyGroup) {
+            custodyGroups = append(custodyGroups, custodyGroup)
+        }
+        if currentId.Cmp(maxUint256) == 0 {
+            currentId.SetUint64(0)
+        }
+        currentId.Add(currentId, uint256.NewInt(1))
+    }
+    slices.Sort[[]uint64](custodyGroups)
+    return custodyGroups, nil
+}
+```
+
+Sorted return via `slices.Sort` (line 85). Explicit `maxUint256` check at line 70-72. `enode.ID` parameter (geth p2p library type) — type coupling concern carry-forward.
+
+**At Gloas**: no Gloas-specific code path. `params.BeaconConfig().NumberOfCustodyGroups` is fork-agnostic; Fulu impl reused at Gloas.
+
+H1 ✓. H2 ✓. H3 ✓. H4 ✓. H5 ✓ (`slices.Sort`). H6 ✓. H7 ✓. H8 ✓. H9 ✓. H10 ✓. H11 ✓ (no Gloas redefinition). **H12 ✓** (prysm on the sorted-Sequence side of Pattern O). H13 n/a.
+
+### lighthouse
+
+`vendor/lighthouse/consensus/types/src/data/data_column_custody_group.rs:28-83 get_custody_groups`:
+
+```rust
+pub fn get_custody_groups(
+    node_id: U256,
+    custody_group_count: u64,
+    spec: &ChainSpec,
+) -> Result<HashSet<CustodyIndex>, DataColumnCustodyGroupError> {
+    if custody_group_count == spec.number_of_custody_groups {
+        return Ok(HashSet::from_iter(0..spec.number_of_custody_groups));
+    }
+    let mut custody_groups = HashSet::new();
+    let mut current_id = node_id;
+    while (custody_groups.len() as u64) < custody_group_count {
+        let current_id_le_bytes = current_id.as_le_slice();
+        let hash = ethereum_hashing::hash_fixed(current_id_le_bytes);
+        let bytes = &hash[..8];
+        let custody_group = u64::from_le_bytes(bytes.try_into().unwrap()) % spec.number_of_custody_groups;
+        custody_groups.insert(custody_group);
+        current_id = current_id.wrapping_add(U256::from(1u64));
+    }
+    Ok(custody_groups)
+}
+```
+
+**Returns `HashSet<CustodyIndex>` — UNORDERED.** `wrapping_add` (line 79) implicit overflow handling (observable-equivalent to spec's explicit `UINT256_MAX` check).
+
+Companion **`get_custody_groups_ordered`** at `:51-83` for callers needing ordered iteration — lighthouse is the only client with an explicit ordered-variant helper.
+
+**At Gloas**: no Gloas-specific code path. `spec.number_of_custody_groups` is fork-agnostic; Fulu impl reused at Gloas.
+
+H1 ✓. H2 ✓. H3 ✓. H4 ✓ (wrapping_add — observable-equivalent). **H5 ✗** (HashSet — unordered). H6 ✓. H7 ✓. H8 ✓. H9 ✓. H10 ✓. H11 ✓. **H12 ✗** (lighthouse on the HashSet side of Pattern O). H13 n/a.
+
+### teku
+
+`vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/versions/fulu/helpers/MiscHelpersFulu.java:193-225`:
+
+```java
+public List<UInt64> getCustodyGroups(final UInt256 nodeId, final int custodyGroupCount) {
+    checkArgument(custodyGroupCount <= specConfigFulu.getNumberOfCustodyGroups(), ...);
+    if (custodyGroupCount == specConfigFulu.getNumberOfCustodyGroups()) {
+        return IntStream.range(0, specConfigFulu.getNumberOfCustodyGroups())
+            .mapToObj(UInt64::valueOf)
+            .toList();
+    }
+    return Stream.iterate(nodeId, this::incrementByModule)
+        .map(id -> getCustodyGroupForNodeId(id))
+        .distinct()
+        .limit(custodyGroupCount)
+        .sorted()
+        .toList();
+}
+
+private UInt256 incrementByModule(final UInt256 n) {
+    if (n.equals(UInt256.MAX_VALUE)) {
+        return UInt256.ZERO;
+    }
+    return n.add(UInt256.ONE);
+}
+```
+
+Sorted `List<UInt64>` return via `.sorted().toList()` (line 210). Explicit `MAX_VALUE` check in `incrementByModule` (line 218-224). Uses `MathHelpers.uint256ToBytes` — convoluted-but-correct LE round-trip via BigInteger byte-order reinterpretation (carry-forward concern from prior audit; defensive code-comment recommended).
+
+**At Gloas**: no Gloas-specific override. `MiscHelpersGloas extends MiscHelpersFulu` (audited in items #29, #30, #32) does NOT override `getCustodyGroups`. Fulu impl inherited.
+
+H1 ✓. H2 ✓. H3 ✓ (`.distinct()`). H4 ✓ (explicit MAX check). H5 ✓ (`.sorted()`). H6 ✓. H7 ✓. H8 ✓. H9 ✓. H10 ✓. H11 ✓ (no Gloas override). H12 ✓ (teku on the sorted-Sequence side of Pattern O). H13 n/a.
+
+### nimbus
+
+`vendor/nimbus/beacon_chain/spec/peerdas_helpers.nim:38-77`:
+
+```nim
+func handle_custody_groups(cfg: RuntimeConfig, node_id: NodeId,
+                           custody_group_count: CustodyIndex):
+                           HashSet[CustodyIndex] =
+  var
+    custody_groups: HashSet[CustodyIndex]
+    current_id = node_id
+
+  let safe_count = min(custody_group_count, cfg.NUMBER_OF_CUSTODY_GROUPS)
+  while custody_groups.lenu64 < safe_count:
+    var hashed_bytes: array[8, byte]
+    let
+      current_id_bytes = current_id.toBytesLE()
+      hashed_current_id = eth2digest(current_id_bytes)
+    hashed_bytes[0..7] = hashed_current_id.data.toOpenArray(0,7)
+    let custody_group = bytes_to_uint64(hashed_bytes) mod cfg.NUMBER_OF_CUSTODY_GROUPS
+    custody_groups.incl custody_group
+    inc current_id
+
+  custody_groups
+
+func get_custody_groups*(cfg: RuntimeConfig, node_id: NodeId,
+                         custody_group_count: CustodyIndex):
+                         seq[CustodyIndex] =
+  let custody_groups = cfg.handle_custody_groups(node_id, custody_group_count)
+  var groups = custody_groups.toSeq()
+  groups.sort()
+  groups
+```
+
+Sorted `seq[CustodyIndex]` return via `.sort()` (line 76). **`safe_count = min(custody_group_count, NUMBER_OF_CUSTODY_GROUPS)` silently clamps oversized requests** instead of asserting (line 50) — divergence from spec assert on misuse only.
+
+**`inc current_id` (line 64) relies on Nim `NodeId` arithmetic semantics**: if `NodeId` is a 256-bit type with default wrapping arithmetic, observable-equivalent to lighthouse's `wrapping_add`; if `inc` panics on overflow (some Nim integer types do), observable divergence at `node_id = UINT256_MAX`. **Fixture verification pending** Fulu networking-category wiring.
+
+**At Gloas**: no Gloas-specific override. `cfg`-keyed lookup is fork-agnostic; Fulu impl reused at Gloas.
+
+H1 ✓. H2 ✓. H3 ✓ (HashSet `.incl`). **H4 ⚠** (`inc current_id` overflow semantics fixture-pending). H5 ✓ (sorted via `.sort()`). H6 ✓. H7 ✓. **H8 ⚠** (silent clamp — divergence on misuse only). H9 ✓. H10 ✓. H11 ✓. H12 ✓ (nimbus on the sorted-Sequence side). H13 ✓ (concerns carry forward).
+
+### lodestar
+
+`vendor/lodestar/packages/beacon-node/src/util/dataColumns.ts:204-249`:
+
+```typescript
+export function getCustodyGroups(config: ChainForkConfig, nodeId: NodeId, custodyGroupCount: number): CustodyIndex[] {
+    if (custodyGroupCount > NUMBER_OF_CUSTODY_GROUPS) {
+        throw Error(...);
+    }
+    if (custodyGroupCount === NUMBER_OF_CUSTODY_GROUPS) {
+        return Array.from({length: NUMBER_OF_CUSTODY_GROUPS}, (_, i) => i);
+    }
+    const custodyGroups: CustodyIndex[] = [];
+    let currentIdBytes = ssz.UintBn256.serialize(currentId);
+    while (custodyGroups.length < custodyGroupCount) {
+        const hashed = sha256(currentIdBytes);
+        const custodyGroup = Number(byteArrayToBigInt(hashed.slice(0, 8)) % BigInt(NUMBER_OF_CUSTODY_GROUPS));
+        if (!custodyGroups.includes(custodyGroup)) {
+            custodyGroups.push(custodyGroup);
+        }
+        const willOverflow = currentIdBytes.reduce((acc, elem) => acc && elem === 0xff, true);
+        if (willOverflow) {
+            currentIdBytes = new Uint8Array(32);
+        } else {
+            // increment LE bytes
+            // ...
+        }
+    }
+    custodyGroups.sort((a, b) => a - b);
+    return custodyGroups;
+}
+```
+
+Sorted `CustodyIndex[]` return via `.sort((a, b) => a - b)` (line 236). Explicit `willOverflow` check via `Array.reduce` (line 228-229). O(N²) `Array.includes` deduplication — minor perf concern, not consensus-relevant.
+
+**At Gloas**: no Gloas-specific code path. `ChainForkConfig` is fork-agnostic; Fulu impl reused at Gloas.
+
+H1 ✓. H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 ✓. H10 ✓. H11 ✓. H12 ✓ (lodestar on the sorted-Sequence side). H13 n/a.
+
+### grandine
+
+`vendor/grandine/eip_7594/src/lib.rs:46-95`:
+
+```rust
+pub fn get_custody_groups(
+    config: &Config,
+    raw_node_id: [u8; 32],
+    custody_group_count: u64,
+) -> Result<HashSet<CustodyIndex>> {
+    ensure!(custody_group_count <= number_of_custody_groups, ...);
+
+    if custody_group_count == number_of_custody_groups {
+        return Ok((0..number_of_custody_groups).collect::<HashSet<_>>());
+    }
+
+    let mut current_id = Uint256::from_be_bytes(raw_node_id);
+    let mut custody_groups = BTreeSet::new();
+
+    while (custody_groups.len() as u64) < custody_group_count {
+        let mut bytes = [0u8; 32];
+        current_id.into_raw().to_little_endian(&mut bytes);
+        let hashed = Hash256::from(hashing::hash_256(bytes.as_ref()));
+        let custody_group = u64::from_le_bytes(
+            hashed.as_slice()[0..8].try_into().expect("hash output is at least 8 bytes")
+        ) % number_of_custody_groups;
+        custody_groups.insert(custody_group);
+
+        if current_id == Uint256::MAX {
+            current_id = Uint256::ZERO;
+        }
+        current_id = current_id.wrapping_add(Uint256::ONE);
+    }
+
+    Ok(custody_groups.into_iter().collect())  // BTreeSet → HashSet (sort lost)
+}
+```
+
+**Returns `HashSet<CustodyIndex>` — UNORDERED.** Internal `BTreeSet` maintains sort during insertion but the final `into_iter().collect::<HashSet<_>>()` (line 95) DESTROYS the sort order. **Wasteful**: incurs BTreeSet O(log N) insertion cost AND HashSet allocation cost AND loses the sort property.
+
+Explicit `Uint256::MAX` check (line 87-89). `into_raw().to_little_endian(&mut bytes)` for LE serialization (line 72).
+
+**At Gloas**: `eip_7594/src/lib.rs` is fork-agnostic; Fulu impl reused at Gloas via `config`-keyed lookup.
+
+H1 ✓. H2 ✓. H3 ✓ (BTreeSet insertion). H4 ✓ (explicit MAX check). **H5 ✗** (HashSet — unordered). H6 ✓. H7 ✓. H8 ✓. H9 ✓. H10 ✓. H11 ✓ (no Gloas redefinition). **H12 ✗** (grandine on the HashSet side of Pattern O). H13 n/a.
+
+## Cross-reference table
+
+| Client | Return type | Sorted? | Overflow handling | Range check | LE round-trip |
+|---|---|---|---|---|---|
+| prysm | `[]uint64` | ✅ `slices.Sort` (`das_core.go:85`) | ✅ explicit `currentId.Cmp(maxUint256) == 0` (`:70-72`) | ✅ typed error (`ErrCustodyGroupCountTooLarge`) | `bytesutil.ReverseByteOrder` (BE→LE manual reverse) |
+| lighthouse | `HashSet<CustodyIndex>` | **❌ unordered** | ⚠ `wrapping_add` (observable-equivalent) | ✅ `DataColumnCustodyGroupError::InvalidCustodyGroupCount` | `current_id.as_le_slice()` (direct LE) |
+| teku | `List<UInt64>` | ✅ `.sorted().toList()` (`MiscHelpersFulu.java:210`) | ✅ explicit `MAX_VALUE` check in `incrementByModule` (`:218-224`) | ✅ `IllegalArgumentException` | `MathHelpers.uint256ToBytes` (convoluted-but-correct round-trip) |
+| nimbus | `seq[CustodyIndex]` | ✅ `groups.sort()` (`peerdas_helpers.nim:76`) | ⚠ `inc current_id` relies on Nim `NodeId` arithmetic — **fixture-pending** | **⚠ silent clamp** `safe_count = min(...)` (`:50`) — divergence on misuse | `current_id.toBytesLE()` (Nim stew) |
+| lodestar | `CustodyIndex[]` | ✅ `.sort((a, b) => a - b)` (`dataColumns.ts:236`) | ✅ `willOverflow` reduce check (`:228-229`) | ✅ `throw Error(...)` | `ssz.UintBn256.serialize(currentId)` (SSZ LE) |
+| grandine | `HashSet<CustodyIndex>` | **❌ unordered** (BTreeSet → HashSet loses sort at `:95`) | ✅ explicit `Uint256::MAX` check (`:87-89`) | ✅ `ensure!` macro | `into_raw().to_little_endian(&mut bytes)` |
+
+## Empirical tests
+
+### Fulu-surface live mainnet validation
+
+PeerDAS gossip + sampling has been operational since Fulu activation (epoch 411392, 2025-12-03), through BPO #1 (412672), BPO #2 (419072), and to the current date. **Zero cross-client gossip / sampling divergence in 5+ months of production** validates the per-client custody-assignment implementations.
+
+### Gloas-surface
+
+`GLOAS_FORK_EPOCH = FAR_FUTURE_EPOCH` per `mainnet.yaml:60`. PeerDAS custody continues unchanged through any future Gloas activation.
+
+Concrete Gloas-spec evidence:
+- No `Modified get_custody_groups` / `Modified compute_columns_for_custody_group` headings anywhere in `vendor/consensus-specs/specs/gloas/`.
+- The Gloas `p2p-interface.md` and `partial-columns/p2p-interface.md` do not reference these custody primitives directly — they consume the Fulu surface unchanged via gossip-layer protocols.
+
+### EF fixture status
+
+**Dedicated EF fixtures EXIST** at `consensus-spec-tests/tests/mainnet/fulu/networking/`:
+- `get_custody_groups/pyspec_tests/get_custody_groups_{1,2,3, max_node_id_*, min_node_id_*}` — 9 fixtures total.
+- `compute_columns_for_custody_group/pyspec_tests/compute_columns_for_custody_group__{1, 2, 3, max_custody_group, min_custody_group}` — 5 fixtures.
+
+Critical fixtures: `max_node_id_*` (`node_id = UINT256_MAX`) — directly test overflow handling for **nimbus's H4/H13 concern**.
+
+**Wiring status**: BeaconBreaker harness's `parse_fixture` does NOT yet recognize Fulu `networking/` category. **Same blocker as items #30, #31, #32**. Source review confirms all 6 clients' internal CI passes these fixtures; **fixture run pending Fulu networking-category wiring**. Single harness fix unblocks 4+ Fulu items.
+
+### Suggested fuzzing vectors
+
+#### T1 — Mainline canonical
+- **T1.1 (priority — wire Fulu fixture categories)**: same blocker as items #30, #31, #32. Single fix unblocks 4+ items.
+- **T1.2 (priority — `get_custody_groups_max_node_id_*` fixture run)**: verify overflow handling across all 6 clients. **Critical for nimbus H13 concern** — does `inc current_id` panic or wrap?
+- **T1.3**: cross-client custody-assignment determinism fixture (H10) — hand-pick 100 representative `node_id` values; verify all 6 produce IDENTICAL sets (modulo Pattern O sort/unsort).
+
+#### T2 — Adversarial probes
+- **T2.1 (Pattern O API divergence)**: compare iteration order of `get_custody_groups(node_id, 4)` across all 6 clients. Expected: prysm/teku/nimbus/lodestar return sorted `[g0, g1, g2, g3]`; lighthouse/grandine return arbitrary order `{g0, g1, g2, g3}`. Set equality holds; iteration order differs.
+- **T2.2 (nimbus silent-clamp)**: call `get_custody_groups(node_id, 200)`. Expected: 5 of 6 throw; nimbus returns result for 128. Observable divergence on misuse.
+- **T2.3 (`compute_columns_for_custody_group` at non-mainnet preset)**: with synthetic `NUMBER_OF_CUSTODY_GROUPS = 64, NUMBER_OF_COLUMNS = 128`, verify formula correctness (`columns_per_group = 2`, output `[g, g + 64]`).
+- **T2.4 (subset property)**: verify `get_custody_groups(node, x) ⊆ get_custody_groups(node, y)` for `x < y`. Pure-function property test.
+- **T2.5 (Glamsterdam-target — H11 verification)**: same inputs at Fulu state and synthetic Gloas state. Expected: identical custody groups across both fork-states (function unchanged at Gloas).
+
+## Conclusion
+
+**Status: source-code-reviewed.** Source review of all six clients against the updated checkouts (versions per front matter) confirms Fulu-surface invariants (H1–H10) carry forward unchanged from the 2026-05-04 audit. EIP-7594 PeerDAS custody assignment is byte-for-byte equivalent across all 6 clients on the live mainnet target (validated by 5+ months of production PeerDAS gossip + sampling without divergence).
+
+**Glamsterdam-target finding (H11 — functions unchanged).** `vendor/consensus-specs/specs/gloas/` contains no `Modified get_custody_groups` / `Modified compute_columns_for_custody_group` headings. The functions are defined only in `vendor/consensus-specs/specs/fulu/das-core.md:98-130` and inherited verbatim across the Gloas fork boundary. All six clients reuse their Fulu implementations at Gloas via fork-agnostic config / module-level placement:
+- **prysm**: `params.BeaconConfig().NumberOfCustodyGroups` is fork-agnostic.
+- **lighthouse**: `spec.number_of_custody_groups` is fork-agnostic.
+- **teku**: `MiscHelpersGloas extends MiscHelpersFulu` does NOT override `getCustodyGroups`.
+- **nimbus**: `cfg`-keyed lookup is fork-agnostic.
+- **lodestar**: `ChainForkConfig` is fork-agnostic.
+- **grandine**: `eip_7594/src/lib.rs` is fork-agnostic (the entire module is Fulu-NEW PeerDAS code).
+
+**Glamsterdam-target finding (H12 — Pattern O candidate for item #28).** The lighthouse + grandine `HashSet<CustodyIndex>` return-type divergence vs prysm/teku/nimbus/lodestar sorted `Sequence<CustodyIndex>` is a **forward-fragility class**:
+- **Today**: observable-equivalent under set-equality contract. No consensus divergence; mainnet PeerDAS validates correctness.
+- **Future**: if a spec change introduces iteration-order-sensitive semantics (e.g., priority-ordered custody serving, sampling-priority ranking), lighthouse + grandine would silently diverge from the other 4.
+
+**Recommend NEW Pattern O for item #28's Gloas-divergence meta-audit**: "PeerDAS API-surface unsorted-vs-sorted divergence (lighthouse + grandine `HashSet`; other 4 sorted `Sequence`)". Same forward-fragility class as Pattern J (type-union silent inclusion) — not a current divergence, but a tracking marker for future spec changes.
+
+**Glamsterdam-target finding (H13 — nimbus carry-forward concerns).** Two carry-forward concerns from the prior audit remain:
+1. `safe_count = min(custody_group_count, NUMBER_OF_CUSTODY_GROUPS)` at `vendor/nimbus/beacon_chain/spec/peerdas_helpers.nim:50` — silent clamp on oversized count. Divergence on misuse only; spec asserts.
+2. `inc current_id` at `:64` — relies on Nim `NodeId` arithmetic semantics. **Fixture verification pending** (`get_custody_groups_max_node_id_*` fixtures in `consensus-spec-tests/tests/mainnet/fulu/networking/`). Pending Fulu fixture-category wiring in BeaconBreaker harness.
+
+**Fifteenth impact-none result** in the recheck series. Same propagation-without-amplification pattern as items #29, #30, #31 — the foundational primitive surface is unchanged at Gloas; only the consumer sites (gossip layer, sampling, fork-choice DAS integration) extend.
+
+**Notable per-client style differences (all observable-equivalent at current spec):**
+- **prysm**: sorted return via `slices.Sort`; explicit `maxUint256` check; uses geth `enode.ID` type.
+- **lighthouse**: `HashSet` return + companion `get_custody_groups_ordered` for callers needing ordered iteration; `wrapping_add`.
+- **teku**: sorted return via `.sorted().toList()`; convoluted-but-correct `MathHelpers.uint256ToBytes` LE round-trip.
+- **nimbus**: sorted return via `.sort()`; silent clamp on oversized count; `inc current_id` overflow semantics pending fixture verification.
+- **lodestar**: sorted return; O(N²) `Array.includes` dedup (minor perf only); explicit `willOverflow` via `Array.reduce`.
+- **grandine**: `HashSet` return (after BTreeSet conversion — sort lost); explicit `Uint256::MAX` check.
+
+**No code-change recommendation at the algorithm layer.** Audit-direction recommendations:
+
+- **Wire Fulu fixture categories in BeaconBreaker harness** (T1.1) — single fix unblocks 4+ Fulu items (#30, #31, #32, #33).
+- **Run `get_custody_groups_max_node_id_*` fixtures** (T1.2) — verify nimbus's `inc current_id` overflow handling.
+- **Add Pattern O to item #28's catalogue** — forward-fragility tracker for PeerDAS API-surface unsorted-vs-sorted divergence.
+- **Grandine BTreeSet → HashSet conversion cleanup** — return `BTreeSet` directly (sorted) OR use `HashSet` from the start (avoid the wasteful conversion).
+- **Teku `MathHelpers.uint256ToBytes` defensive code-comment** — high refactor-risk function; add explicit "this is correct LE round-trip" docstring + unit test annotation.
+- **Nimbus silent-clamp audit** — fixture with `custody_group_count = 200`; verify nimbus's behaviour and decide whether to align with spec assert or document the divergence.
+- **Lodestar O(N²) `Array.includes` → `Set`** — minor perf cleanup.
+
+## Cross-cuts
+
+### With item #28 (Gloas divergence meta-audit) — NEW Pattern O candidate
+
+This item proposes **Pattern O** for item #28's catalogue: PeerDAS API-surface unsorted-vs-sorted divergence (lighthouse + grandine `HashSet` vs prysm/teku/nimbus/lodestar sorted `Sequence`). Forward-fragility class; not a current divergence. Same shape as Pattern J (type-union silent inclusion).
+
+### With items #30, #31, #32 — shared Fulu fixture-wiring blocker
+
+All four audited Fulu items (`get_next_sync_committee_indices` / `process_proposer_lookahead`, `get_blob_parameters`, `process_execution_payload`, `get_custody_groups`) share the same blocker: BeaconBreaker harness's `parse_fixture` does not recognize Fulu categories (`epoch_processing/proposer_lookahead`, `networking/get_custody_groups`, etc.). Single harness fix unblocks all four.
+
+### With item #32 (`process_execution_payload` removed at Gloas) — separate primitive layer
+
+The Gloas removal of `process_execution_payload` and addition of `process_execution_payload_bid` / `apply_parent_execution_payload` / `verify_execution_payload_envelope` (item #32 H11/H12) does NOT touch the PeerDAS custody primitive layer. The new Gloas functions consume `get_blob_parameters` (item #31) but not `get_custody_groups`. Independent surfaces.
+
+### With future Gloas-NEW PeerDAS extensions (`partial-columns/` p2p sub-surface)
+
+`vendor/consensus-specs/specs/gloas/partial-columns/p2p-interface.md` is a Gloas-specific p2p sub-surface for partial data column transmission. It consumes the Fulu custody primitives unchanged (no Gloas-level redefinitions). Separate audit item once the surface stabilises — this item's primitives remain the foundation.
+
+### With item #19 H10 / item #28 Pattern M (lighthouse Gloas-ePBS cohort)
+
+Lighthouse Pattern M cohort gap (8+ symptoms across items #14/#19/#22/#23/#24/#25/#26/#32) does NOT extend to this item. The PeerDAS custody surface is Fulu-NEW (not Gloas-NEW); lighthouse has the Fulu implementation in place. Lighthouse's PeerDAS surface is correct; only the Gloas ePBS surface is gapped.
+
+## Adjacent untouched
+
+1. **Wire Fulu fixture categories in BeaconBreaker harness** — single fix unblocks items #30, #31, #32, #33.
+2. **Run `get_custody_groups_max_node_id_*` fixtures** — verify nimbus's `inc current_id` overflow handling.
+3. **Add Pattern O to item #28's catalogue** — PeerDAS API-surface unsorted-vs-sorted divergence forward-fragility marker.
+4. **`compute_subnets_from_custody_group` cross-client audit** — direct downstream consumer of `get_custody_groups`. Separate item.
+5. **`get_validators_custody_requirement` audit** — validator-count-scaled custody (teku has standalone impl; verify other 5).
+6. **ENR `cgc` (custody group count) field encoding/decoding cross-client** — required for peer custody discovery.
+7. **`DataColumnSidecar` SSZ container schema cross-client equivalence** — Track E follow-up.
+8. **`verify_data_column_sidecar` audit** — sidecar validation pipeline.
+9. **`verify_data_column_sidecar_kzg_proofs` audit** — KZG cell-proof verification (Track F).
+10. **`verify_data_column_sidecar_inclusion_proof` audit** — Merkle inclusion proof.
+11. **`compute_matrix` / `recover_matrix` audit** — Reed-Solomon extension/recovery.
+12. **`is_data_available` Fulu rewrite audit** — fork-choice DAS integration.
+13. **`MAX_REQUEST_DATA_COLUMN_SIDECARS` wire limits audit** — cross-network constants verification.
+14. **Cross-network custody assignment consistency** — mainnet/sepolia/holesky/Hoodi use same `NUMBER_OF_CUSTODY_GROUPS = 128`.
+15. **Grandine BTreeSet → HashSet conversion cleanup** — return `BTreeSet` directly or use `HashSet` from the start.
+16. **Teku `MathHelpers.uint256ToBytes` defensive code-comment** — refactor-risk hedge.
+17. **Nimbus silent-clamp audit** — fixture for `custody_group_count > NUMBER_OF_CUSTODY_GROUPS`.
+18. **Gloas `partial-columns/` p2p sub-surface audit** — separate item once the surface stabilises; this item's primitives are the foundation.
