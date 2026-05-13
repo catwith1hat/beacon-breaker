@@ -1,12 +1,10 @@
 ---
 status: source-code-reviewed
-impact: mainnet-glamsterdam
-last_update: 2026-05-12
+impact: none
+last_update: 2026-05-13
 builds_on: []
 eips: [EIP-7549, EIP-7732]
-splits: [lighthouse]
-# main_md_summary: lighthouse has not implemented the Gloas EIP-7732 `process_attestation` modifications — still enforces `data.index == 0`, does not use `is_attestation_same_slot`, and does not increment `state.builder_pending_payments[*].weight` from attestations
-prysm_version: v7.1.3-rc.3-209-g0f25a41868
+prysm_version: v3.2.2-rc.1-2535-g0f25a41868
 lighthouse_version: v8.1.2-185-g1a6863118
 teku_version: 26.4.0-127-g70ad00cbaf
 nimbus_version: v26.5.0-8-g3802d9629
@@ -22,7 +20,9 @@ EIP-7549 fundamentally changes the `Attestation` SSZ container: `committee_index
 
 **Pectra surface (the function body itself):** all six clients implement the four new Pectra checks (data.index==0, per-committee membership + bounds, len(attesters)>0 per committee, exact-size bitfield) and the multi-committee BLS aggregation identically at the source level. 45/45 EF `attestation` operations fixtures pass uniformly on the four wired clients (prysm, lighthouse, lodestar, grandine); teku and nimbus pass these in internal CI but the local harness SKIPs them.
 
-**Gloas surface (new at the Glamsterdam target):** Gloas (EIP-7732 ePBS) modifies `process_attestation` (`vendor/consensus-specs/specs/gloas/beacon-chain.md` "Modified `process_attestation`") with two interlocking changes: (a) **`data.index` is repurposed** from "must-be-zero" to a payload-availability signal where `0 ≤ data.index < 2` (with 0 meaning the proposed payload was not yet executable and 1 meaning it was), with an extra same-slot rule (`is_attestation_same_slot(state, data)` → `data.index` must be 0); and (b) **`state.builder_pending_payments[slot_idx].weight`** is incremented by the attester's `effective_balance` whenever a same-slot attestation sets a new participation flag for that validator — the weight is consumed by the new `process_builder_pending_payments` epoch helper to settle builder bids. Survey of all six clients: **prysm, teku, nimbus, lodestar, grandine** implement both changes; **lighthouse does not** — it still enforces `data.index == 0` for Electra-and-later attestations, has the `is_attestation_same_slot` helper defined on `BeaconState` but never calls it from attestation processing, and never increments `state.builder_pending_payments[*].weight` from the attestation path despite having the state field. Lone-laggard 1-vs-5 split (the reverse of the EIP-8061 family pattern where lodestar was the lone-leader).
+**Gloas surface (new at the Glamsterdam target):** all six clients implement the two interlocking Gloas-modified surfaces from EIP-7732 ePBS: (a) `data.index` is repurposed from "must-be-zero" to a payload-availability signal where `0 ≤ data.index < 2` (with 0 meaning the proposed payload was not yet executable and 1 meaning it was), with an extra same-slot rule (`is_attestation_same_slot(state, data)` → `data.index` must be 0); and (b) `state.builder_pending_payments[slot_idx].weight` is incremented by the attester's `effective_balance` whenever a same-slot attestation sets a new participation flag for that validator. The dispatch idioms vary per client but the observable Gloas semantics are uniform.
+
+No splits at the current pins. The earlier finding (H9 and H10 both failing for lighthouse) was an artifact of stale `stable` pinning; on `unstable` HEAD `1a6863118` lighthouse implements both surfaces at `verify_attestation.rs:74-81` (`fork_at_attestation_slot.gloas_enabled()` branch) and `process_operations.rs:280-358` (full `will_set_new_flag` + `is_attestation_same_slot(data)` + `builder_pending_payments_mut()` weight increment).
 
 ## Question
 
@@ -126,7 +126,7 @@ The Gloas-only mechanisms involved:
 
 The hypothesis: *all six clients implement the four Electra checks (A–D) and the multi-committee BLS aggregation (E) identically (H1–H8); and at the Glamsterdam target all six implement the Gloas `data.index < 2` rule with same-slot index-0 enforcement (H9) and the `state.builder_pending_payments` weight increment via `will_set_new_flag` + `is_attestation_same_slot` (H10).*
 
-**Consensus relevance**: attestations are processed per block, every slot. A divergence in any of the Electra bits would surface on the very next block. At Gloas, a divergence in H9 means a client either rejects valid `data.index == 1` attestations or accepts invalid `data.index == 1` attestations — direct state-root divergence on the first attestation carrying payload-availability=1. A divergence in H10 means a client fails to update `state.builder_pending_payments[*].weight` (or updates it differently), which directly changes the BeaconState field's hash-tree-root AND propagates into the `process_builder_pending_payments` epoch helper one boundary later, where the divergent weight is consumed to settle (or fail to settle) the builder's bid — a downstream cascade into builder payouts.
+**Consensus relevance**: attestations are processed per block, every slot. A divergence in any of the Electra bits would surface on the very next block. At Gloas, a divergence in H9 would mean a client either rejects valid `data.index == 1` attestations or accepts invalid `data.index == 1` attestations — direct state-root divergence on the first attestation carrying payload-availability=1. A divergence in H10 would mean a client fails to update `state.builder_pending_payments[*].weight` (or updates it differently), which would directly change the BeaconState field's hash-tree-root AND propagate into the `process_builder_pending_payments` epoch helper one boundary later, where the divergent weight is consumed to settle (or fail to settle) the builder's bid — a downstream cascade into builder payouts.
 
 ## Hypotheses
 
@@ -143,7 +143,7 @@ The hypothesis: *all six clients implement the four Electra checks (A–D) and t
 
 ## Findings
 
-H1–H8 satisfied for the Pectra surface. **H9 and H10 both fail for lighthouse alone**. The other five clients (prysm, teku, nimbus, lodestar, grandine) implement both Gloas modifications. Source-level divergence; no Gloas operations fixtures yet exist.
+H1–H10 satisfied across all six clients at the current Glamsterdam-target pins. The dispatch idioms used per client for H9 (the `data.index < 2` Gloas predicate + same-slot index-0 rule) and for H10 (the builder-pending-payments weight increment) vary, but the observable Gloas semantics are spec-equivalent. No EF Gloas operations fixtures yet exist for either surface — the conclusion is source-only.
 
 ### prysm
 
@@ -181,28 +181,59 @@ executionPayloadAvail, err := beaconState.ExecutionPayloadAvailability(slot)
 return executionPayloadAvail == committeeIndex, nil
 ```
 
-Builder-pending-payments weight is updated via the `UpdatePendingPaymentWeight(att, indices, participatedFlags)` interface declared at `vendor/prysm/beacon-chain/state/interfaces_gloas.go:34` and implemented at `vendor/prysm/beacon-chain/state/state-native/setters_gloas.go` — wired into the attestation processing flow downstream of `MatchingPayload`.
+Builder-pending-payments weight is updated via `beaconState.UpdatePendingPaymentWeight(att, indices, participatedFlags)` invoked from `vendor/prysm/beacon-chain/core/altair/attestation.go:79` — wired into the attestation processing flow downstream of `MatchingPayload`. Interface declared at `vendor/prysm/beacon-chain/state/interfaces_gloas.go:34`.
 
-H1–H8 ✓. **H9 ✓**. **H10 ✓**.
+H1–H10 ✓.
 
 ### lighthouse
 
-`vendor/lighthouse/consensus/state_processing/src/per_block_processing/verify_attestation.rs:21-86`. The Electra branch enforces `data.index == 0` unconditionally:
+`vendor/lighthouse/consensus/state_processing/src/per_block_processing/verify_attestation.rs:55-90`. The Gloas branch at lines 74-81 fork-gates the `data.index` predicate:
 
 ```rust
 AttestationRef::Electra(_) => {
-    verify!(data.index == 0, Invalid::BadCommitteeIndex);
+    let fork_at_attestation_slot = spec.fork_name_at_slot::<E>(data.slot);
+    if fork_at_attestation_slot.gloas_enabled() {
+        verify!(data.index < 2, Invalid::BadOverloadedDataIndex);
+    } else {
+        verify!(data.index == 0, Invalid::BadCommitteeIndex);
+    }
 }
 ```
 
-`AttestationRef::Electra(_)` matches Gloas-era attestations too (the Attestation SSZ container itself is not modified at Gloas — only the `process_attestation` function body is). There is **no `AttestationRef::Gloas` branch**, no `fork_name_unchecked() >= ForkName::Gloas` gate in `per_block_processing`, and no `is_attestation_same_slot` caller anywhere in `consensus/state_processing/src/`.
+(The Attestation SSZ container itself is not modified at Gloas, so `AttestationRef::Electra` continues to match Gloas-era attestations; the internal fork-gate uses the *state's* fork at the attestation's slot.)
 
-The helper IS defined as a method on `BeaconState` (`vendor/lighthouse/consensus/types/src/state/beacon_state.rs:2072`) and the `builder_pending_payments` field is allocated by the Gloas upgrade (`vendor/lighthouse/consensus/state_processing/src/upgrade/gloas.rs:101-103`), so the *primitives* exist, but `process_attestation` never invokes them. At Gloas:
+**H10 dispatch (inline per-attester loop).** `process_attestations` in `vendor/lighthouse/consensus/state_processing/src/per_block_processing/process_operations.rs:280-358` reads the payment-slot withdrawal amount, walks attesting indices, and on each `will_set_new_flag` increments `state.builder_pending_payments_mut()[payment_index].weight`:
 
-- a valid `data.index == 1` attestation will fail the Electra `verify!(data.index == 0, ...)` check and be silently rejected;
-- `state.builder_pending_payments[*].weight` is never incremented by attestation processing, so it remains zero throughout the epoch, breaking the downstream `process_builder_pending_payments` settlement.
+```rust
+let payment_withdrawal_amount = state
+    .builder_pending_payments()?
+    .get(payment_index)
+    ...
+    .withdrawal.amount;
 
-H1–H8 ✓. **H9 ✗** (Electra `data.index == 0` enforced at Gloas). **H10 ✗** (no weight-tracking in `process_attestation`).
+for index in indexed_att.attesting_indices_iter() {
+    let mut will_set_new_flag = false;
+    for (flag_index, &weight) in PARTICIPATION_FLAG_WEIGHTS.iter().enumerate() {
+        if !validator_participation.has_flag(flag_index)? {
+            validator_participation.add_flag(flag_index)?;
+            ...
+            will_set_new_flag = true;
+        }
+    }
+    if will_set_new_flag
+        && state.is_attestation_same_slot(data)?
+        && payment_withdrawal_amount > 0
+    {
+        let builder_payments = state.builder_pending_payments_mut()?;
+        let payment = builder_payments.get_mut(payment_index)...;
+        payment.weight.safe_add_assign(validator_effective_balance)?;
+    }
+}
+```
+
+The helper `is_attestation_same_slot` is a method on `BeaconState` (`vendor/lighthouse/consensus/types/src/state/beacon_state.rs:2072`) and the `builder_pending_payments` field is allocated by the Gloas upgrade (`vendor/lighthouse/consensus/state_processing/src/upgrade/gloas.rs:101-103`).
+
+H1–H10 ✓.
 
 ### teku
 
@@ -220,13 +251,13 @@ public class AttestationDataValidatorGloas extends AttestationDataValidatorElect
 }
 ```
 
-The Gloas same-slot + builder-weight logic lives in `BlockProcessorGloas` (`vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/versions/gloas/block/BlockProcessorGloas.java:363+`), which references `beaconStateAccessorsGloas.isAttestationSameSlot(state, data)` for the same-slot gate. `BeaconStateAccessorsGloas` defines `isAttestationSameSlot` and the builder-pending-payments accessor.
+The Gloas same-slot + builder-weight logic lives in `BlockProcessorGloas` (`vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/versions/gloas/block/BlockProcessorGloas.java:352-389`). `updateBuilderPaymentWeight` (line 352-369) gates on `beaconStateAccessorsGloas.isAttestationSameSlot(state, data)` and `payment.getWithdrawal().getAmount().isGreaterThan(UInt64.ZERO)`; `consumeAttestationProcessingResult` (line 371-389) applies the accumulated `weightDelta` to `BuilderPendingPayments`.
 
-H1–H8 ✓. **H9 ✓**. **H10 ✓**.
+H1–H10 ✓.
 
 ### nimbus
 
-`vendor/nimbus/beacon_chain/spec/beaconstate.nim:1088-1153` — `check_attestation`:
+`vendor/nimbus/beacon_chain/spec/beaconstate.nim:1163-1180` — `check_attestation`:
 
 ```nim
 # [Modified in Gloas:EIP7732]
@@ -241,9 +272,25 @@ else:
         return err("Electra attestation data index not 0")
 ```
 
-`is_attestation_same_slot` is defined at `vendor/nimbus/beacon_chain/spec/beaconstate.nim:878`. Builder-pending-payment weight tracking is invoked from `state_transition_epoch.nim` (the epoch-side helper) and the block-side per-attester loop. Nimbus's static `when typeof(state).kind` dispatch ensures the Gloas branch is taken at compile time for Gloas states.
+`is_attestation_same_slot` is defined at `vendor/nimbus/beacon_chain/spec/beaconstate.nim:940`. Builder-pending-payment weight tracking is in the block-side per-attester loop at `:1381-1425`:
 
-H1–H8 ✓. **H9 ✓**. **H10 ✓**.
+```nim
+var payment = state.builder_pending_payments.item(payment_index.int)
+...
+var will_set_new_flag = false
+...
+will_set_new_flag = true
+...
+if will_set_new_flag and
+    is_attestation_same_slot(state, attestation.data) and
+    payment.withdrawal.amount > 0:
+  ...
+state.builder_pending_payments[payment_index.int] = payment
+```
+
+Nimbus's static `when typeof(state).kind` dispatch ensures the Gloas branch is taken at compile time for Gloas states.
+
+H1–H10 ✓.
 
 ### lodestar
 
@@ -257,7 +304,7 @@ if (fork >= ForkSeq.gloas) {
 }
 ```
 
-`processAttestationsAltair.ts:23` imports `isAttestationSameSlot` from `util/gloas.ts`. The builder-pending-payment weight update is at lines 135, 145, 152, 159:
+`processAttestationsAltair.ts:23` imports `isAttestationSameSlot` from `util/gloas.ts`. The builder-pending-payment weight update is at lines 135-160:
 
 ```typescript
 if (fork >= ForkSeq.gloas && flagsNewSet !== 0 && isAttestationSameSlot(state as CachedBeaconStateGloas, data)) {
@@ -271,7 +318,6 @@ A separate validity helper at line 209-227 enforces the Gloas index range and th
 
 ```typescript
 if (fork >= ForkSeq.gloas) {
-    // ...
     if (isAttestationSameSlotRootCache(rootCache, data)) {
         if (data.index !== 0) { throw new Error(`Same-slot attestation must have index 0`); }
     } else {
@@ -286,7 +332,7 @@ if (fork >= ForkSeq.gloas) {
 }
 ```
 
-H1–H8 ✓. **H9 ✓**. **H10 ✓**.
+H1–H10 ✓.
 
 ### grandine
 
@@ -320,24 +366,26 @@ for (validator_index, base_reward, effective_balance) in attesting_indices_with_
             will_set_new_flag = true;
         }
     }
-    // ... builder-payment weight increment when will_set_new_flag && is_attestation_same_slot ...
+    if will_set_new_flag && is_attestation_same_slot && payment.withdrawal.amount > 0 {
+        // ... weight increment ...
+    }
 }
 ```
 
 The Gloas processor at `vendor/grandine/transition_functions/src/gloas/block_processing.rs:1573` calls both `validate_attestation_with_verifier` and `apply_attestation` for Gloas attestations.
 
-H1–H8 ✓. **H9 ✓**. **H10 ✓**.
+H1–H10 ✓.
 
 ## Cross-reference table
 
 | Client | `process_attestation` (Electra) | `data.index < 2` (H9) | `is_attestation_same_slot` usage (H10) | `builder_pending_payments[*].weight` update (H10) |
 |---|---|---|---|---|
-| prysm | `core/blocks/attestation.go:113-193` | **✓** (`:117-126` Gloas branch: `ci >= 2` error) | **✓** (`core/gloas/attestation.go:36` `IsAttestationSameSlot` via `MatchingPayload`, called from `core/altair/attestation.go:312`) | **✓** (`state/interfaces_gloas.go:34` `UpdatePendingPaymentWeight(att, indices, participatedFlags)`; `setters_gloas.go` impl) |
-| lighthouse | `verify_attestation.rs:21-86` + `get_attesting_indices.rs:103-149` | **✗** (`AttestationRef::Electra(_)` branch enforces `data.index == 0` for Gloas attestations too; no `AttestationRef::Gloas` branch) | **✗** (helper defined at `beacon_state.rs:2072` but never called from `per_block_processing/`) | **✗** (state field present at `beacon_state.rs:628`; upgrade allocates Vector at `upgrade/gloas.rs:101-103`; no caller in attestation processing increments weight) |
-| teku | `BlockProcessorElectra.java:271-323` + `AttestationDataValidatorElectra.java:46-84` | **✓** (`AttestationDataValidatorGloas.checkCommitteeIndex` overrides to `isLessThan(2)`) | **✓** (`BlockProcessorGloas.java:363` `beaconStateAccessorsGloas.isAttestationSameSlot(state, data)`) | **✓** (`BlockProcessorGloas` + `BeaconStateAccessorsGloas` wire the payment update) |
-| nimbus | `beaconstate.nim:1088-1153` (`check_attestation`) | **✓** (`:1106-1109` `when state is gloas.BeaconState: assert data.index < 2`) | **✓** (`beaconstate.nim:878` def; `:1108` and `:1360` callers) | **✓** (block-side per-attester loop + `state_transition_epoch.nim` epoch consumer) |
-| lodestar | `block/processAttestationPhase0.ts:97-141` (validate Electra branch) + `processAttestationsAltair.ts:80-230` (apply + weight) | **✓** (`processAttestationPhase0.ts:98-101` `if fork >= ForkSeq.gloas: assert.lt(data.index, 2)` else `assert.equal(data.index, 0)`) | **✓** (`processAttestationsAltair.ts:135` `isAttestationSameSlot(state, data)` gate) | **✓** (`processAttestationsAltair.ts:152, 159` `builderPendingPayments.get(index).weight += effectiveBalance`) |
-| grandine | `electra/block_processing.rs:747-816` (Electra `validate_attestation`) + `gloas/block_processing.rs:944-985` (`validate_attestation_with_verifier`) + `:851-944` (`apply_attestation`) | **✓** (`gloas/block_processing.rs:982` `ensure!(index < 2, ...)`) | **✓** (`gloas/block_processing.rs` `is_attestation_same_slot(state, &attestation.data)?`) | **✓** (`apply_attestation` reads + writes `state.builder_pending_payments()` weight) |
+| prysm | `core/blocks/attestation.go:113-193` | ✓ (`:117-126` Gloas branch: `ci >= 2` error) | ✓ (`core/gloas/attestation.go:36` `IsAttestationSameSlot` via `MatchingPayload`, called from `core/altair/attestation.go:312`) | ✓ (`state/interfaces_gloas.go:34` `UpdatePendingPaymentWeight(att, indices, participatedFlags)`; invoked from `core/altair/attestation.go:79`) |
+| lighthouse | `verify_attestation.rs:55-90` + `process_operations.rs:280-358` | ✓ (`verify_attestation.rs:74-81` — `fork_at_attestation_slot.gloas_enabled()` → `data.index < 2`, else `== 0`) | ✓ (`process_operations.rs:347` `state.is_attestation_same_slot(data)?`; helper at `beacon_state.rs:2072`) | ✓ (`process_operations.rs:350-356` `builder_pending_payments_mut()[payment_index].weight.safe_add_assign(effective_balance)`) |
+| teku | `BlockProcessorElectra.java:271-323` + `BlockProcessorGloas.java:352-389` | ✓ (`AttestationDataValidatorGloas.checkCommitteeIndex` overrides to `isLessThan(2)`) | ✓ (`BlockProcessorGloas.java:361` `beaconStateAccessorsGloas.isAttestationSameSlot(state, data)`) | ✓ (`BlockProcessorGloas.updateBuilderPaymentWeight:352-369` + `consumeAttestationProcessingResult:371-389`) |
+| nimbus | `beaconstate.nim:1088-1180` (`check_attestation`) | ✓ (`:1171-1175` `when state is gloas.BeaconState: assert data.index < 2`) | ✓ (`beaconstate.nim:940` def; `:1048-1049` same-slot index-0 enforcement; `:1404` weight gate) | ✓ (block-side per-attester loop `:1381-1425` + `state_transition_epoch.nim` epoch consumer) |
+| lodestar | `block/processAttestationPhase0.ts:97-141` (validate Electra branch) + `processAttestationsAltair.ts:80-230` (apply + weight) | ✓ (`processAttestationPhase0.ts:98-101` `if fork >= ForkSeq.gloas: assert.lt(data.index, 2)` else `assert.equal(data.index, 0)`) | ✓ (`processAttestationsAltair.ts:135` `isAttestationSameSlot(state, data)` gate) | ✓ (`processAttestationsAltair.ts:152, 159` `builderPendingPayments.get(index).weight += effectiveBalance`) |
+| grandine | `electra/block_processing.rs:747-816` (Electra `validate_attestation`) + `gloas/block_processing.rs:944-985` (`validate_attestation_with_verifier`) + `:851-944` (`apply_attestation`) | ✓ (`gloas/block_processing.rs:1088` `ensure!(index < 2, ...)`) | ✓ (`gloas/block_processing.rs:979` `is_attestation_same_slot(state, &attestation.data)?`) | ✓ (`apply_attestation:1007-1020` reads + writes `state.builder_pending_payments()` weight) |
 
 ## Empirical tests
 
@@ -405,28 +453,16 @@ No Gloas operations fixtures yet exist for `process_attestation`. H9 and H10 are
 #### T1 — Mainline canonical
 - **T1.1 (priority — multi-committee max-aggregation).** Attestation with all `MAX_COMMITTEES_PER_SLOT = 64` committees set in committee_bits. Tests the upper bound of the multi-committee feature.
 - **T1.2 (priority — single committee, high index).** Attestation with only the highest committee_bit set. Tests the high-index boundary in `get_committee_count_per_slot` comparison.
-- **T1.3 (Glamsterdam-target — `data.index == 1` non-same-slot payload-available attestation).** Gloas state; non-same-slot attestation with `data.index == 1` and the corresponding `state.execution_payload_availability[data.slot % SLOTS_PER_HISTORICAL_ROOT]` bit set. Expected: accepted by all six per the Gloas spec; lighthouse will reject as `BadCommitteeIndex` because the Electra `data.index == 0` predicate still fires.
-- **T1.4 (Glamsterdam-target — same-slot `data.index == 0` builder-payment weight increment).** Gloas state; same-slot attestation with `data.index == 0`, `payment.withdrawal.amount > 0` for the slot, and a single attester. Expected: `state.builder_pending_payments[SLOTS_PER_EPOCH + data.slot % SLOTS_PER_EPOCH].weight` increases by `attester.effective_balance`. Lighthouse will not increment the weight (state field remains unchanged).
+- **T1.3 (Glamsterdam-target — `data.index == 1` non-same-slot payload-available attestation).** Gloas state; non-same-slot attestation with `data.index == 1` and the corresponding `state.execution_payload_availability[data.slot % SLOTS_PER_HISTORICAL_ROOT]` bit set. Expected: accepted by all six per the Gloas spec; cross-client `state_root` should match.
+- **T1.4 (Glamsterdam-target — same-slot `data.index == 0` builder-payment weight increment).** Gloas state; same-slot attestation with `data.index == 0`, `payment.withdrawal.amount > 0` for the slot, and a single attester. Expected: `state.builder_pending_payments[SLOTS_PER_EPOCH + data.slot % SLOTS_PER_EPOCH].weight` increases by `attester.effective_balance` uniformly across all six clients.
 
 #### T2 — Adversarial probes
 - **T2.1 (priority — `data.index = 1`).** Pre-Gloas: must be rejected (Electra `== 0`). Covered by `invalid_attestation_data_index_not_zero`.
 - **T2.2 (priority — committee_bits set but no attesters).** A committee_bit is set but the corresponding aggregation_bits slice is all zeros. Reject. Covered by `invalid_empty_participants_*`.
 - **T2.3–T2.6 (priority — bitfield boundary cases).** Covered by `invalid_too_many_aggregation_bits`, `invalid_too_few_aggregation_bits`, `invalid_committee_index`, `invalid_too_many_committee_bits`.
 - **T2.7 (priority — cross-committee duplicate validator).** A validator appears in two committees both set in committee_bits. Pyspec's `get_attesting_indices` uses `Set[ValidatorIndex]` semantics — dedupe. Each client's collection mechanism must handle duplicates consistently.
-- **T2.8 (Glamsterdam-target — same-slot attestation with `data.index == 1`).** Gloas state; `is_attestation_same_slot(state, data) == True` but `data.index == 1`. Spec: must be rejected ("Same-slot attestation must have index 0"). Verify all six clients enforce this combined predicate at Gloas. Lighthouse will accept (since it never checks the same-slot rule at all).
+- **T2.8 (Glamsterdam-target — same-slot attestation with `data.index == 1`).** Gloas state; `is_attestation_same_slot(state, data) == True` but `data.index == 1`. Spec: must be rejected ("Same-slot attestation must have index 0"). Verify all six clients enforce this combined predicate at Gloas.
 - **T2.9 (Glamsterdam-target — multiple same-slot attestations on the same validator).** Two same-slot attestations covering the same validator in one block. Spec's `will_set_new_flag` gates the weight increment so each validator contributes exactly once per slot. Verify all six clients add `effective_balance` once, not twice.
-
-## Mainnet reachability
-
-**Reachable on canonical traffic at Glamsterdam activation, on every block that contains a Gloas-format attestation** (i.e. essentially every Gloas-slot block — attestations are the dominant operation per block).
-
-**Trigger A (H9 — `data.index == 1` rejection).** The first Gloas-slot block that contains a non-same-slot attestation with `data.index == 1` (signalling that the committee saw the parent's execution payload). Validators ARE expected to produce these routinely post-Gloas — the payload-availability mechanism is what lets the chain reach consensus on whether an ePBS builder delivered its payload. On lighthouse the message is rejected as `BadCommitteeIndex`; on prysm/teku/nimbus/lodestar/grandine it is accepted and processed. Lighthouse will refuse to attest to any block containing such attestations (or its block-import will reject the block); the chain at activation will see lighthouse fork off as soon as the first `data.index == 1` attestation appears on canonical traffic.
-
-**Trigger B (H10 — builder weight not tracked).** Even if Trigger A is avoided (e.g., temporarily all attestations carry `data.index == 0`), every same-slot attestation should increment `state.builder_pending_payments[*].weight`. On lighthouse this never happens — the state field remains at its initial-vector-of-zeros. At the next `process_builder_pending_payments` epoch boundary, lighthouse's `state.builder_pending_payments` has different hash-tree-root than the other five clients'. The post-state divergence appears every single epoch, regardless of whether any individual attestation was visibly different across clients.
-
-**Severity.** State-root divergence on every Gloas-epoch boundary at minimum (via H10), and on every Gloas-slot block carrying a `data.index == 1` attestation (via H9). H10's continual nature is the broader of the two — lighthouse cannot follow the Gloas canonical chain without implementing builder-pending-payment weight tracking in `process_attestation`. H9 layers on top: even ignoring weight tracking, lighthouse cannot accept the spec-valid `data.index == 1` form.
-
-**Mitigation window.** Source-only at audit time; no Gloas EF operations fixtures yet for this routine. Closing requires lighthouse to (a) add an `AttestationRef::Gloas` branch (or relax the Electra branch when `fork_name >= Gloas`) that enforces `data.index < 2` plus the same-slot index-0 rule, and (b) wire the same-slot weight increment into the attesting-indices loop, reading/writing `state.builder_pending_payments[slot_idx]`. The other five clients' implementations are reference. Without the fix, mainnet at Glamsterdam activation splits between lighthouse and the rest from the very first Gloas epoch.
 
 ## Conclusion
 
@@ -434,23 +470,22 @@ No Gloas operations fixtures yet exist for `process_attestation`. H9 and H10 are
 
 **Glamsterdam-target findings:**
 
-- **H9** (`data.index < 2` payload-availability signal + same-slot index-0 rule) fails for **lighthouse** alone. The other five clients implement the Gloas branch: prysm (`attestation.go:117-126` Gloas vs Electra fork branch + `MatchingPayload` for the same-slot rule); teku (`AttestationDataValidatorGloas.checkCommitteeIndex` override); nimbus (`beaconstate.nim:1106-1109` `when state is gloas.BeaconState`); lodestar (`processAttestationPhase0.ts:98-101` `if fork >= ForkSeq.gloas`); grandine (`gloas/block_processing.rs:982` `ensure!(index < 2)`). Lighthouse's `verify_attestation.rs:77` enforces `data.index == 0` for `AttestationRef::Electra(_)` — which matches Gloas-era attestations too because the Attestation SSZ container itself is not modified at Gloas — and there is no `AttestationRef::Gloas` branch or `fork_name_unchecked >= ForkName::Gloas` gate.
-- **H10** (builder-pending-payment weight increment under same-slot + `will_set_new_flag`) likewise fails for **lighthouse** alone. The state field (`beacon_state.rs:628 builder_pending_payments`) and the helper (`beacon_state.rs:2072 is_attestation_same_slot`) are both defined, but neither is referenced from `consensus/state_processing/src/per_block_processing/`. The other five all wire the weight update into their per-attester loop.
+- **H9 ✓ across all six clients.** Every client fork-gates the `data.index` predicate to `< 2` at Gloas. Six distinct dispatch idioms: prysm runtime `beaconState.Version() >= version.Gloas` branch in `attestation.go`; lighthouse runtime `fork_at_attestation_slot.gloas_enabled()` branch inside `AttestationRef::Electra` (the Attestation SSZ container is not modified at Gloas, so the same Electra variant matches Gloas-era attestations); teku `AttestationDataValidatorGloas` Java subclass override; nimbus compile-time `when state is gloas.BeaconState`; lodestar `fork >= ForkSeq.gloas` ternary; grandine separate `gloas/block_processing.rs` validation function.
+- **H10 ✓ across all six clients.** Every client wires the `will_set_new_flag` + `is_attestation_same_slot(state, data)` + `payment.withdrawal.amount > 0` triple into the per-attester participation-flag loop and increments `state.builder_pending_payments[slot_idx].weight` by the validator's effective balance. Same six dispatch idioms (separate `UpdatePendingPaymentWeight` interface method for prysm; inline branch in `process_operations.rs` for lighthouse; `BlockProcessorGloas.updateBuilderPaymentWeight` override for teku; compile-time `when` for nimbus; runtime ternary inside `processAttestationsAltair.ts` for lodestar; per-attester loop in grandine's Gloas `apply_attestation`).
 
-**1-vs-5 split with lighthouse as the lone laggard** — the reverse of the EIP-8061 family pattern (items #2 H6, #3 H8, #4 H8, #6 H8) where lodestar was the lone leader. Combined `splits` = `[lighthouse]`. Impact = `mainnet-glamsterdam` because both divergences materialise on canonical Gloas traffic on the very first Gloas epoch (H10) or first Gloas-slot block carrying a `data.index == 1` attestation (H9).
+The earlier finding (H9 ✗ and H10 ✗ for lighthouse) was a stale-pin artifact. Lighthouse had been on `stable` (v8.1.3), which trailed `unstable` by months of Gloas/EIP-7732 integration including the `process_attestation` Gloas surface. With each client now on the branch where its actual Glamsterdam implementation lives, the cross-client surface is uniform.
 
 Notable per-client style differences (all observable-equivalent at the Pectra spec level):
-- **prysm** has Gloas-ready logic (`ci < 2` post-Gloas, `ci == 0` Electra) and uses `MatchingPayload` for the same-slot rule.
-- **lighthouse** uses `safe_add` overflow-checked arithmetic for the cumulative offset, but at Gloas the entire EIP-7732 extension is missing.
-- **teku** factors check (A) into `AttestationDataValidator*` classes, with Gloas overriding via subclass.
-- **nimbus** uses Nim's static fork dispatch (`when state is gloas.BeaconState`).
-- **lodestar** flattens committees into a Uint32Array; fork-gates everywhere at `fork >= ForkSeq.gloas`.
-- **grandine** returns `HashSet<ValidatorIndex>` (matches pyspec's `Set[ValidatorIndex]` literally) and has a Gloas-specific module (`gloas/block_processing.rs`).
+- **prysm** has the Gloas-ready logic (`ci < 2` post-Gloas, `ci == 0` Electra) and uses `MatchingPayload` for the same-slot rule. Weight tracking flows through an `UpdatePendingPaymentWeight` state-interface method invoked from the altair attestation path.
+- **lighthouse** uses `safe_add` overflow-checked arithmetic for the cumulative offset and for the weight increment. The Gloas branch is inline in the existing `AttestationRef::Electra` arm rather than a separate `AttestationRef::Gloas` variant (since the Attestation SSZ container is unchanged at Gloas).
+- **teku** factors check (A) into `AttestationDataValidator*` classes, with Gloas overriding via subclass. Weight tracking is collected as a per-attestation `weightDelta` in `BlockProcessorGloas.updateBuilderPaymentWeight` and applied in `consumeAttestationProcessingResult`.
+- **nimbus** uses Nim's static fork dispatch (`when state is gloas.BeaconState`); same-slot index-0 enforcement is explicit and the builder-payment weight loop matches the spec line-by-line.
+- **lodestar** flattens committees into a Uint32Array; fork-gates everywhere at `fork >= ForkSeq.gloas`. Same-slot detection has both a state-based variant (`isAttestationSameSlot`) and a root-cache variant (`isAttestationSameSlotRootCache`) for the validity helper.
+- **grandine** returns `HashSet<ValidatorIndex>` (matches pyspec's `Set[ValidatorIndex]` literally) and has a Gloas-specific module (`gloas/block_processing.rs`) with its own `validate_attestation_with_verifier` and `apply_attestation` functions.
 
 Recommendations to the harness and the audit:
 
-- Generate the **T1.3 (`data.index == 1` non-same-slot)** and **T1.4 (same-slot builder-weight increment)** Gloas fixtures; sister-pair to the EIP-7732 audit family. Lighthouse-specific; the other five clients should pass both.
-- File a coordinated PR against lighthouse to (a) add the Gloas branch in `verify_attestation.rs` for `data.index < 2` plus the same-slot index-0 rule, and (b) wire `state.builder_pending_payments[*].weight += effective_balance` into the per-attester loop in `single_pass.rs`.
+- Generate the **T1.3 (`data.index == 1` non-same-slot)** and **T1.4 (same-slot builder-weight increment)** Gloas fixtures; sister-pair to the EIP-7732 audit family. These would convert the source-only H9/H10 conclusions into empirically-pinned ones.
 - **Generate the T2.7 cross-committee duplicate-validator fixture** to lock dedup semantics (Pectra-surface).
 - **Audit `Attestation` SSZ ser/de cross-client** as a Track E item.
 - **Audit `is_valid_indexed_attestation` and BLS aggregate signature pubkey-cache coherence** — Track F item.
@@ -468,7 +503,7 @@ Each client's `IndexedAttestation` produced from a Pectra+Gloas attestation has 
 
 ### With `process_builder_pending_payments` (Gloas-new epoch helper)
 
-`process_attestation` (Gloas) increments `state.builder_pending_payments[slot_idx].weight`. The new epoch helper `process_builder_pending_payments` (`vendor/consensus-specs/specs/gloas/beacon-chain.md` "New `process_builder_pending_payments`") consumes this weight to decide whether the slot's builder bid is settled. A divergence in H10 propagates directly into the epoch helper's decisions; lighthouse's weight-vector-of-zeros would either lead to no settlements at all OR (depending on the helper's logic) lead to inverted settlements. Sister audit item.
+`process_attestation` (Gloas) increments `state.builder_pending_payments[slot_idx].weight`. The new epoch helper `process_builder_pending_payments` (`vendor/consensus-specs/specs/gloas/beacon-chain.md` "New `process_builder_pending_payments`") consumes this weight to decide whether the slot's builder bid is settled. With H10 now uniform, the consumer-side semantics can be audited independently in a sister item; the producer side is no longer a cross-client divergence axis.
 
 ### With `process_epoch` participation flag updates
 
@@ -493,6 +528,6 @@ The `data.index == 1` semantics depend on `state.execution_payload_availability[
 7. **`MAX_VALIDATORS_PER_COMMITTEE * MAX_COMMITTEES_PER_SLOT` aggregation_bits size** — the bound is large (2048 × 64 = 131,072 max bits per attestation).
 8. **The legacy `AttestationData.index` field at Gloas is now {0, 1} not just 0** — repurposed for payload-availability signalling. Subtle semantic change.
 9. **`get_committee_count_per_slot` consistency** — used in the per-committee bounds check.
-10. **Lighthouse's `is_attestation_same_slot` orphan helper** — defined on `BeaconState` at line 2072 but has zero callers in the codebase. A reviewer might mistake its presence for "Gloas is implemented" when the call sites are missing entirely. Flag for the H9/H10 fix-PR: search for callers AND add new ones.
-11. **`process_builder_pending_payments` (Gloas-new epoch helper)** — consumer side of H10's writes. Lighthouse's never-incremented weight vector would lead to systematically incorrect settlement decisions there.
-12. **`state.execution_payload_availability` bitvector (Gloas-new)** — written by `process_payload_attestation`. The `data.index ∈ {0, 1}` semantics in this item depend on consistency with that bitvector.
+10. **`process_builder_pending_payments` (Gloas-new epoch helper)** — consumer side of H10's writes. Sister audit item; producer side now uniform across all six clients.
+11. **`state.execution_payload_availability` bitvector (Gloas-new)** — written by `process_payload_attestation`. The `data.index ∈ {0, 1}` semantics in this item depend on consistency with that bitvector.
+12. **Same-slot detection idiom variants** — lodestar exposes both a state-based `isAttestationSameSlot` and a root-cache `isAttestationSameSlotRootCache`; prysm uses `IsAttestationSameSlot(beaconBlockRoot, slot)` (block-root + slot pair); lighthouse and grandine use `is_attestation_same_slot(state, data)`. Worth checking that the three signatures yield the same boolean under canonical block-import paths.
