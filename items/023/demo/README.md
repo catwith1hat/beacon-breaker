@@ -35,24 +35,38 @@ it exercises nimbus's compiled code, not a transliteration.
 The file is structured as a drop-in nimbus test using the conventional
 `../beacon_chain/spec/...` relative imports. Two paths:
 
-**Option A — drop into nimbus's `tests/` dir and use the nimbus build:**
+**Option A — compile against actual nimbus code (confirmed working):**
 
 ```bash
 cp items/023/demo/test_item_23_repro.nim vendor/nimbus/tests/
 cd vendor/nimbus
-# nimbus's standard build first generates nimbus-build-system.paths
-# pointing at the vendored deps; check whether it already exists and is current:
-ls nimbus-build-system.paths
 
-# if it's stale / missing, regenerate via the nimbus build:
-make update    # initializes vendored submodules + regenerates paths
-make test      # runs the full suite
+# nimbus's build needs nimbus-build-system.paths pointing at the inner
+# vendor/ dir. If the file is stale or points at the wrong layout
+# (e.g. /home/.../nimbus/vendor/ instead of /home/.../vendor/nimbus/vendor/),
+# either run `make update` to regenerate it, or sed-fix the prefix:
+#
+#   sed -i 's|/old/prefix/nimbus/vendor/|/new/prefix/vendor/nimbus/vendor/|g' \
+#       nimbus-build-system.paths
 
-# then compile + run the reproducer:
-nim c -r -d:const_preset=mainnet tests/test_item_23_repro.nim
+NIMBUS_BUILD_SYSTEM=yes nim c \
+    --threads:on \
+    -d:const_preset=mainnet \
+    -d:disable_libbacktrace \
+    -o:/tmp/test_item_23_repro \
+    tests/test_item_23_repro.nim
+
+/tmp/test_item_23_repro
+echo "exit: $?"   # 1 = bug present, 0 = bug fixed
 ```
 
-**Option B — wire into `tests/all_tests.nim`:**
+`-d:disable_libbacktrace` avoids the C++ `__cxa_demangle` linker dependency
+in libbacktrace's demangler (otherwise pull in `-lstdc++`).
+
+First build compiles ~170k lines of nimbus source in ~55 s; subsequent
+rebuilds re-link only the test object (a few seconds).
+
+**Option B — wire into `tests/all_tests.nim` and run via the nimbus suite:**
 
 ```bash
 cp items/023/demo/test_item_23_repro.nim vendor/nimbus/tests/
@@ -60,6 +74,19 @@ echo 'import ./test_item_23_repro' >> vendor/nimbus/tests/all_tests.nim
 cd vendor/nimbus
 make test
 ```
+
+## Verified
+
+Compiled and ran successfully against `vendor/nimbus` at HEAD
+`3802d96291` (unstable, 2026-05-13). Reproduces the divergence exactly
+as described in [../README.md](../README.md):
+
+```
+spec / prysm / lighthouse / teku / lodestar / grandine  -> 0 gwei
+nimbus (beaconstate.nim:1590-1607)                      -> 1000000000 gwei
+```
+
+Exit code 1.
 
 ### Expected output
 
