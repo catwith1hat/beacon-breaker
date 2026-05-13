@@ -45,12 +45,18 @@ def run_all_items(
     template_path: Path,
     target: ScreenSession,
     timeout: int,
+    only: list[str] | None = None,
 ) -> None:
-    """Iterate every item under `root`, prompting the agent once per item.
+    """Iterate items under `root`, prompting the agent once per item.
 
     Loop body per item: wait_for_idle → render template → send_prompt.
     A trailing wait_for_idle confirms the agent finished the last item.
     Raises RuntimeError if any wait_for_idle returns non-zero.
+
+    `only` (optional) is a list of designations like ['2', '15', '45b'].
+    When set, the loop only sends prompts for those items, in the order
+    `iter_items` yields them (numeric then suffix). Designations not
+    matched by any item raise RuntimeError before any prompt is sent.
     """
     template = Path(template_path).read_text(encoding="utf-8")
     if PLACEHOLDER not in template:
@@ -61,7 +67,22 @@ def run_all_items(
     items = list(iter_items(root))
     if not items:
         raise RuntimeError(f"no item<N>[suffix] directories found under {root}")
-    logger.info("found %d items under %s", len(items), root)
+
+    if only:
+        wanted = set(only)
+        items = [i for i in items if designation(i) in wanted]
+        unmatched = wanted - {designation(i) for i in items}
+        if unmatched:
+            raise RuntimeError(
+                f"no item directories match: {sorted(unmatched)}"
+            )
+        logger.info(
+            "filtered to %d of %d items: %s",
+            len(items), len(list(iter_items(root))),
+            ", ".join(designation(i) for i in items),
+        )
+    else:
+        logger.info("found %d items under %s", len(items), root)
 
     for n, item in enumerate(items, 1):
         tag = designation(item)
@@ -101,6 +122,24 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=0,
         help="per-wait timeout in seconds (default: 0 = no limit)",
     )
+    p.add_argument(
+        "--template",
+        type=Path,
+        default=TEMPLATE_PATH,
+        help=(
+            "path to the prompt template (must contain ${ITEM}). "
+            f"default: {TEMPLATE_PATH.name}"
+        ),
+    )
+    p.add_argument(
+        "--items",
+        type=str,
+        default=None,
+        help=(
+            "comma-separated designations to filter on (e.g. '2,15,28,45b'). "
+            "default: all items"
+        ),
+    )
     args = p.parse_args(argv)
     if args.timeout < 0:
         p.error("--timeout must be >= 0")
@@ -113,9 +152,14 @@ if __name__ == "__main__":
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     ns = _parse_args()
+    only = (
+        [s.strip() for s in ns.items.split(",") if s.strip()]
+        if ns.items else None
+    )
     run_all_items(
         root=PROJECT_ROOT,
-        template_path=TEMPLATE_PATH,
+        template_path=ns.template,
         target=ScreenSession(session=ns.session, window=ns.window),
         timeout=ns.timeout,
+        only=only,
     )

@@ -1,0 +1,50 @@
+Re-verify item ${ITEM} against the updated lighthouse + nimbus pins.
+
+The item was rechecked recently against the current schema and Glamsterdam
+target. The format and version strings are already current. What changed:
+
+* `vendor/lighthouse` was re-pinned from `stable` (v8.1.3, March 2026) to
+  `unstable` HEAD (1a6863118 "Gloas payload cache", 2026-05-13). The
+  stable pin was missing months of EIP-7732 / Gloas implementation work
+  that lives on `unstable`.
+* `vendor/nimbus` was re-pinned from `stable` (v26.3.1) to `unstable` HEAD
+  (3802d96291, 2026-05-13).
+
+The other four clients (prysm, teku, lodestar, grandine) were already on
+their active development branches and are unchanged.
+
+This item likely contains claims of the form "lighthouse has not
+implemented Gloas X" or "nimbus stale OR-fold at Gloas". Those claims
+were correct against the stale `stable` pins but may now be false
+positives against `unstable`. Re-verify them.
+
+Concretely:
+
+1. For every lighthouse claim ("X missing", "Y not wired", etc.) in the
+   item body, `grep` the lighthouse tree at the new pin and confirm
+   whether the surface is present or still absent. If present, the claim
+   is a false positive — update the body to reflect what's there now.
+2. Same for every nimbus claim — but the nimbus stale OR-folds at
+   `vendor/nimbus/beacon_chain/spec/beaconstate.nim:60-67` and `:1588-1607`
+   were verified to STILL BE PRESENT on `unstable`. If this item depends
+   on those, the claim still holds.
+3. If lighthouse + nimbus claims both vacate and they were the only
+   sources of divergence, flip `impact` to `none` and remove `splits` +
+   `# main_md_summary` from the front matter (per the schema rules in
+   `driver/item_presubmit.sh`).
+4. If splits change (e.g. `[prysm, lighthouse, teku, nimbus, grandine]`
+   becomes `[prysm, teku, nimbus, grandine]` because lighthouse no longer
+   diverges), update the `splits:` line and adjust the body N-vs-M
+   counts.
+5. If the item is a meta-audit referencing other items' claims (e.g.
+   item #28), update the cross-references to match the new findings.
+
+Other notes:
+
+* `last_update:` → today's date.
+* The Hypotheses / Findings / Cross-reference table H2 headings already
+  exist; refresh content under them rather than rewriting the structure.
+* `bash driver/item_presubmit.sh items/${ITEM}` must pass before commit.
+* `git commit` when done with a message that calls out which claims
+  vacated and which stood. The user already knows the broader context
+  (re-pin + sweep), so the per-item commit message can be terse.
