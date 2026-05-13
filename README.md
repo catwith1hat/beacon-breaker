@@ -20,13 +20,39 @@ Full methodology, prompt templates, and repository conventions: [METHODOLOGY.md]
 
 ---
 
-## Findings
+## Active findings (as of 2026-05-13)
 
-**0 confirmed Pectra or Fulu mainnet divergences across 56 items.** All 6 clients have run Fulu mainnet for 5+ months without observed consensus divergence. Observed differences are entirely in caching, dispatch idiom, source organization, forward-compat patches, and naming conventions.
+| # | Finding | Split | Mainnet reach |
+|---|---|---|---|
+| [#22](items/022/) | nimbus treats 0x03 (builder) credentials as compounding at Gloas+ via stale `has_compounding_withdrawal_credential` OR-fold — pre-Gloas 0x03 deposit forks effective_balance at Gloas activation | nimbus (1-vs-5) | Active — anyone |
+| [#23](items/023/) | nimbus get_pending_balance_to_withdraw OR-folds builder_pending_withdrawals + builder_pending_payments at Gloas+ — rejects voluntary_exit / withdrawal_request / consolidation_request on validators whose index collides with an active builder index | nimbus (1-vs-5) | Active — anyone |
+| [#28](items/028/) | meta-audit — nimbus stale PR #4513 → #4788 revert-window OR-folds (items #22 + #23) cause mainnet-everyone forks at Gloas; lighthouse missing ePBS surface (items #14, #19, #22, #23, #24, #25, #26 cohort) prevents Gloas wiring | nimbus, lighthouse (2-vs-4) | Active — anyone |
+| [#2](items/002/) | at Gloas activation, only lodestar implements the EIP-8061 quotient-based `get_consolidation_churn_limit`; the other five still use the Electra `balance_churn − activation_exit_churn` formula | prysm, lighthouse, teku, nimbus, grandine (5-vs-1) | mainnet-glamsterdam |
+| [#3](items/003/) | at Gloas activation, only lodestar fork-gates `compute_exit_epoch_and_update_churn` to `get_exit_churn_limit`; the other five still call `get_activation_exit_churn_limit` (Electra formula) | prysm, lighthouse, teku, nimbus, grandine (5-vs-1) | mainnet-glamsterdam |
+| [#4](items/004/) | at Gloas activation, only lodestar fork-gates `process_pending_deposits` to `get_activation_churn_limit`; the other five still call `get_activation_exit_churn_limit` (Electra formula) | prysm, lighthouse, teku, nimbus, grandine (5-vs-1) | mainnet-glamsterdam |
+| [#6](items/006/) | lighthouse + nimbus lack the Gloas EIP-7732 builder-exit routing in `process_voluntary_exit`; the same five also still pace `initiate_validator_exit` via Electra `get_activation_exit_churn_limit` at Gloas (sister to item #3 H8) | prysm, lighthouse, teku, nimbus, grandine (5-vs-1) | mainnet-glamsterdam |
+| [#7](items/007/) | lighthouse has not implemented the Gloas EIP-7732 `process_attestation` modifications — still enforces `data.index == 0`, does not use `is_attestation_same_slot`, and does not increment `state.builder_pending_payments[*].weight` from attestations | lighthouse (1-vs-5) | mainnet-glamsterdam |
+| [#8](items/008/) | `slash_validator` → `initiate_validator_exit` propagates the EIP-8061 churn-helper divergence (same five lagging clients as items #3 H8 / #6 H8) into every slashed validator's `exit_epoch` / `withdrawable_epoch` at Gloas activation | prysm, lighthouse, teku, nimbus, grandine (5-vs-1) | mainnet-glamsterdam |
+| [#9](items/009/) | lighthouse lacks the Gloas EIP-7732 `BuilderPendingPayment` clearing in `process_proposer_slashing`; the same five clients also propagate the EIP-8061 churn divergence via `slash_validator` (sister to items #6 H8 / #8 H9) | prysm, lighthouse, teku, nimbus, grandine (5-vs-1) | mainnet-glamsterdam |
+| [#12](items/012/) | lighthouse has not implemented the Gloas EIP-7732 builder-withdrawal phases in `process_withdrawals` — neither `get_builder_withdrawals` (drain `state.builder_pending_withdrawals`) nor `get_builders_sweep_withdrawals` (cyclic sweep over `state.builders`) is wired into `per_block_processing/` | lighthouse (1-vs-5) | mainnet-glamsterdam |
+| [#13](items/013/) | lighthouse has not implemented the Gloas EIP-7732 `process_operations` restructure — still calls the three request dispatchers (gated only by `electra_enabled()` which fires at Gloas too) and lacks the new `process_payload_attestation` dispatcher | lighthouse (1-vs-5) | mainnet-glamsterdam |
+| [#14](items/014/) | lighthouse has not implemented the Gloas EIP-7732 Modified `process_deposit_request` — no builder-routing branch, no `apply_deposit_for_builder`; at Gloas, builder-credentialled deposits would be queued as validator deposits instead of immediately applied to the builder | lighthouse (1-vs-5) | mainnet-glamsterdam |
+| [#15](items/015/) | lighthouse and grandine have not implemented `engine_newPayloadV5` (Gloas) — both still on V4 only; the other four clients (prysm, teku, nimbus, lodestar) have the V5 plumbing wired | lighthouse, grandine (2-vs-4) | mainnet-glamsterdam |
+| [#16](items/016/) | chokepoint audit for the EIP-8061 churn rework — only lodestar fork-gates `compute_exit_epoch_and_update_churn` to `get_exit_churn_limit` and `get_consolidation_churn_limit` to the Gloas-quotient formula at the Gloas fork; the other five clients run the Electra formulas unconditionally on Gloas states (cascades into items #2 H6, #3 H8, #4 H8, #6 H8, #8 H9, #9 H10) | prysm, lighthouse, teku, nimbus, grandine (5-vs-1) | mainnet-glamsterdam |
+| [#17](items/017/) | the ejection branch of `process_registry_updates` calls `initiate_validator_exit`, propagating the EIP-8061 churn-helper divergence (item #16 H12) — only lodestar fork-gates the underlying `compute_exit_epoch_and_update_churn` at Gloas | prysm, lighthouse, teku, nimbus, grandine (5-vs-1) | mainnet-glamsterdam |
+| [#19](items/019/) | at Gloas, `process_execution_payload` is REMOVED (per EIP-7732 ePBS) and replaced by `process_execution_payload_bid` + `process_parent_execution_payload` + `verify_execution_payload_envelope`; lighthouse alone has not implemented any of the three replacement helpers in `consensus/state_processing/src/` | lighthouse (1-vs-5) | mainnet-glamsterdam |
+
+## Remediated findings
+
+_(none)_
+
+## Cross-cutting observations
+
+**0 confirmed Pectra or Fulu mainnet divergences across 56 items.** All 6 clients have run Fulu mainnet for 5+ months without observed consensus divergence. The active-findings table above is dominated by `mainnet-glamsterdam` rows — code paths whose divergence will materialise at Gloas activation (`GLOAS_FORK_EPOCH = FAR_FUTURE_EPOCH` today). Observed differences at Pectra and Fulu are entirely in caching, dispatch idiom, source organization, forward-compat patches, and naming conventions.
 
 **35 forward-fragility patterns catalogued (A–II)** — code paths that are observable-equivalent today but predict cross-client divergence at future forks (Gloas, Heze) or at adversarial inputs (cgc=0, empty validator set, malicious peer publishing to deprecated topic).
 
-**Multiple bug-fix opportunities identified** across nimbus, teku, prysm, grandine — none are active divergences, all are forward-fragility or naming/casing inconsistencies.
+**Multiple bug-fix opportunities identified** across nimbus, teku, prysm, grandine — none are active Pectra/Fulu divergences, all are forward-fragility or naming/casing inconsistencies.
 
 ### Audit corpus structure
 
