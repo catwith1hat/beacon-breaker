@@ -1,11 +1,9 @@
 ---
 status: source-code-reviewed
-impact: mainnet-glamsterdam
+impact: none
 last_update: 2026-05-13
 builds_on: [1]
 eips: [EIP-7251, EIP-8061]
-splits: [prysm, teku, grandine]
-# main_md_summary: at Gloas activation, prysm/teku/grandine still compute `get_consolidation_churn_limit` via the Electra `balance_churn − activation_exit_churn` formula; lighthouse/nimbus/lodestar fork-gate to the EIP-8061 quotient form — 3-vs-3 state-root split on the first Gloas-slot block with a consolidation request
 prysm_version: v7.1.3-rc.3-209-g0f25a41868
 lighthouse_version: v8.1.2-185-g1a6863118
 teku_version: 26.4.0-127-g70ad00cbaf
@@ -22,7 +20,7 @@ EIP-7251 introduces two semantically distinct flows under one entrypoint: a self
 
 **Pectra surface (the function body itself):** all six clients implement both paths with identical predicate truth tables and identical state mutations. 10/10 EF `consolidation_request` operations fixtures pass on the four wired clients (prysm, lighthouse, lodestar, grandine); teku and nimbus pass these in internal CI but the local harness SKIPs them per the per-operation-CLI gap.
 
-**Gloas surface (new at the Glamsterdam target):** Gloas keeps the function body intact but (a) reschedules it from `process_operations` into the new `apply_parent_execution_payload` via EIP-7732 ePBS, and (b) modifies `get_consolidation_churn_limit` via EIP-8061 — the predicate at short-circuit #4 and the churn arithmetic in `compute_consolidation_epoch_and_update_churn` both depend on this. After re-pinning lighthouse + nimbus to `unstable`, **three of six clients now implement the modified Gloas formula** (`total_active_balance / CONSOLIDATION_CHURN_LIMIT_QUOTIENT` rounded down to EBI): lighthouse via `fork_name_unchecked().gloas_enabled()` gate, nimbus via a separate overload on `gloas.BeaconState | heze.BeaconState`, and lodestar via a `fork >= ForkSeq.gloas` branch. **Prysm, teku, and grandine still use the Electra formula** (`balance_churn − activation_exit_churn`) regardless of fork. Spec-divergent in three clients; will materialise as a 3-vs-3 state-root split on the first Gloas-slot block carrying a consolidation request whose source `effective_balance` straddles the two formulas' values.
+**Gloas surface (Glamsterdam target):** Gloas keeps the function body intact but (a) reschedules it from `process_operations` into the new `apply_parent_execution_payload` via EIP-7732 ePBS, and (b) modifies `get_consolidation_churn_limit` via EIP-8061 — the predicate at short-circuit #4 and the churn arithmetic in `compute_consolidation_epoch_and_update_churn` both depend on this. After re-pinning all three lagging clients to their most-advanced Gloas feature branches (prysm → `EIP-8061`, teku → `glamsterdam-devnet-2`, grandine → `glamsterdam-devnet-3`), **all six clients now implement the modified Gloas quotient formula** (`total_active_balance / CONSOLIDATION_CHURN_LIMIT_QUOTIENT` rounded down to EBI). H6 holds across the corpus.
 
 ## Question
 
@@ -68,7 +66,7 @@ The hypothesis: *all six clients implement both Pectra paths with identical acce
 
 ## Findings
 
-H1, H2, H3, H4, H5 satisfied for the Pectra surface. **H6 fails for 3 of 6 clients at the Glamsterdam target** — lighthouse, nimbus, and lodestar fork-gate `get_consolidation_churn_limit` to the new EIP-8061 formula; prysm, teku, and grandine continue to use the Electra formula at Gloas. Source-level divergence; not yet covered by any EF fixture (no Gloas operations fixtures yet exist for this surface).
+H1, H2, H3, H4, H5 satisfied for the Pectra surface. **H6 also satisfied at the Glamsterdam target across all six clients** — every client fork-gates `get_consolidation_churn_limit` to the new EIP-8061 quotient form when running on a Gloas-or-later state. Source-level convergence; not yet covered by any EF fixture (no Gloas operations fixtures yet exist for this surface).
 
 ### prysm
 
@@ -93,22 +91,38 @@ H1, H2, H3, H4, H5 satisfied for the Pectra surface. **H6 fails for 3 of 6 clien
 
 `switchToCompoundingValidator` at `vendor/prysm/beacon-chain/core/requests/consolidations.go:280-294` writes `WithdrawalCredentials[0] = CompoundingWithdrawalPrefixByte` then calls `queueExcessActiveBalance`. Errors out if creds is empty (defensive — SSZ guarantees 32 bytes).
 
-`ConsolidationChurnLimit` at `vendor/prysm/beacon-chain/core/helpers/validator_churn.go:44-54`:
+`ConsolidationChurnLimit` at `vendor/prysm/beacon-chain/core/helpers/validator_churn.go:52` continues to compute the Electra formula `BalanceChurnLimit − ActivationExitChurnLimit`. The Gloas-specific helper `consolidationChurnLimitGloas` lives in the same file at `:101-105`:
 
 ```go
 // def get_consolidation_churn_limit(state: BeaconState) -> Gwei:
-//     return get_balance_churn_limit(state) - get_activation_exit_churn_limit(state)
-func ConsolidationChurnLimit(activeBalance primitives.Gwei) primitives.Gwei {
-    return BalanceChurnLimit(activeBalance) - ActivationExitChurnLimit(activeBalance)
+//     churn = get_total_active_balance(state) // CONSOLIDATION_CHURN_LIMIT_QUOTIENT
+//     return churn - churn % EFFECTIVE_BALANCE_INCREMENT
+func consolidationChurnLimitGloas(activeBalance primitives.Gwei) primitives.Gwei {
+    cfg := params.BeaconConfig()
+    churn := uint64(activeBalance) / cfg.ConsolidationChurnLimitQuotient
+    return primitives.Gwei(churn - churn%cfg.EffectiveBalanceIncrement)
 }
 ```
+
+Dispatched via `ConsolidationChurnLimitForVersion` at `:123-128`:
+
+```go
+func ConsolidationChurnLimitForVersion(v int, activeBalance primitives.Gwei) primitives.Gwei {
+    if v >= version.Gloas {
+        return consolidationChurnLimitGloas(activeBalance)
+    }
+    return ConsolidationChurnLimit(activeBalance)
+}
+```
+
+Call sites wired at `consolidations.go:151` (short-circuit #4) and `:334` (`compute_consolidation_epoch_and_update_churn`), plus `electra/churn.go:50`. All read `ConsolidationChurnLimitForVersion(st.Version(), ...)`.
 
 H1 ✓ (`HasETH1WithdrawalCredentials`).
 H2 ✓ (`HasExecutionWithdrawalCredentials() = HasETH1 || HasCompounding`).
 H3 ✓.
 H4 ✓ (predicate ordering matches pyspec 1→12).
 H5 ✓.
-**H6 ✗** — no fork gate on `ConsolidationChurnLimit`; the function returns the Electra formula irrespective of runtime fork. At Gloas, this is a spec divergence.
+**H6 ✓** — version-dispatched at all call sites.
 
 ### lighthouse
 
@@ -148,9 +162,20 @@ H1, H2, H3, H4, H5 ✓. **H6 ✓** — lighthouse now joins lodestar in implemen
 
 `computeConsolidationEpochAndUpdateChurn` (`vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/versions/electra/helpers/BeaconStateMutatorsElectra.java:135-168`) uses `UInt64` wrapper arithmetic with explicit `.minusMinZero()` saturating subtraction.
 
-`ExecutionRequestsProcessorGloas` at `vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/versions/gloas/execution/ExecutionRequestsProcessorGloas.java` extends `ExecutionRequestsProcessorElectra` but overrides **only `processDepositRequest`** (to route `0x03` builder deposits to the builder list). The consolidation handler and `getConsolidationChurnLimit` are inherited unmodified — Electra formula applies at Gloas.
+At Gloas (`glamsterdam-devnet-2`), `vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/versions/gloas/helpers/BeaconStateAccessorsGloas.java:123-128` overrides `getConsolidationChurnLimit` with the EIP-8061 quotient form:
 
-H1, H2, H3, H4, H5 ✓. **H6 ✗** (Gloas processor inherits Electra churn limit).
+```java
+@Override
+public UInt64 getConsolidationChurnLimit(final BeaconStateElectra state) {
+  final UInt64 churn =
+      getTotalActiveBalance(state).dividedBy(configGloas.getConsolidationChurnLimitQuotient());
+  return churn.minusMinZero(churn.mod(configElectra.getEffectiveBalanceIncrement()));
+}
+```
+
+The override is dispatched virtually: `SpecLogicGloas.java:132-135` constructs a `BeaconStateMutatorsGloas` parameterised on a `BeaconStateAccessorsGloas` instance; that instance is stored in `BeaconStateMutatorsElectra`'s `stateAccessorsElectra` field (Java covariant reference); the inherited `BeaconStateMutatorsElectra.computeConsolidationEpochAndUpdateChurn:141` then calls `stateAccessorsElectra.getConsolidationChurnLimit(...)` which dispatches to the Gloas-overridden body. `ExecutionRequestsProcessorGloas` doesn't need to override the consolidation handler — the churn-helper polymorphism handles the spec change.
+
+H1, H2, H3, H4, H5 ✓. **H6 ✓** — via `BeaconStateAccessorsGloas` `@Override` + virtual dispatch.
 
 ### nimbus
 
@@ -258,33 +283,39 @@ H1, H2, H3, H4, H5 ✓. **H6 ✓** — the only client matching Gloas spec.
 
 `switch_to_compounding_validator` (`vendor/grandine/helper_functions/src/mutators.rs:135-147`) does `copy_from_slice(COMPOUNDING_WITHDRAWAL_PREFIX)` (a `&[u8]` constant of length 1) then calls `queue_excess_active_balance`. Returns `Result<()>` to propagate any state-mutation error.
 
-`get_consolidation_churn_limit` at `vendor/grandine/helper_functions/src/accessors.rs:974-979`:
+`get_consolidation_churn_limit` at `vendor/grandine/helper_functions/src/accessors.rs:977-988` (re-pinned `glamsterdam-devnet-3`) is fork-gated on `state.is_post_gloas()`:
 
 ```rust
 pub fn get_consolidation_churn_limit<P: Preset>(
     config: &Config,
     state: &impl BeaconState<P>,
 ) -> Gwei {
-    get_balance_churn_limit(config, state) - get_activation_exit_churn_limit(config, state)
+    if state.is_post_gloas() {
+        total_active_balance(state)
+            .div(config.consolidation_churn_limit_quotient)
+            .prev_multiple_of(P::EFFECTIVE_BALANCE_INCREMENT)
+    } else {
+        get_balance_churn_limit(config, state) - get_activation_exit_churn_limit(config, state)
+    }
 }
 ```
 
-No fork-gate; Electra formula applies at Gloas.
+Sister helpers `get_activation_churn_limit` (`:991-998`) and `get_exit_churn_limit` (`:1001-1006`) are also wired with the EIP-8061 formulas (Gloas-only — pre-Gloas paths use the Electra accessors as before).
 
-`compute_consolidation_epoch_and_update_churn` (`vendor/grandine/helper_functions/src/mutators.rs:211-248`) uses raw `u64` arithmetic — the same `(balance_to_process - 1) / per_epoch + 1` pattern as nimbus, with the same implicit-non-zero invariant.
+`compute_consolidation_epoch_and_update_churn` continues to use raw `u64` arithmetic — same `(balance_to_process - 1) / per_epoch + 1` pattern as nimbus.
 
-H1, H2, H3, H4, H5 ✓. **H6 ✗** (Electra formula at Gloas).
+H1, H2, H3, H4, H5 ✓. **H6 ✓** — fork-gated via `state.is_post_gloas()` at the accessor.
 
 ## Cross-reference table
 
 | Client | Main fn | Switch validity | Switch mutator | `get_consolidation_churn_limit` | Gloas fork-gate (H6) |
 |---|---|---|---|---|---|
-| prysm | `beacon-chain/core/requests/consolidations.go:103-238` | `consolidations.go:240-278` (defensive `len(creds)!=32 \|\| len(addr)!=20`) | `consolidations.go:280-294` | `core/helpers/validator_churn.go:44-54` (Electra: `BalanceChurnLimit − ActivationExitChurnLimit`) | ✗ |
+| prysm | `beacon-chain/core/requests/consolidations.go:103-238` | `consolidations.go:240-278` (defensive `len(creds)!=32 \|\| len(addr)!=20`) | `consolidations.go:280-294` | `core/helpers/validator_churn.go:52` (Electra) + `:101-105 consolidationChurnLimitGloas` (Gloas quotient); dispatched via `ConsolidationChurnLimitForVersion(:123-128)` at call sites `consolidations.go:151,334` and `electra/churn.go:50` | **✓** |
 | lighthouse | `state_processing/src/per_block_processing/process_operations.rs:684-789` | `process_operations.rs:629-682` (returns `Result<bool>`) | `consensus/types/src/state/beacon_state.rs:2692-2709` | `beacon_state.rs:2802-2812` — **fork-gated at `fork_name_unchecked().gloas_enabled()`, EIP-8061 quotient form**; `get_exit_churn_limit` sibling at `:2798-2800` | **✓** |
-| teku | `.../electra/execution/ExecutionRequestsProcessorElectra.java` | inlined in same file | `.../electra/helpers/BeaconStateMutatorsElectra.java:176-187` | `BeaconStateAccessorsElectra.java:98` (Electra: `minusMinZero`); no Gloas override in `versions/gloas/helpers/BeaconStateAccessorsGloas.java` | ✗ |
+| teku | `.../electra/execution/ExecutionRequestsProcessorElectra.java` | inlined in same file | `.../electra/helpers/BeaconStateMutatorsElectra.java:176-187` | `BeaconStateAccessorsElectra.java:98` (Electra) + `BeaconStateAccessorsGloas.java:123-128 @Override` (Gloas quotient); virtual dispatch through inherited `BeaconStateMutatorsElectra.computeConsolidationEpochAndUpdateChurn:141` | **✓** |
 | nimbus | `beacon_chain/spec/state_transition_block.nim:658-746` (source pubkey lookup hoisted **before** switch path) | `state_transition_block.nim:627-655` | `beaconstate.nim:1534-1539` | **two overloads** at `beaconstate.nim:331-338` (Electra/Fulu — Electra formula) and `:340-349` (Gloas/Heze — EIP-8061 quotient form via Nim type-dispatch) | **✓** |
 | lodestar | `state-transition/src/block/processConsolidationRequest.ts:16-102` (both pubkey checks hoisted **before** switch path) | `processConsolidationRequest.ts:107-149` | `state-transition/src/util/electra.ts:17-34` | `state-transition/src/util/validator.ts:115-130` — fork-gated, EIP-8061 quotient at `fork ≥ ForkSeq.gloas` | **✓** |
-| grandine | `transition_functions/src/electra/block_processing.rs:1186-1294` | `block_processing.rs:1296-1341` | `helper_functions/src/mutators.rs:135-147` | `helper_functions/src/accessors.rs:974-979` (Electra) | ✗ |
+| grandine | `transition_functions/src/electra/block_processing.rs:1186-1294` | `block_processing.rs:1296-1341` | `helper_functions/src/mutators.rs:135-147` | `helper_functions/src/accessors.rs:977-988` — fork-gated on `state.is_post_gloas()`; Gloas branch uses quotient form | **✓** |
 
 ## Empirical tests
 
@@ -327,34 +358,24 @@ No Gloas operations fixtures exist yet in the EF set. H6 is currently source-onl
 - **T2.4 (defensive — short or oversize creds).** Pyspec assumes 32-byte creds. SSZ enforces this. Prysm explicitly checks `len != 32`; others rely on type safety. If any future SSZ schema change introduces variable-length creds, prysm vs others would diverge.
 - **T2.5 (Glamsterdam-target — Gloas churn-limit formula).** Synthetic Gloas-fork state at the first Gloas slot with active total balance chosen so the Electra formula `(balance_churn − activation_exit_churn)` and the Gloas formula `(total_active_balance // CONSOLIDATION_CHURN_LIMIT_QUOTIENT − mod EBI)` yield different values. Submit a single consolidation request with `source.effective_balance` between the two churn-limit values. Expected per spec: the request is accepted under the Gloas formula. The five Electra-formula clients will reject at short-circuit #4 (or accept with a different `earliest_consolidation_epoch`); lodestar will accept per spec. The single highest-value fixture to write before Glamsterdam activation.
 
-## Mainnet reachability
-
-**Reachable on canonical traffic at Glamsterdam activation, by any validator able to submit a consolidation request** (i.e. any validator with a `0x01` or `0x02` withdrawal credential and execution-layer access to authorise the request). The divergence does not require a proposer role, special tx-pool placement, or a custom chain.
-
-**Trigger.** The first Gloas-slot block whose parent's execution payload carries a consolidation request hits the spec-divergent code path:
-
-1. `apply_parent_execution_payload` calls `process_consolidation_request` for each parent-payload consolidation (`vendor/consensus-specs/specs/gloas/beacon-chain.md:1132`).
-2. Short-circuit #4 reads `get_consolidation_churn_limit(state) <= MIN_ACTIVATION_BALANCE`. The three Electra-formula clients (prysm, teku, grandine) compute `(balance_churn − activation_exit_churn)`; the three Gloas-formula clients (lighthouse, nimbus, lodestar) compute `(total_active_balance // 65536) − mod EBI`. With ~30M ETH staked, the two formulas yield different numeric values, so requests with `effective_balance` between the two limits short-circuit on one cohort and proceed on the other.
-3. For requests that do proceed past #4, `compute_consolidation_epoch_and_update_churn` consumes from `consolidation_balance_to_consume` and advances `earliest_consolidation_epoch` by `additional_epochs = (balance_to_process − 1) / per_epoch_consolidation_churn + 1`. Different `per_epoch_consolidation_churn` → different `earliest_consolidation_epoch` written into state → different `state_root` at the post-state.
-
-**Severity.** State-root divergence on every Gloas slot that carries a consolidation request whose source `effective_balance` straddles the two churn-limit values. Below `MIN_ACTIVATION_BALANCE`-effective stake the divergence does not materialise (#4 short-circuits identically on both sides only when the limit is `<= MIN_ACTIVATION_BALANCE`, which neither formula reaches near steady state). Above the divergent range, both formulas accept; the divergence is in the consumed amount and the resulting `earliest_consolidation_epoch`. Either way, the post-state hashes differ.
-
-**3-vs-3 cohort topology.** Unlike the earlier 5-vs-1 framing, the split is now 3-vs-3 (prysm + teku + grandine vs lighthouse + nimbus + lodestar). At Gloas activation neither cohort has a clear majority; both sides could continue producing blocks and attesting them, potentially producing two finalising chains until coordinated upgrade closes the gap. T2.5 below is the concrete fixture that pins down the divergence numerically.
-
-**Mitigation window.** Source-only at audit time; not yet covered by an EF fixture. Closing requires either (a) the three Electra-formula clients (prysm, teku, grandine) to ship EIP-8061 before Glamsterdam fork-cut, or (b) the spec to revert to the Electra formula. Without one or the other, mainnet at Glamsterdam activation splits 3-vs-3.
-
 ## Conclusion
 
 **Status: source-code-reviewed.** Source review of all six clients against the updated checkouts (versions per front matter) confirms the Pectra-surface hypotheses (H1–H5) remain satisfied: aligned implementations of `process_consolidation_request`, `is_valid_switch_to_compounding_request`, `switch_to_compounding_validator`, and `compute_consolidation_epoch_and_update_churn`, with the same observable-equivalent rephrasings noted in the prior audit (prysm's defensive length checks; lighthouse's `safe_*` math + state-variant `match`; teku's `.minusMinZero()` saturating arithmetic; nimbus's hoisted source-pubkey lookup; lodestar's hoisted both-pubkey checks; grandine's `copy_from_slice` write). All 10 EF `operations/consolidation_request` fixtures still pass uniformly on prysm, lighthouse, lodestar, grandine.
 
-**Glamsterdam-target finding (refreshed after re-pin):** H6 now fails for 3 of 6 clients. Gloas (EIP-7732 + EIP-8061) reschedules the consolidation pass into `apply_parent_execution_payload` and modifies `get_consolidation_churn_limit` to the quotient-based formula. **Lighthouse + nimbus + lodestar** all fork-gate the function: lighthouse via an `if self.fork_name_unchecked().gloas_enabled()` branch at `beacon_state.rs:2802-2812`; nimbus via a separate overload `gloas.BeaconState | heze.BeaconState` at `beaconstate.nim:340-349` (dispatched at compile time); lodestar via `fork >= ForkSeq.gloas` at `validator.ts:115-130`. **Prysm + teku + grandine** still use the Electra formula: prysm's `ConsolidationChurnLimit` at `validator_churn.go:51` is not fork-aware; teku's `BeaconStateAccessorsElectra.getConsolidationChurnLimit:98` is not overridden in the Gloas subclass (no `getConsolidationChurnLimit` definition exists in `versions/gloas/helpers/`); grandine's `accessors.rs:974-979` is not fork-aware. This will materialise as a 3-vs-3 state-root split on the first Gloas-slot block carrying a consolidation request whose source `effective_balance` straddles the two formulas' values.
+**Glamsterdam-target finding (refreshed after the full re-pin sweep):** H6 now holds across all six clients. Gloas (EIP-7732 + EIP-8061) reschedules the consolidation pass into `apply_parent_execution_payload` and modifies `get_consolidation_churn_limit` to the quotient-based formula; every client correctly fork-gates the helper:
 
-The prior audit was performed against lighthouse's `stable` pin (v8.1.3) and nimbus's `stable` pin (v26.3.1), which lacked the EIP-8061 fork-gating work that has since landed on each project's `unstable` branch. After re-pinning to `unstable` HEAD (`1a6863118` and `3802d96291` respectively), the split shrinks from 5-vs-1 to 3-vs-3 — but the qualitative finding is unchanged: a Gloas-activation state-root divergence on the first consolidation request whose source `effective_balance` straddles the two churn-limit values.
+- **lighthouse** (`unstable`): `if self.fork_name_unchecked().gloas_enabled()` at `beacon_state.rs:2802-2812`.
+- **nimbus** (`unstable`): separate `gloas.BeaconState | heze.BeaconState` overload at `beaconstate.nim:340-349` (compile-time dispatch).
+- **lodestar** (`unstable`): `fork >= ForkSeq.gloas` at `validator.ts:115-130`.
+- **prysm** (`EIP-8061` branch): runtime version dispatch via `ConsolidationChurnLimitForVersion(st.Version(), …)` at all call sites.
+- **teku** (`glamsterdam-devnet-2` branch): `BeaconStateAccessorsGloas.getConsolidationChurnLimit:123-128 @Override` + virtual dispatch through `BeaconStateMutatorsElectra.computeConsolidationEpochAndUpdateChurn`.
+- **grandine** (`glamsterdam-devnet-3` branch): `if state.is_post_gloas()` at `accessors.rs:977-988`.
+
+The earlier 5-vs-1 / 3-vs-3 / 5-laggard framings of this finding were artifacts of auditing against the wrong branches: lighthouse + nimbus pinned to `stable` and prysm + teku + grandine pinned to mainline `develop`/`master` rather than their Glamsterdam feature branches. With each client pinned to the branch that carries its actual Glamsterdam work, H6 is uniformly satisfied.
 
 Recommendations to the harness and the audit:
 - Generate the **T1.1 main-path-success fixture** for the Pectra surface; the most important untested-by-EF surface there.
-- Generate **T2.5 Gloas churn-limit formula fixture**; required to numerically pin the H6 divergence before Glamsterdam activation.
-- File / coordinate upstream fork-gating of `get_consolidation_churn_limit` to EIP-8061 in prysm, teku, grandine.
+- Generate the **T2.5 Gloas churn-limit formula fixture** as soon as EF spec-test infrastructure for Gloas operations lands. The six implementations are byte-equivalent at the source level, but cross-client wire-format proof needs a real fixture.
 - Cross-cut audit (item-pair) with item #1 on the `0x02` write → `get_max_effective_balance` chain.
 
 ## Cross-cuts
