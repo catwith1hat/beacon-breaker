@@ -44,7 +44,7 @@ All items in this audit, sorted by number. For only the items that produced a co
 | [#38](items/038/) | `get_validators_custody_requirement` (EIP-7594 PeerDAS validator-balance-scaled custody) | source-code-reviewed |
 | [#39](items/039/) | `compute_matrix` + `recover_matrix` (EIP-7594 PeerDAS Reed-Solomon extension/recovery) | source-code-reviewed |
 | [#40](items/040/) | `get_data_column_sidecars` (EIP-7594 PeerDAS validator-side sidecar construction) | source-code-reviewed |
-| [#41](items/041/) | Item 41 — ENR `cgc` (custody group count) field encoding/decoding (EIP-7594 PeerDAS peer discovery) | — |
+| [#41](items/041/) | ENR `cgc` (custody group count) field encoding/decoding (EIP-7594 PeerDAS peer discovery) | source-code-reviewed |
 | [#42](items/042/) | ENR `nfd` (next fork digest) field encoding/decoding (EIP-7594/EIP-7892 PeerDAS peer discovery) | source-code-reviewed |
 | [#43](items/043/) | Fulu / Gloas Engine API surface (`engine_newPayloadV4` + `engine_getPayloadV5` + `engine_getBlobsV2` at Fulu; `engine_newPayloadV5` + `engine_getPayloadV6` + `engine_forkchoiceUpdatedV4` Gloas-NEW) | source-code-reviewed |
 | [#44](items/044/) | `PartialDataColumnSidecar` family (`verify_partial_data_column_header_inclusion_proof` + `verify_partial_data_column_sidecar_kzg_proofs` at Fulu; container reshape + `PartialDataColumnGroupID` at Gloas) | source-code-reviewed |

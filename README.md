@@ -26,6 +26,7 @@ Every item in the audit (whether or not it produced a divergence): [ITEM_TOC.md]
 
 | # | Finding | Split | Mainnet reach |
 |---|---|---|---|
+| [#41](items/041/) | nimbus encodes the ENR `cgc` field as SSZ uint8 (1 byte always); the spec and the other 5 clients use variable-length BE with leading-zero stripping (`cgc=0` → empty bytes) — wire-format divergence on cgc=0 and silent overflow at cgc≥256 | nimbus (1-vs-5) | D — synthetic state |
 | [#22](items/022/) | nimbus treats 0x03 (builder) credentials as compounding at Gloas+ via stale `has_compounding_withdrawal_credential` OR-fold — pre-Gloas 0x03 deposit forks effective_balance at Gloas activation | nimbus (1-vs-5) | mainnet-glamsterdam |
 | [#23](items/023/) | nimbus get_pending_balance_to_withdraw OR-folds builder_pending_withdrawals + builder_pending_payments at Gloas+ — rejects voluntary_exit / withdrawal_request / consolidation_request on validators whose index collides with an active builder index | nimbus (1-vs-5) | mainnet-glamsterdam |
 | [#28](items/028/) | meta-audit — two nimbus stale PR #4513 → #4788 revert-window OR-folds (items #22 + #23) cause mainnet-glamsterdam forks at Gloas; the prior lighthouse Pattern M cohort (items #14, #19, #22 H10, #23 H8, #24, #25, #26) has fully closed under the unstable HEAD pin | nimbus (1-vs-5) | mainnet-glamsterdam |
