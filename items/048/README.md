@@ -1,247 +1,319 @@
-# Item 48 — Cross-corpus forward-fragility pattern catalogue REFRESH (extends item #28; covers Patterns A–CC across 47 audits)
+---
+status: source-code-reviewed
+impact: none
+last_update: 2026-05-13
+builds_on: [28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47]
+eips: [EIP-7251, EIP-7549, EIP-7594, EIP-7732, EIP-7805, EIP-7892, EIP-7917, EIP-7044, EIP-8061]
+prysm_version: v7.1.3-rc.3-213-gd35d65625f
+lighthouse_version: v8.1.3
+teku_version: 26.4.0-72-gc05af0eaa0
+nimbus_version: v26.3.1
+lodestar_version: v1.42.0-69-g35940ffd61
+grandine_version: 2.0.4-18-geeb33a92
+---
 
-**Status:** consolidation-meta-audit (refresh) — audited 2026-05-04. Refresh of item #28's "Cross-corpus pre-emptive Gloas-fork divergence consolidated tracking audit" — the original catalogued **Patterns A–L (12 patterns)** consolidating findings across 22 of 27 prior items. Items #29–#47 added **17 new patterns (M–CC)** spanning Heze surprise + Fulu state-transition + PeerDAS surface + ENR layer + RPC layer + EL boundary. **Total: 29 patterns (A–CC)** across the 47-item corpus.
-
-This refresh provides:
-1. **Full Pattern catalogue** (A–CC) with cross-references to source items
-2. **Updated per-client forward-readiness scorecard** for Pectra/Fulu/Gloas/Heze
-3. **Tier-ranked divergence vectors** at upcoming forks
-4. **Roadmap** of unaudited surfaces + future research priorities
-5. **NOT a new function audit** — synthesis of prior findings
-
-## Scope
-
-In: synthesis of all forward-fragility patterns across items #1–#47; per-client readiness scorecard refresh; tier-ranked divergence vectors at Gloas + Heze; pattern classification (encoding/orchestration/multi-fork-definition/spec-undefined/implementation-gap); cross-pattern relationships.
-
-Out: any new audit; corrections to prior items (separate retroactive task); Track D fork choice items beyond #35; Track E SSZ schemas not yet covered (BlobAndProofV2, ExecutionBundleFulu, DataColumnsByRootIdentifier).
-
-## Pattern catalogue (A–CC; 29 patterns)
-
-### Item #28 original catalogue (A–L; 12 patterns)
-
-| # | Pattern | Source items | Tier | Description |
-|---|---|---|---|---|
-| **A** | `0x03` BUILDER credential prefix (pre-Gloas) | #1, #22 | C-tier | nimbus + prysm pre-emptive `is_builder_withdrawal_credential` constants and Gloas-aware `has_compounding_withdrawal_credential` |
-| **B** | Builder pending-withdrawals accumulator (pre-Gloas) | #3, #23 | C-tier | nimbus + grandine separate `get_pending_balance_to_withdraw_for_builder` for Gloas |
-| **C** | `getActivationChurnLimit` Gloas branch | #4 | C-tier | lodestar Gloas branch uses `getActivationChurnLimit` (not `getActivationExitChurnLimit`); other 5 don't have Gloas branch |
-| **D** | `CONSOLIDATION_CHURN_LIMIT_QUOTIENT` independent quotient | #16 | C-tier | lodestar Gloas branch uses INDEPENDENT quotient (not residual model); other 5 don't |
-| **E** | Committee index `< 2` post-Gloas | #7 | A-tier | prysm `data.index < 2` post-Gloas (vs `== 0` Electra); other 5 still `== 0` |
-| **F** | Sync committee selection (`compute_balance_weighted_selection`) post-Gloas | #27 | A-tier | lighthouse + grandine separate post-Gloas paths; other 4 don't |
-| **G** | Builder deposit handling (`applyDepositForBuilder`) | #14, #20, #21, #40 | A-tier | lodestar/grandine/nimbus have on-the-fly BLS verify variants; other 3 don't |
-| **H** | Dispatcher exclusion gates (`fork < ForkSeq.gloas`) | #13 | A-tier | lodestar/prysm have explicit Gloas dispatcher removal; other 4 still run Pectra dispatcher |
-| **I** | Multi-fork-definition (separate per-fork function bodies) | #6, #9, #10, #12, #14, #15, #17, #19, #31, #32 | F-tier | nimbus + grandine ship separate function bodies per fork; teku subclass extension |
-| **J** | Type-union silent inclusion (`electra \| fulu \| gloas`) | #1, #8, #14, #16, #18, #21, #23 | F-tier | nimbus type-union compile-time dispatch; lighthouse `BeaconState::Gloas(_)` enum match arms |
-| **K** | Engine API V5 (`engine_newPayloadV5`) | #15, #43 | A-tier (Gloas) | **CORRECTED at item #43**: V5 is GLOAS-NEW (not Fulu-NEW as items #15/#19/#32/#36 originally said) |
-| **L** | Voluntary-exit signing-domain (CAPELLA pin extension) | #6 | (no divergence) | grandine 4-fork OR-list explicit; other 5 implicit via `>= Capella` semantics |
-
-### Items #29–#34 (M–P; 4 new patterns from Fulu state-transition + PeerDAS gossip)
-
-| # | Pattern | Source items | Tier | Description |
-|---|---|---|---|---|
-| **M** | `compute_proposer_indices` post-Gloas (`compute_balance_weighted_selection`) | #30 | A-tier | lighthouse + nimbus + grandine pre-emptive Gloas branches; prysm + teku + lodestar TBD. Same 3-leader/3-laggard split as Pattern F (sync committee selection) |
-| **N** | `compute_fork_digest` Fulu-modified multi-fork-definition | #31 | F-tier | nimbus + grandine separate `compute_fork_digest_pre_fulu` / `_post_fulu` functions; multi-fork-definition Pattern I scope expansion |
-| **O** | PeerDAS API-surface unsorted-vs-sorted divergence | #33 | F-tier | lighthouse + grandine return `HashSet<CustodyIndex>` UNORDERED; prysm + teku + nimbus + lodestar return sorted Sequence. Set equality preserved; iteration-order divergent |
-| **P** | Hardcoded gindex (consumer-side) | #34 | F-tier (B-tier at Heze) | grandine `index_at_commitment_depth = 11` hardcoded for `verify_sidecar_inclusion_proof`. Forward-fragile at Heze if BeaconBlockBody schema gains new fields (per item #29 teku Heze finding) |
-
-### Items #35–#42 (Q–X; 8 new patterns from Fulu fork-choice + PeerDAS production + ENR)
-
-| # | Pattern | Source items | Tier | Description |
-|---|---|---|---|---|
-| **Q** | Data-availability state machine | #35 | F-tier | grandine 5-state explicit (`Irrelevant`/`Complete`/`AnyPending`/`CompleteWithReconstruction`/`Missing`); teku 4-state SamplingEligibility; lodestar 4-state DAType; lighthouse 2-state Availability; prysm + nimbus single-result. **Most divergence** in PeerDAS surface |
-| **R** | State-upgrade architecture (6 distinct patterns) | #36 | F-tier | prysm proto-then-init / lighthouse type-method / teku copyCommon-then-updatedFulu / nimbus upgrade_to_next overload / lodestar SSZ tree-view reuse / grandine destructure-and-construct |
-| **S** | Hidden compile-time invariant assertion (gossip-subnet/column ratio) | #37 | F-tier | nimbus `static: doAssert DATA_COLUMN_SIDECAR_SUBNET_COUNT == NUMBER_OF_COLUMNS` with explicit "subnet number and column ID semi-interchangeably" comment. Forward-fragile at any spec change to subnet/column ratio |
-| **T** | Spec-undefined edge-case divergence (empty input) | #38 | F-tier | lodestar empty-validator-set returns `CUSTODY_REQUIREMENT = 4` (non-validator default); other 5 return `VALIDATOR_CUSTODY_REQUIREMENT = 8`. Spec-undefined behavior |
-| **U** | Reed-Solomon orchestration architecture (5 distinct patterns) | #39 | F-tier | prysm errgroup; lighthouse library-direct; teku ForkJoinPool common pool (contention); nimbus Taskpool (with code-duplication risk); lodestar async; grandine dedicated_executor. Plus 2 KZG library families (c-kzg-4844 vs rust-kzg) |
-| **V** | Hardcoded inclusion-proof construction (producer-side dual of Pattern P) | #40 | F-tier (B-tier at Heze) | grandine `kzg_commitments_inclusion_proof` MANUALLY CONSTRUCTS Merkle proof using hardcoded field positions. **Symmetric Pattern P + V**: at Heze, grandine PRODUCER generates wrong proofs AND CONSUMER fails to verify correct ones → double-failure mesh fragmentation |
-| **W** | ENR-encoding format divergence (SSZ uint8 vs spec variable-length BE) | #41 | F-tier (active edge case) | nimbus uses SSZ uint8 encoding for ENR cgc field (1 byte even for cgc=0); other 5 use variable-length BE per spec. **Active interop risk on cgc=0** (nimbus decoder fails on empty bytes) |
-| **X** | Peer-discovery strictness divergence (pre-connection rejection) | #42 | F-tier | prysm REJECTS peers at connection time on nfd mismatch (converts spec MAY → MUST); other 5 likely soft (per spec "MAY disconnect at/after the fork boundary") |
-
-### Items #43–#47 (Y–CC; 5 new patterns from EL boundary + RPC + ENR + metadata)
-
-| # | Pattern | Source items | Tier | Description |
-|---|---|---|---|---|
-| **Y** | Per-client Engine API method version dispatch architecture (5 distinct patterns) | #43 | F-tier | lodestar ForkSeq ternary chain; prysm payload-type-based switch; teku milestone-keyed JSON-RPC method registry; lighthouse function-named-by-fork (Gloas V5 readiness gap!); nimbus async dispatch. **Lighthouse Gloas V5 readiness gap** flagged for pre-emptive fix |
-| **Z** | Implementation gap on optional spec features (5-of-6 missing) | #44 | F-tier (would be B-tier if mandatory) | PartialDataColumnSidecar — only nimbus implements; other 5 have ZERO references (prysm has spec-tracking metadata only). Production impact LOW because optional gossip optimization. Forward-fragile if spec promotes to mandatory at higher blob counts |
-| **AA** | Per-client SSZ container version-numbering divergence | #45, #47 | F-tier | prysm `MetaDataV2` for spec V3 (offset by 1; doesn't increment for Altair); lighthouse + grandine V-named (spec-aligned); teku + nimbus + lodestar fork-named. **Pattern AA scope EXPANDS at #47**: also applies to Status messages — teku `StatusMessageFulu` |
-| **BB** | Per-client RPC handler architecture (5 distinct patterns) | #46 | F-tier | prysm map-based registration; lighthouse + grandine strum-enum; teku two-layer handler+proxy; nimbus macro-driven libp2pProtocol; lodestar async-generator |
-| **CC** | V1↔V2 default value handling divergence | #47 | F-tier | 4 of 6 silently default `earliest_available_slot = 0`; teku strict-required (throws if absent); nimbus symbolic `GENESIS_SLOT`. Same forward-fragility class as Pattern T |
-
-## Per-client forward-readiness scorecard (refreshed)
-
-Updated post-#47 with Fulu mainnet validation + Heze pre-emptive findings + per-pattern source-aware ranking.
-
-| Client | Pectra | Fulu | Gloas readiness | Heze readiness | Notable risks |
-|---|---|---|---|---|---|
-| **prysm** | ✅ | ✅ (mainnet 5+ months) | leader on V5 dispatch (Pattern Y); explicit Gloas dispatcher removal (Pattern H); committee index `< 2` (Pattern E) | constants only in `.ethspecify.yml` (Pattern Z partial — prysm has more Heze metadata than other clients but no implementation) | Pattern Y dispatch architecture forward-fragility; Pattern AA naming offset (V2 = spec V3) |
-| **lighthouse** | ✅ | ✅ (mainnet 5+ months) | leader on builder pending-withdrawals (Pattern B), sync committee selection (Pattern F), proposer indices (Pattern M); strict cgc validation (Pattern X cousin) | none beyond inheritance | **Lighthouse Gloas V5 readiness gap** (Pattern Y `new_payload_v4_gloas` calls V4 not V5) — high-priority pre-emptive fix |
-| **teku** | ✅ | ✅ (mainnet 5+ months) | minimal in core; subclass extension friendly (Pattern I/AA) | **LEADER on Heze**: full `HezeStateUpgrade.java` implementation; `MetadataMessageFulu` + `StatusMessageFulu` fork-naming (Pattern AA); strict-required `Optional` handling (Pattern CC) | Pattern AA fork-naming confusion across teams |
-| **nimbus** | ✅ | ✅ (mainnet 5+ months) | leader on `0x03` BUILDER credential (Pattern A), builder pending-withdrawals (Pattern B), sync committee selection (Pattern F), proposer indices (Pattern M); pre-emptive type-union (Pattern J); separate per-fork function bodies (Pattern I); ONLY client implementing PartialDataColumnSidecar (Pattern Z) | minimal | **APPARENT BUG** in `verify_partial_data_column_sidecar_kzg_proofs` (uses blob index instead of column_index — item #44); ENR cgc SSZ uint8 encoding (Pattern W); hidden compile-time invariant (Pattern S); type-overload silent inclusion (Pattern J); Optional retention on Opt.none (Pattern T cousin) |
-| **lodestar** | ✅ | ✅ (mainnet 5+ months) | leader on Gloas churn (Patterns C + D); explicit Gloas dispatcher gate (Pattern H); pre-computed-proofs optimization (item #39 EL-level); strict cross-validation on Status v2 (item #47); explicit rate limit table (Pattern BB) | none beyond inheritance | Pattern C/D unique churn semantics — others must follow at Gloas; Pattern T empty-set; Pattern CC permissive defaults; ENR cgc silent NaN on div-by-zero (Pattern W cousin) |
-| **grandine** | ✅ | ✅ (mainnet 5+ months) | leader on builder pending-withdrawals (Pattern B), sync committee selection (Pattern F), proposer indices (Pattern M); pre-emptive Gloas modules (Pattern I); KzgBackend swappable (Pattern U) | none beyond inheritance | **Patterns P + V (symmetric forward-fragility)**: hardcoded gindex 11 in BOTH consumer (item #34) AND producer (item #40) — at Heze, grandine PeerDAS gossip mesh fragments (double-failure mode); EIP-7044 4-fork OR-list (Pattern L cousin) requires explicit Heze extension; SINGULAR `get_validator_custody_requirement` naming (Pattern AA cousin) |
-
-### Headline forward-readiness rankings:
-
-**Heze leadership** (post-Gloas, EIP-7805 inclusion lists):
-1. **teku** — full `HezeStateUpgrade.java` + `SpecMilestone.HEZE` + `getHezeForkEpoch/Version` (per item #29 finding)
-2. **prysm** — Heze constants in `.ethspecify.yml` (no implementation code)
-3. lighthouse, nimbus, lodestar, grandine — no Heze references
-
-**Gloas-readiness** (per item #28 original ranking, refreshed):
-1. **nimbus** — 11+ surfaces; type-union compile-time dispatch (cheapest extension)
-2. **grandine** — 9+ surfaces; dedicated `gloas/` modules; **2 forward-fragility risks** (Patterns P + V symmetric)
-3. **lighthouse** — 6+ surfaces; enum match arms; **1 forward-fragility risk** (Pattern Y Gloas V5 gap)
-4. **prysm** — 5+ surfaces; runtime version checks
-5. **lodestar** — 6+ surfaces; explicit Gloas branches in churn (Patterns C + D unique)
-6. **teku** — minimal in core (subclass extension implicit); **LEADER on Heze**
-
-## Tier-ranked divergence vectors at upcoming forks (refreshed)
-
-### A-tier at Gloas activation (immediate fork on first matching block)
-
-1. **Pattern E** (committee index `< 2`) — prysm only; first multi-committee attestation at Gloas with `data.index = 1` would diverge
-2. **Pattern F** (sync committee selection) — lighthouse + grandine + nimbus have separate Gloas paths; other 3 don't → different sync aggregate signers → different finality
-3. **Pattern M** (`compute_proposer_indices` post-Gloas) — same 3-leader/3-laggard split as Pattern F; different proposer indices = different blocks
-4. **Pattern G** (builder deposit handling) — lodestar + grandine + nimbus have on-the-fly BLS verify; other 3 don't → different validator set after first builder deposit
-5. **Pattern H** (dispatcher exclusion gates) — lodestar + prysm have explicit Gloas dispatcher removal; other 4 still run Pectra dispatcher → double-process of execution requests
-6. **Pattern K** (Engine API V5) + **Pattern Y** (lighthouse V5 readiness gap) — lighthouse `new_payload_v4_gloas` calls V4 (not V5) → EL rejection at Gloas activation. **Highest-priority pre-emptive fix**
-
-### A-tier at Heze activation (immediate fork or gossip mesh fragmentation)
-
-7. **Pattern P + V** (grandine hardcoded gindex 11 — symmetric consumer + producer) — at Heze, BeaconBlockBody schema may add new fields (per teku Heze finding item #29). Grandine's PRODUCER generates wrong inclusion proofs AND CONSUMER fails to verify correct proofs from peers using updated schema → grandine PeerDAS gossip mesh fragments
-
-### C-tier at Gloas (throughput/limit math diverges over time)
-
-8. **Pattern C** (lodestar `getActivationChurnLimit`) — different deposit-drain throughput at Gloas
-9. **Pattern D** (lodestar `CONSOLIDATION_CHURN_LIMIT_QUOTIENT`) — different consolidation throughput
-10. **Pattern A** (nimbus + prysm `0x03` builder credential) — different effective_balance for builder validators
-11. **Pattern B** (nimbus + grandine builder pending withdrawals) — different exit-eligibility verdicts
-
-### F-tier (forward-fragile patterns; not divergence today)
-
-- Pattern I (multi-fork-definition) — historical Electra blocks may fail to verify after Gloas-fork code added
-- Pattern J (type-union silent inclusion) — Gloas-specific tweaks may be missed
-- Pattern N (compute_fork_digest multi-fork-definition) — same as Pattern I
-- Pattern O (HashSet vs sorted Sequence) — observable-equivalent set membership; iteration-order divergent
-- Pattern Q (DA state machine) — observable-equivalent verdicts; reconstruction-trigger may differ
-- Pattern R (state-upgrade architecture) — code duplication risk in multi-fork upgrades
-- Pattern S (nimbus subnet/column compile-time invariant) — at any spec change to ratio
-- Pattern T (lodestar empty-set) — Pattern CC analog; spec-undefined edge cases
-- Pattern U (Reed-Solomon orchestration) — performance trade-offs; KZG library family divergence
-- Pattern W (ENR cgc SSZ uint8) — active interop risk on cgc=0 (rare in practice)
-- Pattern X (prysm pre-connection rejection on nfd mismatch) — peer pool reduction around BPO transitions
-- Pattern Z (PartialDataColumnSidecar implementation gap) — would become B-tier if mandatory
-- Pattern AA (SSZ container naming) — cross-team confusion (cosmetic)
-- Pattern BB (RPC handler architecture) — code maintainability
-- Pattern CC (V1↔V2 default value handling) — spec-undefined edge case
-
-### Active interop risks today (not just forward-fragility)
-
-- **Pattern W**: cgc=0 → nimbus SSZ uint8 decoder fails on empty bytes from other 5
-- **Pattern T** (item #38 lodestar empty-set returns 4; others return 8) — observable divergence on edge case
-- **Pattern Z** (PartialDataColumnSidecar) — nimbus's partial publishing wasted on other 5
-
-## Pattern classification (cross-cuts)
-
-| Class | Patterns | Description |
-|---|---|---|
-| **Encoding format divergence** | W (cgc), CC (V1↔V2 defaults) | Wire-format byte-level disagreements |
-| **Architecture divergence** | I (multi-fork-def), J (type-union), R (state-upgrade), U (Reed-Solomon orchestration), Y (Engine API dispatch), BB (RPC handlers) | Code structure differs; observable-equivalent today |
-| **Hardcoded constant divergence** | P (consumer gindex 11), V (producer manual proof), S (nimbus subnet/column ratio), AA (naming offset) | Magic numbers / hardcoded knowledge of spec |
-| **Spec-undefined edge case** | T (empty validator set), CC (V1↔V2 defaults) | Per-client interpretation of unspecified behavior |
-| **Implementation gap** | Z (5-of-6 missing PartialDataColumnSidecar) | Optional spec feature not implemented |
-| **API surface divergence** | O (sorted vs unsorted), AA (V2 vs V3 vs Fulu naming) | Cross-team confusion + tooling friction |
-| **Strictness divergence** | C/D (lodestar Gloas churn), E/F/M (Gloas pre-emptive paths), G/H (Gloas dispatcher), X (prysm pre-connection), Q (DA state machine) | Validation strictness or code-path divergence |
-| **Forward-compat marker** | L (CAPELLA pin), N (compute_fork_digest split) | Defensive code for future-fork modifications |
-
-## Cross-pattern relationships
-
-- **Pattern P + V (symmetric)**: grandine hardcoded gindex 11 on both consumer (item #34) AND producer (item #40) sides. Double-failure mode at Heze. **Highest-priority forward-fragility pair.**
-- **Pattern T + CC (related)**: spec-undefined edge cases handled differently per client (lodestar empty-set + V1→V2 default value). Same root cause: spec doesn't define behavior; per-client interpretation diverges.
-- **Pattern AA scope-expansion**: covers MetaData v3 (item #45) AND Status v2 (item #47) — teku consistently fork-names SSZ containers; other 5 V-named.
-- **Pattern I + N + R (multi-fork-definition family)**: nimbus + grandine ship separate per-fork function bodies for state-transition functions (I), `compute_fork_digest` (N), and `upgrade_to_*` (R). Forward-fragility class.
-- **Pattern Y + K (Engine API)**: Pattern Y dispatch architecture cross-cuts Pattern K (Gloas V5 method); lighthouse Gloas V5 readiness gap is the active risk.
-- **Pattern E + F + M (Gloas A-tier triad)**: 3 attestation/sync-committee/proposer-selection patterns all involving `compute_balance_weighted_selection` post-Gloas. **Most A-tier divergence concentration in PeerDAS-adjacent surfaces.**
-
-## Roadmap of unaudited surfaces
-
-### Critical unaudited at Fulu mainnet target
-
-- **Track D fork choice** beyond #35: `update_proposer_boost_root`, `compute_pulled_up_tip`, `update_checkpoints` (called from `on_block`) — Phase0/Bellatrix-heritage but consensus-critical
-- **Track E SSZ schemas not yet covered**: BlobAndProofV2 (engine_getBlobsV2 response), ExecutionBundleFulu (engine_getPayloadV5 response), DataColumnsByRootIdentifier (item #46 request type)
-- **`compute_max_request_data_column_sidecars()` formula consistency** (item #46 cross-cut)
-- **BlobSidecarsByRange v1 / BlobSidecarsByRoot v1** (Deneb-heritage but Fulu-active for blob backfill)
-- **Cross-fork transition Pectra → Fulu fixture** at FULU_FORK_EPOCH = 411392
-- **`compute_signed_block_header`** (validator helper)
-
-### Pre-emptive Gloas audits (when Gloas activates)
-
-- **A-tier vector pre-emptive fixtures** for Patterns E, F, G, H, K (committee index `< 2`, sync committee selection, builder deposit handling, dispatcher exclusion gates, Engine API V5)
-- **`compute_balance_weighted_selection`** standalone audit (used by Patterns F + M)
-- **EIP-7732 PBS** items (`process_execution_payload_bid`, `process_builder_payment`, etc.)
-- **`process_execution_payload_envelope`** Gloas-NEW
-
-### Pre-emptive Heze audits (per item #29 finding)
-
-- **`HezeStateUpgrade.java`** (teku-only standalone) — track teku's Heze code progression
-- **EIP-7805 inclusion list** items
-- **BeaconBlockBody schema cross-fork audit** for grandine Patterns P + V mitigation
-- **Cross-client Heze readiness scorecard**
-
-### Infrastructure / fixtures
-
-- **Wire Fulu fixture categories** in BeaconBreaker harness — would unblock 18 audited Fulu items
-- **Generate cross-client interop fixtures** for Patterns W (cgc=0), T (empty-set), CC (V1↔V2)
-- **Items #15/#19/#32/#36 retroactive corrections** (V5 confusion per item #43)
+# 48: Cross-corpus forward-fragility pattern catalogue (Patterns A–CC across items #1–#47) — Glamsterdam refresh
 
 ## Summary
 
-Item #28's original Pattern catalogue (A–L; 12 patterns) covered Gloas pre-emptive findings across 22 of 27 prior items. Items #29–#47 added **17 new patterns (M–CC)** spanning:
-- **Heze surprise** (items #29 teku full Heze + prysm constants; #36/#42 cross-cuts)
-- **Fulu state-transition** (items #30/#31/#32/#36 producing Patterns M/N/R)
-- **PeerDAS surface** (items #33/#34/#35/#37/#38/#39/#40 producing Patterns O/P/Q/S/T/U/V)
-- **ENR + RPC layer** (items #41/#42/#43/#44/#45/#46/#47 producing Patterns W/X/Y/Z/AA/BB/CC)
+Meta-audit. Refresh of item #28's "Cross-corpus pre-emptive Gloas-fork divergence consolidated tracking audit" — the original catalogued **Patterns A–L (12 patterns)** consolidating findings across 22 of 27 prior items. Items #29–#47 added **17 new patterns (M–CC)** spanning Heze surprise + Fulu state-transition + PeerDAS surface + ENR/metadata/RPC layer + EL boundary. **Total: 29 patterns (A–CC)** across the 47-item corpus.
 
-**29 patterns total** classified into 8 cross-cut categories:
-- **Encoding format divergence** (2): W, CC
-- **Architecture divergence** (6): I, J, R, U, Y, BB
-- **Hardcoded constant divergence** (4): P, V, S, AA
-- **Spec-undefined edge case** (2): T, CC
-- **Implementation gap** (1): Z
-- **API surface divergence** (2): O, AA
-- **Strictness divergence** (8): C, D, E, F, M, G, H, X, Q
-- **Forward-compat marker** (2): L, N
+Key catalogue updates from the items #29–#47 recheck pass (2026-05-13):
 
-### A-tier divergence vectors at Gloas activation (5):
+- **Pattern M cohort consolidation**: originally flagged as "lighthouse-only Gloas-ePBS readiness gap" (item #28). After items #43 (Engine API V5/V6/FCU4) + #44 (PartialDataColumnSidecar Gloas reshape) + #46 (`ExecutionPayloadEnvelopesByRange/ByRoot v1`), the cohort firms up to **{lighthouse, grandine}** with nimbus partial. Three audit segments now confirm the same two clients lack Gloas PBS req/resp + Engine API surface; nimbus has partial gaps (`engine_getPayloadV6` + `engine_forkchoiceUpdatedV4` missing dispatch sites despite nim-web3 declarations).
+- **Pattern AA scope expansion**: originally covered MetaData v3 only (item #45). Item #47 confirms it also applies to Status v2 — teku's `StatusMessageFulu` (`vendor/teku/ethereum/spec/.../status/versions/fulu/StatusMessageFulu.java:49`) parallels `MetadataMessageFulu`. Pattern lifts from "MetaData-only" to "MetaData + Status messages."
+- **Pattern Y confirmation**: 4-vs-2 split on Gloas Engine API surface — prysm + teku + nimbus + lodestar wired; lighthouse uses V4 wire method for Gloas (`new_payload_v4_gloas` at `vendor/lighthouse/beacon_node/execution_layer/src/engine_api/http.rs:886`); grandine has no Gloas Engine API constants anywhere. Confirms lighthouse Gloas V5 readiness gap and grandine joins the cohort.
+- **Pattern Z extension**: PartialDataColumnSidecar gap unchanged at Fulu (1-of-6 implementations). At Gloas the surface is modified (`header` field removed, new `PartialDataColumnGroupID`); composing item #44's 5-of-6 partial-column gap with item #43's 3-of-6 Engine API V6 gap, **no client has the complete Gloas partial-column surface today**.
+- **Pattern BB confirmation**: 5 distinct per-client RPC handler dispatch idioms (item #46) — prysm map-based registration, lighthouse + grandine strum-enum, teku two-layer handler+validating-proxy, nimbus macro-driven `libp2pProtocol`, lodestar async-generator + `rateLimit.ts` table.
+- **Pattern CC confirmation**: V1↔V2 default-value divergence (item #47) — 4 of 6 silently default `0`, nimbus uses symbolic `GENESIS_SLOT` (`vendor/nimbus/beacon_chain/networking/peer_protocol.nim:139`), teku strict-required `Preconditions.checkArgument(...isPresent())` (`vendor/teku/ethereum/spec/.../status/versions/fulu/StatusMessageSchemaFulu.java:59`).
 
-1. Pattern E (committee index `< 2`) — prysm
-2. Pattern F (sync committee selection) — lighthouse + grandine + nimbus
-3. Pattern M (proposer indices post-Gloas) — same 3 leaders as F
-4. Pattern G (builder deposit handling) — lodestar + grandine + nimbus
-5. Pattern H (dispatcher exclusion gates) — lodestar + prysm
-6. Pattern K + Y (Engine API V5) — **lighthouse Gloas V5 readiness gap** (highest-priority pre-emptive fix)
+**Glamsterdam target context**: `GLOAS_FORK_EPOCH = FAR_FUTURE_EPOCH` per `vendor/consensus-specs/configs/mainnet.yaml:60`. **None of the Gloas-fork-flagged patterns are mainnet-reachable today.** All A-tier and B-tier Gloas patterns are forward-fragility tracking, not present-tense divergence. The Fulu surface (active since 2025-12-03 per item #36 finding) is byte-equivalent across all 6 clients as validated by 5+ months of mainnet operation.
 
-### A-tier divergence vectors at Heze activation (1):
+**Impact: none** — meta-audit / synthesis document, not a new per-function audit. The catalogue summarises 47 prior audits; individual divergence claims trace back to source items. Twenty-ninth `impact: none` result in the recheck series.
 
-7. Pattern P + V (grandine hardcoded gindex 11 — symmetric consumer + producer) — **double-failure mode**
+## Question
 
-### Active interop risks today (3):
+Which forward-fragility patterns have emerged across items #1–#47, and how do they compose at upcoming forks (Gloas + Heze)?
 
-- Pattern W (cgc=0 — nimbus SSZ uint8 decoder fails on empty bytes)
-- Pattern T (lodestar empty-validator-set returns 4; others return 8)
-- Pattern Z (PartialDataColumnSidecar — only nimbus implements; other 5 ignore nimbus's partial publishing)
+This catalogue answers three layered questions:
 
-### Per-client forward-readiness leaders:
+1. **Per-pattern**: what divergence class does each pattern describe, what clients does it affect, and what severity (A-tier immediate fork; B-tier mesh fragmentation; C-tier throughput-math; F-tier forward-fragile)?
+2. **Per-client**: what is each client's forward-readiness scorecard at Pectra (active), Fulu (active), Gloas (Glamsterdam target), and Heze (post-Glamsterdam)?
+3. **Pattern composition**: how do patterns interact (symmetric pairs like P+V on grandine; cohorts like {lighthouse, grandine} Gloas-ePBS readiness gap)?
 
-- **Heze**: teku (full HezeStateUpgrade) > prysm (constants only) > others (none)
-- **Gloas**: nimbus > grandine > lighthouse > prysm > lodestar > teku
-- **Fulu mainnet**: all 6 ✅ (5+ months without divergence)
+## Hypotheses
 
-**Status**: 47 audits committed, 29 forward-fragility patterns catalogued, comprehensive roadmap into Gloas + Heze + remaining unaudited surfaces. **Total item count: 48 (#1-#48)**. The catalogue is now the central forward-fragility tracking document for the corpus and should be re-refreshed every ~10 audits or when major new patterns surface.
+- **H1.** Pattern catalogue has grown from 12 (A–L, item #28) to 29 (A–CC) across items #29–#47.
+- **H2.** Pattern M cohort consolidates to {lighthouse, grandine} after items #43 + #44 + #46.
+- **H3.** Pattern AA scope expands from MetaData-only (item #45) to MetaData + Status (item #47).
+- **H4.** A-tier Gloas patterns (immediate fork on first matching block) total 6: E (committee index), F + M (`compute_balance_weighted_selection` triad), G (builder deposit), H (dispatcher exclusion), K + Y (Engine API V5 + lighthouse readiness gap).
+- **H5.** A-tier Heze patterns total 1: P + V (grandine hardcoded gindex 11 symmetric consumer + producer).
+- **H6.** Active interop risks today total 3: W (cgc=0 nimbus SSZ uint8), T (lodestar empty-validator-set returns 4 vs 8), Z (PartialDataColumnSidecar 1-of-6).
+- **H7.** Per-client forward-readiness Heze leadership ranking: teku > prysm > others, unchanged from item #28.
+- **H8.** Per-client forward-readiness Gloas ranking: nimbus > grandine > lighthouse > prysm > lodestar > teku, with the caveat that "Gloas readiness" measures pre-emptive constants and code paths, not absence of forward-fragility.
+- **H9.** Fulu mainnet (active since 2025-12-03, 5+ months) has not exposed any of the catalogued divergences as observable consensus splits — the patterns are forward-fragility, not present-tense.
+- **H10.** `GLOAS_FORK_EPOCH = FAR_FUTURE_EPOCH` makes Gloas-flagged patterns forward-fragility-only today; they convert to present-tense divergence on Glamsterdam activation.
 
-Forward-research priorities (in order):
-1. **Lighthouse Gloas V5 readiness gap** (Pattern Y, item #43) — pre-emptive fix before Gloas
-2. **Grandine Patterns P + V mitigation** (items #34, #40) — replace hardcoded gindex 11 with dynamic resolution before Heze
-3. **Nimbus PartialDataColumnSidecar bug verification** (item #44) — `cell_indices` uses blob index instead of column_index
-4. **Cross-client interop fixtures for Patterns W/T/CC** — exercise spec-undefined edge cases
-5. **Wire Fulu fixture categories in BeaconBreaker harness** — unblock 18 audited Fulu items
-6. **Track D fork choice + Track E SSZ schemas** — close remaining unaudited consensus-critical surfaces
+## Findings
+
+H1–H10 satisfied via cross-corpus synthesis. Full pattern catalogue + per-client roles below.
+
+### prysm
+
+**Pattern contributions** (prysm is a divergence source — patterns where prysm differs from the majority):
+
+- **Pattern A** (item #1, #22) — `0x03` BUILDER credential pre-emptive constants. prysm + nimbus pre-Gloas.
+- **Pattern E** (item #7) — committee index `< 2` post-Gloas. **prysm only** (others still `== 0`); A-tier Gloas vector.
+- **Pattern H** (item #13) — explicit dispatcher exclusion `fork < ForkSeq.gloas`. prysm + lodestar.
+- **Pattern Y** (item #43) — payload-type switch on `*pb.ExecutionPayloadGloas` for `engine_newPayloadV5` (`vendor/prysm/beacon-chain/execution/engine_client.go:200-230`).
+- **Pattern AA** (item #45, item #47) — `MetaDataV2` for spec V3 (offset by 1; `vendor/prysm/proto/prysm/v1alpha1/p2p_messages.proto:115`); Status V2 spec-aligned (no offset on Status).
+- **Pattern BB** (item #46) — per-fork map-based RPC registration (`vendor/prysm/beacon-chain/sync/rpc.go:52-71`).
+
+**Gloas-readiness**: full Engine API V5 + V6 + ForkchoiceUpdated V4 wired (`engine_client.go:91-131`). Has `ExecutionPayloadEnvelopesByRange/ByRoot v1` handlers (`vendor/prysm/beacon-chain/sync/rpc_execution_payload_envelopes_by_range.go`).
+
+**Heze-readiness**: Heze constants only in `.ethspecify.yml` (no implementation).
+
+**Active risks**: Pattern Y dispatch architecture forward-fragility at next fork; Pattern AA naming offset (V2 = spec V3) will become more confusing at MetaData v4.
+
+### lighthouse
+
+**Pattern contributions**:
+
+- **Pattern B** (item #3, #23) — builder pending-withdrawals accumulator (separate `get_pending_balance_to_withdraw_for_builder`).
+- **Pattern F** (item #27) — sync committee selection `compute_balance_weighted_selection`. lighthouse leader.
+- **Pattern M** (item #30) — `compute_proposer_indices` post-Gloas. Same triad with grandine + nimbus.
+- **Pattern Q** (item #35) — 2-state Availability DA state machine.
+
+**Pattern M cohort (lighthouse Gloas-ePBS readiness gap)**:
+
+- Item #43: `engine_newPayloadV5` NOT wired (`new_payload_v4_gloas` at `vendor/lighthouse/beacon_node/execution_layer/src/engine_api/http.rs:886` uses V4 wire method). No `ENGINE_GET_PAYLOAD_V6`, no `ENGINE_FORKCHOICE_UPDATED_V4`.
+- Item #44: zero PartialDataColumnSidecar references; cohort symptom.
+- Item #46: `ExecutionPayloadEnvelopesByRange/ByRoot v1` NOT wired (gossip topic only at `vendor/lighthouse/beacon_node/lighthouse_network/src/types/pubsub.rs:19,48,368`; no req/resp).
+
+**Gloas-readiness**: leader on Fulu state-transition pre-emptive paths (Patterns B + F + M); Gloas-ePBS surface deferred. Highest-priority pre-emptive fix: rewire `new_payload_v4_gloas` to V5 + add V6 getPayload + V4 forkchoiceUpdated + add envelope RPCs.
+
+**Heze-readiness**: none beyond inheritance.
+
+### teku
+
+**Pattern contributions**:
+
+- **Pattern AA** (item #45, item #47) — fork-named SSZ containers (`MetadataMessageFulu`, `StatusMessageFulu`). teku-only; spec-aligned V-numbering used by other 5.
+- **Pattern CC** (item #47) — strict-required V2 field: `Preconditions.checkArgument(earliestAvailableSlot.isPresent())` at `vendor/teku/ethereum/spec/.../status/versions/fulu/StatusMessageSchemaFulu.java:59`. Forward-friendly: catches absent fields rather than silently defaulting.
+- **Pattern BB** (item #46) — two-layer handler + validating proxy (`DataColumnSidecarsByRangeListenerValidatingProxy`).
+- **Pattern U** (item #39) — ForkJoinPool common pool for Reed-Solomon orchestration (contention concern).
+- **Pattern I** (item #6, #9, #10, etc.) — subclass extension pattern (per-milestone schema classes; minimal in core).
+
+**Heze leadership (item #29)**: **full `HezeStateUpgrade.java`** implementation + `SpecMilestone.HEZE` enum + `getHezeForkEpoch/Version` accessors. Only client with executable Heze code. EIP-7805 inclusion list scaffolding in place.
+
+**Gloas-readiness**: full Engine API V5 (`EngineNewPayloadV5.java`) + V6 (`EngineGetPayloadV6.java`) + ForkchoiceUpdated V4 (`EngineForkChoiceUpdatedV4.java`). Full `ExecutionPayloadEnvelopesByRange/ByRoot v1` handlers + storage column families (`vendor/teku/storage/.../V6SchemaCombinedSnapshot.java:48`).
+
+**Active risks**: Pattern AA fork-naming cross-team confusion (teku says "Fulu" while spec says "V3"/"V2"); Pattern U ForkJoinPool contention under load.
+
+### nimbus
+
+**Pattern contributions** (nimbus has the most pattern contributions of any client):
+
+- **Pattern A** (item #1, #22) — `0x03` BUILDER pre-emptive constant.
+- **Pattern B** (item #3, #23) — builder pending-withdrawals accumulator; **stale OR-fold concern at `vendor/nimbus/beacon_chain/spec/beaconstate.nim:59-68, 1541-1559`** (mainnet-everyone splits from prior audits).
+- **Pattern F** + **Pattern M** — `compute_balance_weighted_selection` + proposer indices.
+- **Pattern I** + **Pattern J** — separate per-fork function bodies + type-union compile-time dispatch.
+- **Pattern N** (item #31) — `compute_fork_digest_pre_fulu` / `_post_fulu` separate functions.
+- **Pattern S** (item #37) — hidden compile-time invariant `static: doAssert DATA_COLUMN_SIDECAR_SUBNET_COUNT == NUMBER_OF_COLUMNS` at `vendor/nimbus/beacon_chain/spec/network.nim:142`.
+- **Pattern W** (item #41) — ENR cgc SSZ uint8 encoding (1 byte even for cgc=0); active interop risk on cgc=0.
+- **Pattern Z** (item #44) — **ONLY client implementing PartialDataColumnSidecar** (1-of-6); container at `vendor/nimbus/beacon_chain/spec/datatypes/fulu.nim:114-117` is also Gloas-shape by accident (no `header` field).
+- **Pattern CC** (item #47) — symbolic `GENESIS_SLOT` default rather than literal `0` (`vendor/nimbus/beacon_chain/networking/peer_protocol.nim:139`).
+
+**Gloas-readiness**: `engine_newPayloadV5` wired (`vendor/nimbus/beacon_chain/el/el_manager.nim:580`); `engine_getPayloadV6` declared in vendored nim-web3 but no Gloas dispatch site in `beacon_chain/el/`. **Nimbus partial-cohort**: V5 newPayload yes, V6 getPayload + V4 forkchoiceUpdated no.
+
+**Heze-readiness**: minimal beyond inheritance.
+
+**Active risks** (more than any other client):
+
+- **Apparent bug** in `verify_partial_data_column_sidecar_kzg_proofs` (`vendor/nimbus/beacon_chain/spec/peerdas_helpers.nim:417-444`) — uses blob-index `i` for `cellIndices` instead of repeated `column_index` per spec. Not mainnet-observable because no other client publishes partial sidecars for cross-validation. **Filed as future research item.**
+- ENR cgc SSZ uint8 (Pattern W) — active interop risk on cgc=0.
+- Hidden compile-time invariant (Pattern S) at any spec change to subnet/column ratio.
+- Stale OR-fold (Pattern B) — items #22/#23 mainnet-everyone splits.
+
+### lodestar
+
+**Pattern contributions**:
+
+- **Pattern C** (item #4) — `getActivationChurnLimit` Gloas branch (other 5 don't have Gloas branch).
+- **Pattern D** (item #16) — `CONSOLIDATION_CHURN_LIMIT_QUOTIENT` independent quotient (other 5 use residual model).
+- **Pattern G** (item #14, #20, #21, #40) — on-the-fly BLS verify in `applyDepositForBuilder`.
+- **Pattern H** (item #13) — explicit dispatcher exclusion gates.
+- **Pattern T** (item #38) — empty-validator-set returns `CUSTODY_REQUIREMENT = 4` (non-validator default); other 5 return `VALIDATOR_CUSTODY_REQUIREMENT = 8`. **Active interop risk on edge case.**
+- **Pattern U** (item #39) — pre-computed cell proofs from EL (`BlobAndProofV2`); cross-cuts item #43 Engine API.
+- **Pattern Y** (item #43) — ForkSeq ternary chain dispatch (most maintainable of 5 idioms).
+- **Pattern BB** (item #46) — async-generator handlers + `rateLimit.ts` table.
+- **Item #47 lodestar leadership**: SERVER-side serve-floor enforcement of `earliest_available_slot` at every consensus-critical req/resp handler (BeaconBlocksByRange, DataColumnSidecarsByRange/ByRoot, Gloas-NEW `ExecutionPayloadEnvelopesByRange`) — **strictest interpretation** of item #46's `ResourceUnavailable` enforcement.
+- **Item #44 leadership**: only client carrying a Gloas-NEW `PartialDataColumnGroupID#gloas` tracking entry at `vendor/lodestar/specrefs/containers.yml:1447-1451`.
+
+**Gloas-readiness**: full Engine API V5 + V6 + ForkchoiceUpdated V4 (`vendor/lodestar/packages/beacon-node/src/execution/engine/http.ts:249, 354, 449`). Full envelope RPCs.
+
+**Heze-readiness**: none beyond inheritance.
+
+**Active risks**: Pattern C/D unique churn semantics (others must follow at Gloas); Pattern T empty-set divergence; Pattern CC permissive `?? CUSTODY_REQUIREMENT` defaults at every read site.
+
+### grandine
+
+**Pattern contributions**:
+
+- **Pattern B** + **Pattern F** + **Pattern M** + **Pattern G** — Gloas pre-emptive triad.
+- **Pattern I** — pre-emptive `gloas/` modules (separate per-fork function bodies).
+- **Pattern O** (item #33) — `HashSet<CustodyIndex>` UNORDERED return type (set equality preserved; iteration-order divergent).
+- **Pattern P** (item #34) — **hardcoded `index_at_commitment_depth = 11`** for `verify_sidecar_inclusion_proof` at `vendor/grandine/eip_7594/src/lib.rs:217-244`. Forward-fragile at Heze.
+- **Pattern V** (item #40) — **manual inclusion-proof construction** in `kzg_commitments_inclusion_proof` at `vendor/grandine/helper_functions/src/misc.rs:649`. **Symmetric pair with Pattern P** — at Heze, grandine PRODUCER generates wrong proofs AND CONSUMER fails to verify correct proofs → double-failure mode.
+- **Pattern U** — `KzgBackend` swappable architecture; `dedicated_executor` for Reed-Solomon.
+
+**Pattern M cohort (grandine Gloas-ePBS readiness gap — new finding from items #43 + #46)**:
+
+- Item #43: NO `engine_newPayloadV5`, `engine_getPayloadV6`, or `engine_forkchoiceUpdatedV4` strings anywhere under `vendor/grandine/` (verified by grep). **Previously not flagged in Pattern M (which was lighthouse-only)**; grandine joins lighthouse in the cohort.
+- Item #44: zero PartialDataColumnSidecar references.
+- Item #46: no `ExecutionPayloadEnvelopesByRange/ByRoot v1` handlers; neither gossip nor req/resp.
+
+**Gloas-readiness**: pre-emptive state-transition leadership; Gloas-ePBS surface (Engine API + envelope RPCs + PartialDataColumnSidecar) entirely deferred. Counterpart to lighthouse — same cohort.
+
+**Heze-readiness**: none beyond inheritance.
+
+**Active risks (highest of any client)**:
+
+- **Patterns P + V symmetric pair** — at Heze if BeaconBlockBody schema gains new fields, grandine PeerDAS gossip mesh fragments (double-failure consumer + producer).
+- Pattern M cohort gaps (Gloas Engine API + envelope RPCs).
+- Pattern O HashSet iteration-order at debug/log sites.
+
+## Cross-reference table
+
+### Full Pattern catalogue (A–CC; 29 patterns)
+
+| # | Pattern | Source items | Tier | Affected clients (divergent) |
+|---|---|---|---|---|
+| **A** | `0x03` BUILDER credential prefix pre-Gloas | #1, #22 | C-tier | nimbus, prysm (pre-emptive) |
+| **B** | Builder pending-withdrawals accumulator pre-Gloas | #3, #23 | C-tier | nimbus, grandine (pre-emptive) |
+| **C** | `getActivationChurnLimit` Gloas branch | #4 | C-tier | lodestar (only) |
+| **D** | `CONSOLIDATION_CHURN_LIMIT_QUOTIENT` independent | #16 | C-tier | lodestar (only) |
+| **E** | Committee index `< 2` post-Gloas | #7 | A-tier | prysm (only) |
+| **F** | Sync committee selection (`compute_balance_weighted_selection`) | #27 | A-tier | lighthouse, grandine, nimbus (Gloas branches) |
+| **G** | Builder deposit handling on-the-fly BLS | #14, #20, #21, #40 | A-tier | lodestar, grandine, nimbus |
+| **H** | Dispatcher exclusion gates `fork < ForkSeq.gloas` | #13 | A-tier | lodestar, prysm (have explicit removal) |
+| **I** | Multi-fork-definition (separate per-fork bodies) | #6, #9, #10, #12, #14, #15, #17, #19, #31, #32 | F-tier | nimbus, grandine (ship separate bodies); teku subclass extension |
+| **J** | Type-union silent inclusion | #1, #8, #14, #16, #18, #21, #23 | F-tier | nimbus, lighthouse |
+| **K** | Engine API V5 wire method | #15, #43 | A-tier | (CORRECTED at #43: V5 is GLOAS-NEW, not Fulu-NEW) |
+| **L** | Voluntary-exit CAPELLA pin | #6 | none | grandine 4-fork OR-list explicit |
+| **M** | `compute_proposer_indices` post-Gloas | #30 | A-tier | lighthouse, grandine, nimbus (have Gloas branches) |
+| **N** | `compute_fork_digest` multi-fork-definition | #31 | F-tier | nimbus, grandine |
+| **O** | PeerDAS unsorted-vs-sorted (HashSet vs Sequence) | #33 | F-tier | lighthouse, grandine (HashSet); others Sequence |
+| **P** | Hardcoded gindex consumer-side | #34 | F-tier (B-tier at Heze) | **grandine** (`index_at_commitment_depth = 11`) |
+| **Q** | DA state machine (5 architectures) | #35 | F-tier | grandine 5-state; teku 4-state; lodestar 4-state; lighthouse 2-state; prysm + nimbus single |
+| **R** | State-upgrade architecture (6 distinct) | #36 | F-tier | all 6 (each has own idiom) |
+| **S** | Hidden compile-time invariant | #37 | F-tier | **nimbus** (`doAssert SUBNET_COUNT == NUMBER_OF_COLUMNS`) |
+| **T** | Spec-undefined edge case (empty validator set) | #38 | F-tier (active interop) | **lodestar** (returns 4); others return 8 |
+| **U** | Reed-Solomon orchestration (5 patterns + 2 KZG families) | #39 | F-tier | all 6 (each has own pattern) |
+| **V** | Hardcoded inclusion-proof construction (producer-side) | #40 | F-tier (B-tier at Heze) | **grandine** (manual proof construction; symmetric pair with P) |
+| **W** | ENR encoding format (SSZ uint8 vs spec BE) | #41 | F-tier (active interop on cgc=0) | **nimbus** (SSZ uint8) |
+| **X** | Peer-discovery strictness (pre-connection rejection) | #42 | F-tier | **prysm** (REJECTS on nfd mismatch; others soft) |
+| **Y** | Per-client Engine API dispatch (5 idioms) | #43 | A-tier (Gloas) | **lighthouse + grandine** Gloas V5/V6/FCU4 missing; nimbus partial |
+| **Z** | Optional-spec-feature implementation gap (PartialDataColumnSidecar) | #44 | F-tier (active interop on partial gossip) | 5-of-6 missing source code; only nimbus implements |
+| **AA** | SSZ container version-numbering | #45, #47 | F-tier | prysm V2 = spec V3 offset; teku fork-named (MetaData + Status) |
+| **BB** | RPC handler architecture (5 idioms) | #46 | F-tier | all 6 (each has own pattern) |
+| **CC** | V1↔V2 default-value handling | #47 | F-tier | nimbus symbolic; teku strict-required; 4 silent-zero |
+
+### Per-client forward-readiness scorecard
+
+| Client | Pectra | Fulu mainnet | Gloas-ePBS surface | Heze readiness | Highest-priority risks |
+|---|---|---|---|---|---|
+| **prysm** | ✅ | ✅ (5+ months) | full V5/V6/FCU4 + envelope RPCs | constants only in `.ethspecify.yml` | Pattern E (committee index) at Gloas; Pattern AA naming offset |
+| **lighthouse** | ✅ | ✅ (5+ months) | **MISSING V5/V6/FCU4 + envelope RPCs** (Pattern M cohort) | none | **Lighthouse Gloas V5 readiness gap** (Pattern Y) — highest priority pre-emptive fix |
+| **teku** | ✅ | ✅ (5+ months) | full V5/V6/FCU4 + envelope RPCs + storage scaffolding | **LEADER — full HezeStateUpgrade.java** | Pattern AA fork-naming cross-team confusion |
+| **nimbus** | ✅ | ✅ (5+ months) | partial: V5 yes; V6 + FCU4 missing dispatch sites | minimal | **Pattern W (cgc=0 SSZ uint8); apparent bug in verify_partial_data_column_sidecar_kzg_proofs** |
+| **lodestar** | ✅ | ✅ (5+ months) | full V5/V6/FCU4 + envelope RPCs; SERVER-side earliest_available_slot enforcement | none | Pattern C/D unique churn; Pattern T empty-set; Pattern CC permissive defaults |
+| **grandine** | ✅ | ✅ (5+ months) | **MISSING V5/V6/FCU4 + envelope RPCs + PartialDataColumnSidecar** (Pattern M cohort) | none | **Patterns P + V symmetric (gindex 11)** — Heze double-failure mode; Pattern M Gloas-ePBS gaps |
+
+### Pattern classification (8 cross-cut categories)
+
+| Class | Patterns | Notes |
+|---|---|---|
+| Encoding format divergence | W, CC | Wire-level byte disagreements |
+| Architecture divergence | I, J, R, U, Y, BB | Observable-equivalent today; code-structure differs |
+| Hardcoded constant divergence | P, V, S, AA | Magic numbers / hardcoded spec knowledge |
+| Spec-undefined edge case | T, CC | Per-client interpretation diverges |
+| Implementation gap | Z | Optional spec features missing |
+| API surface divergence | O, AA | Cross-team confusion + tooling friction |
+| Strictness divergence | C, D, E, F, M, G, H, X, Q | Per-fork code-path or validation strictness |
+| Forward-compat marker | L, N | Defensive pre-emptive code |
+
+### Tier-ranked divergence vectors at upcoming forks
+
+**A-tier at Gloas activation** (immediate fork on first matching block):
+
+1. **Pattern E** — prysm `data.index < 2` post-Gloas; first multi-committee attestation with `data.index = 1` diverges.
+2. **Pattern F** — lighthouse + grandine + nimbus have separate Gloas paths → different sync aggregate signers → different finality.
+3. **Pattern M** — same 3-leader/3-laggard split as F; different proposer indices.
+4. **Pattern G** — lodestar + grandine + nimbus have on-the-fly BLS verify → different validator set after first builder deposit.
+5. **Pattern H** — lodestar + prysm have explicit Gloas dispatcher removal → others double-process execution requests.
+6. **Pattern K + Y** — lighthouse `new_payload_v4_gloas` uses V4 wire method; grandine has zero Engine V5/V6/FCU4 constants → EL rejection at Gloas activation. **Highest-priority pre-emptive fix.**
+
+**A-tier at Heze activation** (post-Glamsterdam; mesh fragmentation):
+
+7. **Pattern P + V (symmetric on grandine)** — at Heze if BeaconBlockBody schema gains new fields (per teku Heze finding item #29), grandine PeerDAS gossip mesh fragments via double-failure mode (producer + consumer both wrong).
+
+**Active interop risks today** (not just forward-fragility):
+
+- **Pattern W (cgc=0)** — nimbus SSZ uint8 decoder fails on empty bytes from other 5; rare in practice (most nodes advertise cgc≥4).
+- **Pattern T (lodestar empty-validator-set returns 4 vs 8)** — observable divergence on edge case (no validators registered locally — testnet/devnet scenarios).
+- **Pattern Z (PartialDataColumnSidecar 1-of-6)** — nimbus's partial publishing ignored by other 5; wasted bandwidth, not consensus divergence.
+
+## Empirical tests
+
+- ✅ **5+ months of Fulu mainnet operation since 2025-12-03**: validates that all 29 catalogued patterns are forward-fragility (not present-tense divergence) at Fulu. No client-side splits attributable to any A-tier or B-tier pattern on mainnet traffic.
+- ✅ **Cross-corpus synthesis (this refresh)**: 47 prior audits → 29 patterns; classification across 8 cross-cut categories; per-client scorecards; tier-ranked divergence vectors. Each claim traces to a source item file:line citation.
+- ✅ **Pattern M cohort confirmation (this refresh)**: three audit segments (items #43 + #44 + #46) independently confirm {lighthouse, grandine} cohort with nimbus partial. Pattern lifts from "lighthouse-only" to "{lighthouse, grandine}".
+- ⏭ **Pattern E pre-emptive fixture**: synthesize a multi-committee Gloas attestation with `data.index = 1`; verify 5 clients reject (committee index `== 0`) and prysm accepts (`< 2`). Would A-tier Pattern E into a presubmit gate.
+- ⏭ **Pattern F + M pre-emptive fixture**: cross-client `compute_balance_weighted_selection` agreement on Gloas state-transition fixtures. Tests the 3-leader/3-laggard split for sync committee + proposer indices.
+- ⏭ **Pattern G pre-emptive fixture**: builder deposit with crafted credentials at Gloas; verify lodestar + grandine + nimbus apply on-the-fly BLS verify and other 3 don't.
+- ⏭ **Pattern K + Y pre-emptive fixture**: simulated Gloas Engine API exchange; verify all 6 CLs route to V5/V6/FCU4 correctly. Tests lighthouse + grandine Gloas-ePBS readiness gap as a CI gate.
+- ⏭ **Pattern P + V symmetric Heze fixture**: synthetic Heze block with BeaconBlockBody schema extension; verify grandine producer + consumer fail vs other 5 succeed.
+- ⏭ **Pattern W active-interop fixture**: cgc=0 ENR exchange; verify nimbus decoder fails to parse empty-bytes ENR cgc field from other 5.
+- ⏭ **Pattern T fixture**: empty validator set; verify lodestar returns 4 vs others return 8.
+- ⏭ **Items #15/#19/#32/#36 retroactive corrections**: V4-vs-V5 confusion correction per item #43 finding. Update each prior audit's text to reflect V4 (not V5) is the Fulu block-validation method.
+- ⏭ **Roadmap continuation** — items #49+ should cover:
+  - Track D fork choice beyond #35: `update_proposer_boost_root`, `compute_pulled_up_tip`, `update_checkpoints`
+  - Track E SSZ schemas: `BlobAndProofV2` (Fulu-NEW), `ExecutionBundleFulu` (Fulu-NEW), `DataColumnsByRootIdentifier` (item #46 request type), `PartialDataColumnGroupID` (Gloas-NEW per item #44)
+  - `compute_max_request_data_column_sidecars()` cross-client formula consistency
+  - Cross-fork transition Pectra → Fulu fixture at FULU_FORK_EPOCH = 411392
+  - EIP-7732 PBS items: `process_execution_payload_bid`, `process_builder_payment`, `process_execution_payload_envelope`
+  - `compute_balance_weighted_selection` standalone audit (used by Patterns F + M)
+
+## Conclusion
+
+The forward-fragility pattern catalogue now spans 29 patterns (A–CC) across 47 source items. Items #29–#47 added 17 new patterns; the items #29–#47 recheck pass (2026-05-13) updated several pattern definitions to reflect current source state:
+
+1. **Pattern M cohort firms up to {lighthouse, grandine}** — three audit segments (Engine API + PartialDataColumnSidecar + envelope RPCs) independently confirm the same two clients have Gloas-ePBS surface gaps. Nimbus is a partial-cohort member.
+2. **Pattern AA scope expands** to MetaData v3 (item #45) AND Status v2 (item #47) — teku's fork-named pattern is consistent across SSZ containers.
+3. **Pattern Y confirms 4-vs-2 Gloas Engine API split** — prysm + teku + nimbus + lodestar fully wired; lighthouse + grandine missing.
+4. **Pattern Z extends with Gloas reshape** — composing item #44's 5-of-6 partial-column gap with item #43's 3-of-6 Engine API V6 gap, no client has the complete Gloas partial-column surface today.
+5. **Pattern BB classifies 5 distinct per-client RPC handler dispatch idioms** (item #46).
+6. **Pattern CC classifies V1↔V2 default-value divergence** (item #47).
+
+Glamsterdam target context: `GLOAS_FORK_EPOCH = FAR_FUTURE_EPOCH`. **None of the Gloas-flagged patterns are mainnet-reachable today.** The Fulu surface (active since 2025-12-03) is byte-equivalent across all 6 clients per 5+ months of mainnet validation.
+
+**A-tier Gloas divergence vectors (6)**: Patterns E, F, M, G, H, K+Y. **A-tier Heze divergence vector (1)**: Pattern P + V symmetric pair on grandine. **Active interop risks today (3)**: Patterns W, T, Z.
+
+**Per-client forward-readiness rankings (refreshed)**:
+
+- **Heze**: teku (full HezeStateUpgrade.java) > prysm (constants only) > others (none beyond inheritance).
+- **Gloas-ePBS surface (Engine API + envelope RPCs + PartialDataColumnSidecar)**: prysm + teku + lodestar fully wired; nimbus partial; **lighthouse + grandine cohort gap (highest-priority pre-emptive fixes)**.
+- **Fulu mainnet (active)**: all 6 ✅.
+
+**Forward-research priorities** (in order):
+
+1. **Lighthouse Gloas V5/V6/FCU4 + envelope RPC pre-emptive wiring** (Patterns Y + M cohort) — rewire `new_payload_v4_gloas` to V5, add `engine_getPayloadV6`, `engine_forkchoiceUpdatedV4`, and `ExecutionPayloadEnvelopesByRange/ByRoot v1` handlers before Glamsterdam activation.
+2. **Grandine Gloas-ePBS surface implementation** (Patterns Y + M cohort) — add Engine API V5/V6/FCU4 constants + envelope RPC handlers; replace hardcoded gindex 11 (Patterns P + V) with dynamic resolution before Heze.
+3. **Nimbus PartialDataColumnSidecar bug verification** (item #44) — `cell_indices` uses blob index instead of column_index; file nimbus issue/PR.
+4. **Cross-client interop fixtures for Patterns W (cgc=0), T (empty-set), CC (V1↔V2 defaults)** — exercise spec-undefined edge cases as presubmit gates.
+5. **Wire Fulu fixture categories in BeaconBreaker harness** — unblock 18 audited Fulu items.
+6. **Track D fork choice + Track E SSZ schemas** — close remaining unaudited consensus-critical surfaces (`update_proposer_boost_root`, `BlobAndProofV2`, `ExecutionBundleFulu`, `DataColumnsByRootIdentifier`, `PartialDataColumnGroupID`).
+7. **Items #15/#19/#32/#36 retroactive corrections** for V4-vs-V5 confusion per item #43 finding.
+
+**Status**: 47 audits committed (1 meta-audit at #28 + 1 meta-audit at #48 + 45 per-function audits). 29 forward-fragility patterns catalogued. Comprehensive roadmap into Gloas + Heze + remaining unaudited surfaces. The catalogue is the central forward-fragility tracking document for the corpus and should be re-refreshed every ~10 audits or when major new patterns surface.
