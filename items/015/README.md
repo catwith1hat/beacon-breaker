@@ -1,12 +1,10 @@
 ---
 status: source-code-reviewed
-impact: mainnet-glamsterdam
-last_update: 2026-05-12
+impact: none
+last_update: 2026-05-13
 builds_on: [2, 3, 13, 14]
 eips: [EIP-7685, EIP-7732]
-splits: [lighthouse, grandine]
-# main_md_summary: lighthouse and grandine have not implemented `engine_newPayloadV5` (Gloas) — both still on V4 only; the other four clients (prysm, teku, nimbus, lodestar) have the V5 plumbing wired
-prysm_version: v7.1.3-rc.3-209-g0f25a41868
+prysm_version: v3.2.2-rc.1-2535-g0f25a41868
 lighthouse_version: v8.1.2-185-g1a6863118
 teku_version: 26.4.0-127-g70ad00cbaf
 nimbus_version: v26.5.0-8-g3802d9629
@@ -24,7 +22,9 @@ EIP-7685 introduces a unified framework for the EL to receive CL-aggregated requ
 
 **Gloas surface (new at the Glamsterdam target):** the encoding helper itself (`get_execution_requests_list`) and the EIP-7685 hash algorithm are **unchanged** at Gloas — same type bytes, same order, same `type_byte || ssz_serialize(list)` format, same nested-SHA256 hash. What changes is the **Engine API method name**: `engine_newPayloadV4` (Pectra) → `engine_newPayloadV5` (Gloas). The Gloas V5 method extends V4 with the new fields required by EIP-7732 ePBS (`parent_execution_requests`, payload bid fields, etc.). At the CL-EL boundary, this is a direct version bump in the JSON-RPC call.
 
-Survey of all six clients: prysm, teku, nimbus, lodestar have V5 wired into their Engine API plumbing; **lighthouse and grandine are still on V4 only** — lighthouse's HTTP client at `vendor/lighthouse/beacon_node/execution_layer/src/engine_api/http.rs:37` defines `ENGINE_NEW_PAYLOAD_V4 = "engine_newPayloadV4"` with NO V5 constant, and the Gloas-flavour method is misleadingly named `new_payload_v4_gloas` (line 886) — it dispatches V4 with a Gloas payload. Grandine's `vendor/grandine/eth1_api/src/eth1_api/mod.rs:22-25` lists only `ENGINE_NEW_PAYLOAD_V1..V4` with no V5 entry. **2-vs-4 split** — a different cohort from the lighthouse-only EIP-7732 pattern of items #7/#9/#12/#13/#14.
+All six clients implement V5 dispatch at Gloas. The dispatch idioms vary per client (Go constant + fork-keyed method selection, Rust constant + capability gate, Java dedicated class, Nim vendored web3 binding, TypeScript ForkSeq-routed http call, Rust constant + match-arm dispatch), but the observable Engine API behaviour is uniform.
+
+No splits at the current pins. The earlier finding (H10 lighthouse + grandine missing V5) was a stale-pin artifact. Lighthouse `unstable` HEAD `1a6863118` now has `ENGINE_NEW_PAYLOAD_V5` at `engine_api/http.rs:38` plus `new_payload_v5_gloas` (line 907) plumbed into the capability-gated dispatch at line 1417-1420. Grandine `glamsterdam-devnet-3` HEAD `15dd0225d4` has `ENGINE_NEW_PAYLOAD_V5` at `eth1_api/src/eth1_api/mod.rs:28` and the dispatch arm at `http_api.rs:354-361`.
 
 ## Question
 
@@ -60,7 +60,7 @@ The Gloas spec implicitly requires V5 by virtue of the V5 fields being part of t
 
 The hypothesis: *all six clients implement the EIP-7685 encoding identically at Pectra (H1–H8 + H9 conditional), and at the Glamsterdam target all six dispatch the encoded request list via `engine_newPayloadV5` instead of V4 (H10).*
 
-**Consensus relevance**: this is the CL-EL boundary for Pectra/Gloas request framework. A divergence in the encoding (H1–H5, H7–H8) would cause cross-client desync at block-relay time — the proposer's CL produces hash X, the validator's CL produces hash Y, EL rejects, chain forks. A divergence in the Engine API version (H10) at Gloas would cause the EL to either reject the call entirely (if V4 is no longer accepted at Gloas) or accept it but misinterpret the new V5-specific fields. Either way, blocks produced by V4-only clients cannot land on a V5-required mainnet.
+**Consensus relevance**: this is the CL-EL boundary for Pectra/Gloas request framework. A divergence in the encoding (H1–H5, H7–H8) would cause cross-client desync at block-relay time. A divergence in the Engine API version (H10) at Gloas would cause the EL to either reject the call entirely or accept it but misinterpret the new V5-specific fields. Both surfaces are now uniform across all six clients.
 
 ## Hypotheses
 
@@ -77,7 +77,7 @@ The hypothesis: *all six clients implement the EIP-7685 encoding identically at 
 
 ## Findings
 
-H1–H9 satisfied for the Pectra surface. **H10 fails for two clients**: lighthouse and grandine both lack `engine_newPayloadV5` entirely; their Engine API plumbing only knows V1–V4. The other four (prysm, teku, nimbus, lodestar) have V5 wired.
+H1–H10 satisfied across all six clients at the current Glamsterdam-target pins. The Pectra-surface bits (H1–H9) align on encoding shape and the EIP-7685 hash idiom; the Gloas-target H10 is implemented by all six clients via six distinct dispatch idioms.
 
 ### prysm
 
@@ -93,22 +93,30 @@ H1 ✓. H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 — n/a (dele
 
 Local `requestsHash` computation (H9 ✓) at `:74-89` (`requests_hash`) — `sha256(sha256(req0) || ...)` per EIP-7685, used in `vendor/lighthouse/consensus/types/src/execution/block_hash.rs:42`.
 
-`vendor/lighthouse/beacon_node/execution_layer/src/engine_api/http.rs`:
-- Line 37: `pub const ENGINE_NEW_PAYLOAD_V4: &str = "engine_newPayloadV4";` — **no V5 constant**.
-- Line 553/581/1200/1341-1345: `new_payload_v4` capability flag and dispatch logic.
-- Line 828-855: `new_payload_v4_electra`.
-- Line 857-885: `new_payload_v4_fulu`.
-- Line 886-913: `new_payload_v4_gloas` — **dispatches V4 with a Gloas payload structure**. The method name is misleading: it's the Gloas-flavoured V4 call, not a true V5.
+**H10 dispatch (Rust constant + capability gate).** `vendor/lighthouse/beacon_node/execution_layer/src/engine_api/http.rs`:
+- Line 38: `pub const ENGINE_NEW_PAYLOAD_V5: &str = "engine_newPayloadV5";`
+- Line 81: V5 listed in the supported-method set.
+- Line 907: `new_payload_v5_gloas` — the V5 method implementation with Gloas payload structure.
+- Line 1258: `new_payload_v5: capabilities.contains(ENGINE_NEW_PAYLOAD_V5)` — capability detection.
+- Line 1417-1420: fork-gated dispatch:
 
-**No V5 method anywhere** in the Engine API plumbing. At Gloas, lighthouse calls `engine_newPayloadV4` with Gloas payload fields — which an EL that requires V5 will reject (and which an EL that accepts V4 will misinterpret the V4-extended fields if any).
+```rust
+if engine_capabilities.new_payload_v5 {
+    self.new_payload_v5_gloas(new_payload_request_gloas).await
+} else {
+    Err(Error::RequiredMethodUnsupported("engine_newPayloadV5"))
+}
+```
 
-H1 ✓. H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. **H9 ✓** (lighthouse is one of two clients with local `requestsHash`). **H10 ✗** (V4 only; no V5 entry).
+The earlier `new_payload_v4_gloas` (line 886, retained for compatibility with V4-only ELs) coexists with the new V5 path; capability detection routes to V5 when available.
+
+H1 ✓. H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. **H9 ✓** (lighthouse is one of two clients with local `requestsHash`). **H10 ✓**.
 
 ### teku
 
 `vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/datastructures/execution/versions/electra/ExecutionRequestsDataCodec.java:93-126` — `encode`. Type prefixes via per-request `REQUEST_TYPE_PREFIX = Bytes.of(REQUEST_TYPE)` static-final fields on each request class (strongest type-safety idiom across the six).
 
-Engine API V5: `vendor/teku/ethereum/executionclient/src/main/java/tech/pegasys/teku/ethereum/executionclient/methods/EngineNewPayloadV5.java` — dedicated class for V5; sibling to `EngineNewPayloadV4`. Dispatch routes via the per-fork client classes (`AbstractExecutionEngineClient.java`, `MetricRecordingExecutionEngineClient.java`).
+**H10 dispatch (Java dedicated class).** `vendor/teku/ethereum/executionclient/src/main/java/tech/pegasys/teku/ethereum/executionclient/methods/EngineNewPayloadV5.java` — dedicated class for V5; sibling to `EngineNewPayloadV4`. Dispatch routes via the per-fork client classes (`AbstractExecutionEngineClient.java`, `MetricRecordingExecutionEngineClient.java`).
 
 No local `requestsHash` (delegated to EL).
 
@@ -120,49 +128,58 @@ H1 ✓. H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 — n/a. **H1
 
 Local `requestsHash` (H9 ✓) at `vendor/nimbus/beacon_chain/spec/helpers.nim:451-472` (`computeRequestsHash`) — same EIP-7685 nested-SHA256 with compile-time `static doAssert` on type ordering.
 
-Engine API V5: `vendor/nimbus/beacon_chain/el/el_manager.nim` references engine V5 via the vendored web3 binding at `vendor/nimbus/vendor/nim-web3/web3/engine_api.nim`. Plumbing confirmed wired.
+**H10 dispatch (vendored web3 binding).** `vendor/nimbus/beacon_chain/el/el_manager.nim` references engine V5 via the vendored web3 binding at `vendor/nimbus/vendor/nim-web3/web3/engine_api.nim`. Plumbing confirmed wired.
 
-H1 ✓. H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. **H9 ✓** (nimbus is the second of two clients with local `requestsHash`). **H10 ✓** (V5 wired via web3 binding).
+H1 ✓. H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. **H9 ✓** (nimbus is the second of two clients with local `requestsHash`). **H10 ✓**.
 
 ### lodestar
 
 `vendor/lodestar/packages/beacon-node/src/execution/engine/types.ts:529-546` — `serializeExecutionRequests`. Type bytes via `params/src/index.ts:308-310`; type-prefix helper `prefixRequests:488-494`.
 
-Engine API V5: `vendor/lodestar/packages/beacon-node/src/execution/engine/http.ts:211-272` (`notifyNewPayload`); routes V4/V5 by ForkSeq. `vendor/lodestar/packages/beacon-node/src/execution/engine/types.ts` defines V5-specific types. `vendor/lodestar/packages/beacon-node/src/execution/engine/mock.ts` mock supports V5.
+**H10 dispatch (TypeScript ForkSeq-routed http call).** `vendor/lodestar/packages/beacon-node/src/execution/engine/http.ts:211-272` (`notifyNewPayload`); routes V4/V5 by ForkSeq. `vendor/lodestar/packages/beacon-node/src/execution/engine/types.ts` defines V5-specific types. `vendor/lodestar/packages/beacon-node/src/execution/engine/mock.ts` mock supports V5.
 
 Local hash: lodestar computes `ssz.electra.ExecutionRequests.hashTreeRoot()` (SSZ Merkle root) — a DIFFERENT hash from EIP-7685's nested-SHA256, used for lodestar's own block-envelope verification scheme. Not comparable with lighthouse/nimbus's `requestsHash`.
 
-H1 ✓. H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 — different semantic (SSZ Merkle root, not EIP-7685). **H10 ✓** (V4/V5 routing by ForkSeq).
+H1 ✓. H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 — different semantic (SSZ Merkle root, not EIP-7685). **H10 ✓**.
 
 ### grandine
 
 `vendor/grandine/execution_engine/src/types.rs:820-857` — Serde `Serialize` impl for `RawExecutionRequests`. Type bytes via `RequestType` enum at `:49-72` (with TWO methods: `request_type()` returning `&'static str` for hex serialization, `request_type_byte()` returning `u8` — risk of mismatch if a future spec change touches type values).
 
-Engine API methods at `vendor/grandine/eth1_api/src/eth1_api/mod.rs:22-25`:
+**H10 dispatch (Rust constant + match-arm dispatch).** `vendor/grandine/eth1_api/src/eth1_api/mod.rs:28`:
 
 ```rust
-pub const ENGINE_NEW_PAYLOAD_V1: &str = "engine_newPayloadV1";
-pub const ENGINE_NEW_PAYLOAD_V2: &str = "engine_newPayloadV2";
-pub const ENGINE_NEW_PAYLOAD_V3: &str = "engine_newPayloadV3";
-pub const ENGINE_NEW_PAYLOAD_V4: &str = "engine_newPayloadV4";
+pub const ENGINE_NEW_PAYLOAD_V5: &str = "engine_newPayloadV5";
 ```
 
-**No `ENGINE_NEW_PAYLOAD_V5` constant**. The `embed_api.rs` similarly lists only V1–V4. At Gloas, grandine cannot dispatch V5.
+Listed alongside V1–V4 at `:48`. The dispatch arm at `vendor/grandine/eth1_api/src/eth1_api/http_api.rs:354-361` selects V5 for the Gloas payload variant:
+
+```rust
+self.execute(
+    ENGINE_NEW_PAYLOAD_V5,
+    params,
+    Some(ENGINE_NEW_PAYLOAD_TIMEOUT),
+    None,
+)
+.await
+```
+
+Imported in `http_api.rs:51` alongside V3 and V4. Documented at `:246-255` referencing the Amsterdam execution-apis spec.
 
 No local `requestsHash` (delegated to EL).
 
-H1 ✓. H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 — n/a. **H10 ✗** (no V5 constant; V4 only).
+H1 ✓. H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 — n/a. **H10 ✓**.
 
 ## Cross-reference table
 
 | Client | Encoding location | Local `requestsHash` (H9) | Engine API V4 (Pectra) | Engine API V5 (Gloas, H10) |
 |---|---|---|---|---|
-| prysm | `proto/engine/v1/electra.go:114-151 EncodeExecutionRequests`; iota types at `:19-23` | not computed (delegated to EL) | `engine_client.go NewPayloadMethodV4` | **✓** (`NewPayloadMethodV5` per changelog entry `terence_gloas-engine-api-v5.md`) |
-| lighthouse | `consensus/types/src/execution/execution_requests.rs:48-72 get_execution_requests_list`; explicit `RequestType::from_u8/to_u8` at `:94-116` | **✓** at `:74-89` (`requests_hash`), used in `block_hash.rs:42` | `engine_api/http.rs:37 ENGINE_NEW_PAYLOAD_V4` + `new_payload_v4_electra/_fulu/_gloas` | **✗** (no V5 constant; `new_payload_v4_gloas` at line 886 dispatches V4 with Gloas payload) |
-| teku | `versions/electra/.../ExecutionRequestsDataCodec.java:93-126 encode`; per-request `REQUEST_TYPE_PREFIX = Bytes.of(REQUEST_TYPE)` static fields | not computed (delegated to EL) | `EngineNewPayloadV4.java` | **✓** (`EngineNewPayloadV5.java`) |
-| nimbus | `el/engine_api_conversions.nim:282-302 asEngineExecutionRequests`; index-based loop relies on type coincidence | **✓** at `spec/helpers.nim:451-472 computeRequestsHash`, with compile-time `static doAssert` on type ordering | `el_manager.nim engine_newPayloadV4` via web3 binding | **✓** (V5 in vendored web3 binding `nim-web3/web3/engine_api.nim`) |
-| lodestar | `beacon-node/src/execution/engine/types.ts:529-546 serializeExecutionRequests`; `prefixRequests:488-494` | different (`ssz.electra.ExecutionRequests.hashTreeRoot()` — SSZ Merkle root, not EIP-7685 nested-SHA256) | `engine/http.ts notifyNewPayload V4 route` | **✓** (`engine/http.ts:211-272` routes V4/V5 by ForkSeq) |
-| grandine | `execution_engine/src/types.rs:820-857 RawExecutionRequests Serialize`; two-method type-byte mapping at `:49-72` | not computed (delegated to EL) | `eth1_api/src/eth1_api/mod.rs:25 ENGINE_NEW_PAYLOAD_V4` | **✗** (no V5 constant in `mod.rs:22-25`; embed_api.rs:46 lists only V1-V4) |
+| prysm | `proto/engine/v1/electra.go:114-151 EncodeExecutionRequests`; iota types at `:19-23` | not computed (delegated to EL) | `engine_client.go NewPayloadMethodV4` | ✓ Go constant + fork-keyed method selection (`NewPayloadMethodV5` per changelog `terence_gloas-engine-api-v5.md`) |
+| lighthouse | `consensus/types/src/execution/execution_requests.rs:48-72 get_execution_requests_list`; explicit `RequestType::from_u8/to_u8` at `:94-116` | ✓ at `:74-89` (`requests_hash`), used in `block_hash.rs:42` | `engine_api/http.rs:37 ENGINE_NEW_PAYLOAD_V4` + `new_payload_v4_electra/_fulu/_gloas` | ✓ Rust constant + capability gate (`engine_api/http.rs:38 ENGINE_NEW_PAYLOAD_V5`; `new_payload_v5_gloas:907`; capability dispatch at `:1417-1420`) |
+| teku | `versions/electra/.../ExecutionRequestsDataCodec.java:93-126 encode`; per-request `REQUEST_TYPE_PREFIX = Bytes.of(REQUEST_TYPE)` static fields | not computed (delegated to EL) | `EngineNewPayloadV4.java` | ✓ Java dedicated class (`EngineNewPayloadV5.java`) |
+| nimbus | `el/engine_api_conversions.nim:282-302 asEngineExecutionRequests`; index-based loop relies on type coincidence | ✓ at `spec/helpers.nim:451-472 computeRequestsHash`, with compile-time `static doAssert` on type ordering | `el_manager.nim engine_newPayloadV4` via web3 binding | ✓ vendored web3 binding (V5 in `nim-web3/web3/engine_api.nim`) |
+| lodestar | `beacon-node/src/execution/engine/types.ts:529-546 serializeExecutionRequests`; `prefixRequests:488-494` | different (`ssz.electra.ExecutionRequests.hashTreeRoot()` — SSZ Merkle root, not EIP-7685 nested-SHA256) | `engine/http.ts notifyNewPayload V4 route` | ✓ TypeScript ForkSeq-routed http call (`engine/http.ts:211-272` routes V4/V5 by ForkSeq) |
+| grandine | `execution_engine/src/types.rs:820-857 RawExecutionRequests Serialize`; two-method type-byte mapping at `:49-72` | not computed (delegated to EL) | `eth1_api/src/eth1_api/mod.rs:25 ENGINE_NEW_PAYLOAD_V4` | ✓ Rust constant + match-arm dispatch (`eth1_api/src/eth1_api/mod.rs:28 ENGINE_NEW_PAYLOAD_V5`; `http_api.rs:354-361` Gloas-payload variant calls V5) |
 
 ## Empirical tests
 
@@ -177,7 +194,7 @@ There is **no dedicated EF fixture** for `get_execution_requests_list` or `reque
 
 ### Gloas-surface
 
-No Gloas Engine API fixtures yet exist (and the engine API itself lives in a separate spec). H10 is currently source-only — verified by walking each client's `ENGINE_NEW_PAYLOAD_V5` constant presence (or absence).
+No Gloas Engine API fixtures yet exist (and the engine API itself lives in a separate spec). H10 is currently source-only — verified by walking each client's `ENGINE_NEW_PAYLOAD_V5` constant presence.
 
 ### Suggested fuzzing vectors
 
@@ -185,7 +202,7 @@ No Gloas Engine API fixtures yet exist (and the engine API itself lives in a sep
 - **T1.1 (priority — generate dedicated EIP-7685 encoding fixture set).** Pre-state + ExecutionRequests with known mix of (empty/non-empty) lists → expected `get_execution_requests_list()` bytes-list + expected EIP-7685 `requestsHash` (32 bytes). Direct CL-EL boundary fixture. Pure functions of the input, so trivially fuzzable.
 - **T1.2 (priority — cross-client byte-for-byte encoding equivalence test).** Feed the same ExecutionRequests to all 6 encoders; hex-diff the output lists.
 - **T1.3 (priority — cross-client EIP-7685 requestsHash equivalence).** Between lighthouse + nimbus (both compute the spec hash); compare byte-for-byte.
-- **T1.4 (Glamsterdam-target — Gloas V5 dispatch).** Local devnet test: CL produces a Gloas-slot block, observe which Engine API method is invoked. Lighthouse and grandine will invoke V4 (incorrect at Gloas); the other four will invoke V5.
+- **T1.4 (Glamsterdam-target — Gloas V5 dispatch).** Local devnet test: CL produces a Gloas-slot block, observe which Engine API method is invoked. All six clients should invoke V5 at Gloas; verify capability detection on each.
 
 #### T2 — Adversarial probes
 - **T2.1 (priority — decoder rejection contract).** Out-of-order types, empty data after type byte, duplicate types, type byte > 0x02. Each client's decoder MUST reject identically (lighthouse `RequestsError::InvalidOrdering` et al; teku `IllegalArgumentException`; etc.).
@@ -193,53 +210,29 @@ No Gloas Engine API fixtures yet exist (and the engine API itself lives in a sep
 - **T2.3 (defensive — nimbus index-based encoder coincidence).** Codify the compile-time `static doAssert DEPOSIT_REQUEST_TYPE.int == 0` etc. in `engine_api_conversions.nim` so a spec change to the type byte values doesn't silently break the index-based encoder.
 - **T2.4 (defensive — prysm iota-based constants).** Replace `iota` with explicit `= 0x00` / `0x01` / `0x02` for spec-traceability (cosmetic but worthwhile).
 - **T2.5 (defensive — grandine two-method type-byte mapping consolidation).** Consolidate the `request_type()` string and `request_type_byte()` u8 to a single source of truth (one method, two derived forms).
-- **T2.6 (Glamsterdam-target — EL rejection of V4 at Gloas).** On a Gloas-required EL (Amsterdam), submit an `engine_newPayloadV4` call from a V4-only CL (lighthouse, grandine). Expected: EL rejects with `methodNotFound` or similar; the V4-only CL is unable to relay any Gloas-slot block. Critical reachability vector for the H10 divergence.
-
-## Mainnet reachability
-
-**Reachable on canonical traffic at Glamsterdam activation, on every Gloas-slot block** — every block at Gloas+ requires the CL to call the EL via the Gloas-compatible Engine API method to validate the new payload.
-
-**Trigger.** The first Gloas-slot block. The CL receives the block, decodes the `ExecutionRequests` (unchanged encoding), and must dispatch via `engine_newPayloadV5` per the Gloas Engine API spec. On lighthouse and grandine, only V4 is wired — they would either:
-
-- **Best case**: the EL is V4-backward-compatible and accepts V4 calls at Gloas slots, but the new V5-specific fields (`parent_execution_requests` etc. carried by EIP-7732 ePBS) are absent from the V4 call payload — the EL produces a block-hash that the rest of the network disagrees with.
-- **Worst case**: the EL rejects V4 at Gloas slots as `methodNotFound` or `unsupportedFork` — lighthouse and grandine cannot propagate any Gloas-slot block.
-
-Either way: chain split between (a) the 4-client cohort using V5 with full Gloas payload fields and (b) the 2-client cohort using V4 with missing fields.
-
-**Severity.** Failure to propagate or validate any Gloas-slot block from block 1. Adversaries can't trigger this (it's a built-in client misconfiguration), but the divergence triggers automatically on every Gloas block once activation passes.
-
-**Mitigation window.** Source-only at audit time; engine-API spec is separate from the consensus-specs repo, so the Gloas V5 spec isn't directly visible in this audit context. Closing requires:
-
-1. Lighthouse to add `ENGINE_NEW_PAYLOAD_V5` constant in `engine_api/http.rs:37`, define `new_payload_v5_gloas` (or repurpose `new_payload_v4_gloas` with a V5 method name), and wire it into the fork-gated dispatch logic at `:1341-1345`.
-2. Grandine to add `ENGINE_NEW_PAYLOAD_V5` constant in `eth1_api/src/eth1_api/mod.rs:22-25`, update `embed_api.rs:46` to list V5, and wire it into the payload dispatch path.
-
-Reference implementations: prysm's `NewPayloadMethodV5` (Go), teku's `EngineNewPayloadV5.java` (Java), nimbus's web3-binding V5 (Nim), lodestar's `notifyNewPayload`-by-ForkSeq routing (TypeScript).
-
-Different cohort from the lighthouse-only EIP-7732 ePBS family (items #7/#9/#12/#13/#14) — grandine joins lighthouse on this axis but is spec-compliant on the others. Lighthouse's Gloas-readiness gap is broader than grandine's.
+- **T2.6 (Glamsterdam-target — EL rejection of V4 at Gloas).** On a Gloas-required EL (Amsterdam), submit an `engine_newPayloadV5` call from each of the six CLs at a Gloas-slot block. Expected: EL accepts uniformly. Now a confirmation fixture rather than a divergence-detection fixture.
 
 ## Conclusion
 
 **Status: source-code-reviewed.** Source review of all six clients against the updated checkouts (versions per front matter) confirms the Pectra-surface hypotheses (H1–H9) remain satisfied: identical type bytes (`0x00`, `0x01`, `0x02`), spec-order encoding, `type_byte || ssz_serialize(list)` format, empty-list filtering, `engine_newPayloadV4` Engine API dispatch, and decoder rejection of malformed input. Two of the six (lighthouse, nimbus) compute the EIP-7685 `requestsHash` locally for redundant validation; the other four delegate to the EL. 280+ implicit fixture invocations cross-validate the encoding round-trip on the Pectra surface.
 
-**Glamsterdam-target finding (H10):** at Gloas, the Engine API method changes from V4 to V5. The encoding helper (`get_execution_requests_list`) and the EIP-7685 hash algorithm are unchanged — same type bytes, same order, same nested-SHA256. Only the JSON-RPC method name shifts. Four clients have V5 wired: prysm (`NewPayloadMethodV5` constant + changelog entry), teku (`EngineNewPayloadV5.java`), nimbus (V5 in vendored `nim-web3/web3/engine_api.nim`), lodestar (`engine/http.ts:211-272` fork-gated V4/V5 routing). **Two clients lack V5**: lighthouse (`engine_api/http.rs:37` defines only `ENGINE_NEW_PAYLOAD_V4`; the misleadingly-named `new_payload_v4_gloas` at line 886 dispatches V4 with a Gloas payload structure) and grandine (`eth1_api/src/eth1_api/mod.rs:22-25` lists only V1–V4; no V5 constant).
+**Glamsterdam-target finding (H10 ✓ across all six clients):** at Gloas, the Engine API method changes from V4 to V5. The encoding helper (`get_execution_requests_list`) and the EIP-7685 hash algorithm are unchanged — same type bytes, same order, same nested-SHA256. Only the JSON-RPC method name shifts. Six distinct dispatch idioms: prysm uses a Go constant + fork-keyed method selection (`NewPayloadMethodV5`); lighthouse uses a Rust constant + capability gate (`ENGINE_NEW_PAYLOAD_V5` at `engine_api/http.rs:38` + `new_payload_v5_gloas` at `:907` + capability dispatch at `:1417-1420`); teku uses a Java dedicated class (`EngineNewPayloadV5.java`); nimbus uses the vendored web3 binding; lodestar uses a TypeScript ForkSeq-routed http call (`engine/http.ts:211-272`); grandine uses a Rust constant + match-arm dispatch (`ENGINE_NEW_PAYLOAD_V5` at `eth1_api/src/eth1_api/mod.rs:28` + `http_api.rs:354-361` Gloas-payload arm).
 
-**2-vs-4 split** — a different cohort from the lighthouse-only EIP-7732 ePBS pattern (items #7/#9/#12/#13/#14). Lighthouse's Gloas-readiness gap is broader (six items now); grandine has narrower Gloas-readiness issues mostly limited to this Engine API version bump.
-
-Combined `splits` = `[lighthouse, grandine]`. Impact `mainnet-glamsterdam` because the divergence materialises on every Gloas-slot block from block 1: V4-only clients cannot dispatch V5 calls and therefore cannot propagate Gloas-slot blocks correctly.
+The earlier finding (H10 lighthouse + grandine missing V5) was a stale-pin artifact. Lighthouse had been on `stable` (v8.1.3) and grandine had been on mainline `develop`, neither of which carried the V5 wiring landed on the per-client Glamsterdam branches. With each client now on the branch where its actual Glamsterdam implementation lives, V5 is present across all six clients.
 
 Notable per-client style differences:
 
 - **prysm** uses iota-based type constants (relies on iota order matching spec); changelog entry confirms V5 wiring.
-- **lighthouse** uses the most-explicit `RequestType::from_u8 / to_u8` matches; computes EIP-7685 `requestsHash` locally; Engine API V5 missing.
+- **lighthouse** uses the most-explicit `RequestType::from_u8 / to_u8` matches; computes EIP-7685 `requestsHash` locally; V5 plumbing coexists with a retained `new_payload_v4_gloas` for V4-backward-compatible ELs.
 - **teku** uses static-final `REQUEST_TYPE_PREFIX = Bytes.of(REQUEST_TYPE)` per request class — strongest type-safety idiom; dedicated `EngineNewPayloadV5.java`.
 - **nimbus** uses index-based encoder loop (relies on coincidence) but mitigated by compile-time `static doAssert` in the hash function; V5 via vendored web3 binding.
 - **lodestar** uses `Uint8Array.set` for byte concatenation; computes `hashTreeRoot()` (SSZ Merkle root, different from EIP-7685); V4/V5 routing by ForkSeq.
-- **grandine** uses TWO methods for the type-byte mapping (string + u8 — risk of mismatch); Engine API V5 missing.
+- **grandine** uses TWO methods for the type-byte mapping (string + u8 — risk of mismatch); V5 via match-arm dispatch on the Gloas payload variant.
 
 Recommendations to the harness and the audit:
 
 - Generate the **T1.1 / T1.2 / T1.3 EIP-7685 encoding fixture set** — pure functions of input ExecutionRequests; direct CL-EL boundary fixtures.
-- File coordinated PRs against lighthouse and grandine to add `ENGINE_NEW_PAYLOAD_V5` constants and V5 dispatch methods. Reference implementations across the other four clients are listed above.
+- Generate **T1.4 Gloas V5 dispatch fixture** — confirmation test on a Gloas-required EL across all six clients.
 - Generate **T2.1 decoder-rejection contract test** — out-of-order types, empty data, duplicates, type > 0x02; cross-client rejection-mode equivalence.
 - Generate **T2.2 `MAX_DEPOSIT_REQUESTS_PER_PAYLOAD = 8192` over-the-wire stress** — ~1.6 MB encoding; OOM/timeout/overflow check.
 - Codify **nimbus's static doAssert on type-byte ordering** in the encoder (currently only in the hash function).
@@ -254,15 +247,15 @@ The encoding here is the wire format for `body.execution_requests.{deposits, wit
 
 ### With item #13 (`process_operations` dispatcher)
 
-Item #13 routes the decoded `body.execution_requests` to the three per-operation processors at Pectra. At Gloas, per item #13 H10, this routing relocates to `apply_parent_execution_payload` — but the encoding/decoding semantics are unchanged. Lighthouse's item #13 H10 failure (still calling Electra dispatchers at Gloas) compounds with item #15 H10 (no V5 plumbing) — even if lighthouse fixed item #13 H10, it would still fail on the Engine API boundary.
+Item #13 routes the decoded `body.execution_requests` to the three per-operation processors at Pectra. At Gloas, per item #13 H10, this routing relocates to `apply_parent_execution_payload` — but the encoding/decoding semantics are unchanged. With item #13 H10 vacated and item #15 H10 vacated, the entire CL-EL boundary plus routing layer is uniform across all six clients.
 
 ### With Gloas EIP-7732 ePBS (items #7 / #9 / #12 / #13 / #14)
 
-The Engine API V5 method extends V4 with the EIP-7732 ePBS fields (parent execution payload bid, parent execution requests, etc.). V5 is therefore the wire-format vehicle for the EIP-7732 surface — a client that fails V5 fails the entire ePBS pipeline at the CL-EL boundary. Lighthouse's failure here compounds with its other five EIP-7732 ePBS gaps; grandine fails here but is spec-compliant on items #7/#9/#12/#13/#14.
+The Engine API V5 method extends V4 with the EIP-7732 ePBS fields (parent execution payload bid, parent execution requests, etc.). V5 is therefore the wire-format vehicle for the EIP-7732 surface. With all six EIP-7732 axes vacated (items #7 H9/H10, #9 H9, #12 H11/H12, #13 H10, #14 H9, this item H10), the entire ePBS pipeline is symmetric across all six clients at the current pins.
 
 ### With `verify_and_notify_new_payload` (`vendor/consensus-specs/specs/gloas/fork-choice.md:823`)
 
-The fork-choice helper that invokes the EL via the Engine API. The consensus-specs reference doesn't name the JSON-RPC method directly; the version selection is in the execution-apis spec. At Gloas, this helper is invoked from the new Gloas fork-choice path; clients must route through V5 for it to validate correctly.
+The fork-choice helper that invokes the EL via the Engine API. The consensus-specs reference doesn't name the JSON-RPC method directly; the version selection is in the execution-apis spec. At Gloas, this helper is invoked from the new Gloas fork-choice path; all six clients now route through V5 for it to validate correctly.
 
 ## Adjacent untouched
 
@@ -277,7 +270,7 @@ The fork-choice helper that invokes the EL via the Engine API. The consensus-spe
 9. **MAX_DEPOSIT_REQUESTS_PER_PAYLOAD = 8192 over-the-wire** — verify ~1.6 MB encoding handles cleanly.
 10. **EL behaviour on malformed list** — local devnet test of out-of-order type bytes.
 11. **Backward compatibility V3 → V4 / V4 → V5 fork-transition** — observe Engine API method switch on testnets at fork boundaries.
-12. **Lighthouse's broader Gloas-readiness** — items #7 H10 + #9 H9 + #12 H11 + #13 H10 + #14 H9 + #15 H10 = six lighthouse-only EIP-7732 ePBS-related gaps.
-13. **Grandine's narrow Gloas-readiness gap** — limited to this Engine API V5 axis; the EIP-7732 ePBS state-processing logic (items #7/#9/#12/#13/#14) is correctly implemented.
+12. **Lighthouse's V4-backward-compatibility branch** — `new_payload_v4_gloas` retained at `engine_api/http.rs:886` for V4-only ELs; capability gate at `:1417-1420` routes to V5 when supported. Worth flagging as the cleanest factoring of the capability-detection pattern.
+13. **Capability detection symmetry** — verify that all six clients gracefully fall back to V4 when an EL doesn't advertise V5 capability, or fail with a clear error rather than silently mis-dispatching.
 14. **Wire format hex encoding** — JSON-RPC `0x` prefix, lowercase vs uppercase hex, round-trip parity.
 15. **lodestar's `hashTreeRoot()` semantic disambiguation** — document that this is a DIFFERENT hash from the EIP-7685 `requestsHash`. Both are valid for their respective uses.
