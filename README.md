@@ -18,6 +18,8 @@ The audit is structured as a sequence of hypothesis-driven items. Each item pick
 
 Full methodology, prompt templates, and repository conventions: [METHODOLOGY.md](METHODOLOGY.md). Project mission and out-of-scope notes: [BEACONBREAKER.md](BEACONBREAKER.md), [OUT_OF_SCOPE.md](OUT_OF_SCOPE.md). Agent instructions: [AGENTS.md](AGENTS.md).
 
+Every item in the audit (whether or not it produced a divergence): [ITEM_TOC.md](ITEM_TOC.md)
+
 ---
 
 ## Active findings (as of 2026-05-13)
