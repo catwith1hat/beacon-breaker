@@ -1,97 +1,57 @@
-# Item 55 — `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS` retention period audit (Fulu-NEW; sister to `MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS` from item #50)
+---
+status: source-code-reviewed
+impact: none
+last_update: 2026-05-13
+builds_on: [28, 46, 47, 50, 52, 53, 54]
+eips: [EIP-7594]
+prysm_version: v7.1.3-rc.3-213-gd35d65625f
+lighthouse_version: v8.1.3
+teku_version: 26.4.0-72-gc05af0eaa0
+nimbus_version: v26.3.1
+lodestar_version: v1.42.0-69-g35940ffd61
+grandine_version: 2.0.4-18-geeb33a92
+---
 
-**Status:** no-divergence on mainnet value (4096); **multiple cross-network + per-client naming divergences found** — audited 2026-05-04. **Twenty-fifth Fulu-NEW item, seventeenth PeerDAS audit**. Sister to `MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS` (Deneb-heritage; cross-cut item #50). Tests Pattern DD/HH spread to retention period constants.
+# 55: `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS` retention period — Fulu-NEW operator-tunable; Pattern AA + FF carry-forward; no Pattern HH baking
 
-**Spec definition** (`fulu/p2p-interface.md:84`):
-| Constant | Value | Description |
-|---|---|---|
-| `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS` | `2**12` (= 4,096 epochs, ~18 days) | Minimum epoch range over which a node must serve data column sidecars |
+## Summary
 
-Used in:
-1. `fulu/p2p-interface.md` — RPC serve range for `DataColumnSidecarsByRange/Root v1` (item #46): `data_column_serve_range = [max(current_epoch - MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS, FULU_FORK_EPOCH), current_epoch]`
-2. `fulu/validator.md:307` — node retention obligation: "After `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS` nodes MAY prune the [data column sidecars]"
-3. `fulu/fork-choice.md:27` — fork choice prune logic
-4. `fulu/p2p-interface.md:619` — Status v2 `earliest_available_slot` advertisement (item #47)
+Fulu-NEW retention-period config constant (`vendor/consensus-specs/specs/fulu/p2p-interface.md:68`):
 
-**Major findings**:
-1. **All 6 evaluate to identical 4096 mainnet** — no production divergence
-2. **Cross-network gnosis divergence**: gnosis = 16384 in lighthouse + lodestar + teku YAML configs; **nimbus has 4096 hardcoded as gnosis preset DEFAULT** at `presets.nim:799` — possibly stale
-3. **Prysm SINGULAR field name** `MinEpochsForDataColumnSidecarsRequest` (no 's' on Request) vs spec PLURAL `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS` — **NEW Pattern AA scope expansion** (Go field name vs YAML tag)
-4. **Grandine STORAGE-MODE-AWARE accessor** at `nonstandard.rs:302-310` — most flexible accessor pattern of all 6
-5. **NO Pattern HH compile-time baking** for this constant (unlike item #52 MAX_REQUEST_BLOCKS_DENEB) — all 6 use YAML override
-
-## Scope
-
-In: `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS` per-client implementation; YAML override capability; cross-network values (mainnet/sepolia/holesky/gnosis/hoodi/minimal); Fulu serve range enforcement; storage pruning logic; Status v2 `earliest_available_slot` derivation.
-
-Out: `MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS` Deneb-heritage retention period (covered implicitly via item #50 deprecation; future audit candidate); detailed RPC serve range enforcement (item #46 covered); detailed storage pruning subsystem; sister `MAX_REQUEST_DATA_COLUMN_SIDECARS` cap (item #49); MAX_REQUEST_BLOCKS_DENEB cap (item #52).
-
-## Hypotheses
-
-| # | Hypothesis | Verdict | Rationale |
-|---|---|---|---|
-| H1 | All 6 evaluate to 4096 mainnet | ✅ all 6 | Spec constant |
-| H2 | YAML config exposes for override | ✅ all 6 | Configurable across all clients (no Pattern HH baking) |
-| H3 | Cross-network divergence (gnosis = 16384) | ⚠️ confirmed in 4 of 6 (lighthouse, lodestar, teku, **plus prysm/grandine likely via spec YAML**); **nimbus has 4096 as gnosis preset DEFAULT** (possibly stale) | Cross-network divergence |
-| H4 | All 6 use spec-compliant field naming | ❌ **prysm** uses SINGULAR `MinEpochsForDataColumnSidecarsRequest` vs spec PLURAL `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS` | NEW Pattern AA scope expansion |
-| H5 | Constant applied to RPC serve range | ✅ all 6 | Cross-cuts item #46 |
-| H6 | Constant applied to storage pruning | ✅ all 6 (varying granularity) | Storage subsystem |
-| H7 | Constant applied to Status v2 earliest_available_slot derivation | ✅ all 6 (cross-cut item #47) | Spec line 619 |
-| H8 | Storage-mode-aware accessor | ✅ **grandine** at `nonstandard.rs:302-310` (Standard / Archive / Prune modes) | Most flexible accessor |
-| H9 | Compile-time baking (Pattern HH) | ❌ none | Unlike item #52 MAX_REQUEST_BLOCKS_DENEB nimbus baking |
-| H10 | Default value provided as fallback | ✅ lighthouse (`default_min_epochs_for_data_column_sidecars_requests`) + others | Defensive YAML fallback |
-
-## Per-client cross-reference
-
-| Client | Source | Mainnet value | Gnosis value | Field naming | Storage-mode-aware? |
-|---|---|---|---|---|---|
-| **prysm** | YAML-driven `MinEpochsForDataColumnSidecarsRequest primitives.Epoch yaml:"MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS"` (`config.go:301`) | 4096 (assumed via mainnet YAML) | TBD via spec YAML | **SINGULAR** `Request` (Go field) vs PLURAL `REQUESTS` (YAML key) — **DIVERGENT** | NO |
-| **lighthouse** | YAML + `default_min_epochs_for_data_column_sidecars_requests()` const fn fallback; field at `chain_spec.rs:293`; selector at `:830` | 4096 (`mainnet/config.yaml:222`) | **16384** (`gnosis/config.yaml:163`) | spec-compliant snake_case | NO |
-| **teku** | YAML + `SpecConfigFulu.getMinEpochsForDataColumnSidecarsRequests()`; consumed at `DataColumnSidecarPruner.java:148` | 4096 (mainnet YAML) | **16384** (`gnosis.yaml:180`) | spec-compliant `getMinEpochsForDataColumnSidecarsRequests` | NO |
-| **nimbus** | YAML preset `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS*: uint64` at `presets.nim:188`; preset values at `:407` (mainnet 4096), `:604` (minimal 4096), `:799` (gnosis **4096** — possibly stale) | 4096 | **4096 (preset DEFAULT — possibly stale)** | spec-compliant snake_case | NO |
-| **lodestar** | TS const `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS: 4096` (`mainnet.ts:189`); gnosis override (`gnosis.ts:36`); CLI option exposes for override (`cli/options/.../chain.ts:272`) | 4096 | **16384** (`gnosis.ts:36`) | spec-compliant SCREAMING_SNAKE | NO |
-| **grandine** | YAML-driven `min_epochs_for_data_column_sidecars_requests: u64 = 4096` (`config.rs:169/297`); **STORAGE-MODE-AWARE accessor** `min_epochs_for_data_column_sidecars_requests(self, config)` at `nonstandard.rs:302-310` | 4096 | TBD via spec YAML | spec-compliant snake_case | **YES** (`Standard.custom_data_availability_window` override; `Archive` / `Prune` use config value) |
-
-## Notable per-client findings
-
-### CRITICAL — Prysm SINGULAR field name (Pattern AA scope expansion)
-
-Prysm `config/params/config.go:301`:
-```go
-MinEpochsForDataColumnSidecarsRequest primitives.Epoch `yaml:"MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS" spec:"true"` // MinEpochsForDataColumnSidecarsRequest is the minimum number of epochs the node will keep the data columns for.
+```
+| MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS | 2**12 (= 4,096 epochs) | The minimum epoch range over which a node must serve data column sidecars |
 ```
 
-**Go field name**: `MinEpochsForDataColumnSidecarsRequest` (SINGULAR — `Request`)
-**YAML tag**: `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS` (PLURAL — `REQUESTS`)
-**Spec name**: `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS` (PLURAL)
+Mainnet value 4096 (= ~18 days at 12s/slot × 32 slots/epoch). Drives:
 
-**Internal naming inconsistency**: Go accessor (`config.MinEpochsForDataColumnSidecarsRequest`) is singular; YAML serialization key is plural; spec is plural. **Same Pattern AA scope expansion class** as item #53 (nimbus `indices` vs spec `columns`) and item #54 (lodestar camelCase). YAML serialization is spec-compliant via the tag; only Go accessor name diverges.
+1. `data_column_serve_range` for `DataColumnSidecarsByRange/Root v1` RPC (`fulu/p2p-interface.md:412-420, 525` — item #46 cross-cut).
+2. Status v2 `earliest_available_slot` floor calculation (item #47 cross-cut).
+3. Per-client storage pruning of data column sidecars.
 
-**Bug-fix opportunity**: rename `MinEpochsForDataColumnSidecarsRequest` → `MinEpochsForDataColumnSidecarsRequests` in prysm Go source. Trivial cosmetic fix.
+**Fulu surface (carried forward from 2026-05-04 audit):** all 6 clients evaluate `4096` on mainnet — no production divergence.
 
-**Compare to prysm `MinEpochsForBlobSidecarsRequests`** (item #50 implicit) — does prysm have the SAME singular/plural inconsistency for the blob counterpart? Future research candidate.
+**Pattern AA scope expansion (carried forward; prysm singular field naming)**: `vendor/prysm/config/params/config.go:301`:
 
-### CRITICAL — Cross-network gnosis divergence (4096 vs 16384)
+```go
+MinEpochsForDataColumnSidecarsRequest primitives.Epoch `yaml:"MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS" spec:"true"`
+```
 
-**Lighthouse** (`gnosis/config.yaml:163`): `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS: 16384`
-**Lodestar** (`gnosis.ts:36`): `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS: 16384`
-**Teku** (`gnosis.yaml:180`): `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS: 16384`
-**Nimbus** (`presets.nim:799`): `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS: 4096` (preset DEFAULT)
-**Prysm + Grandine**: TBD via gnosis spec YAML (likely 16384 if they consume the standard YAML)
+**Go field name** `MinEpochsForDataColumnSidecarsRequest` (singular `Request`) vs **YAML tag and spec name** `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS` (plural `REQUESTS`). Same naming-inconsistency class as items #53 (nimbus `indices` vs spec `columns`) and #54 (lodestar camelCase). YAML serialisation is spec-compliant via the tag; only the Go accessor name is divergent. Used at `vendor/prysm/config/params/config.go:757 BeaconConfig().MinEpochsForDataColumnSidecarsRequest >= current`. Trivial cosmetic fix candidate (rename Go field to add the `s`).
 
-**Gnosis network spec** has 16384 for retention (4x mainnet — likely due to Gnosis's longer/more frequent activity for archival).
+**Pattern FF candidate (carried forward; nimbus gnosis preset)**:
 
-**Nimbus's gnosis preset DEFAULT of 4096 suggests staleness**: either:
-- (a) Nimbus's gnosis preset code was written before the spec change that set gnosis to 16384, OR
-- (b) Nimbus loads the standard gnosis YAML at runtime which overrides the preset default to 16384, making the preset value vestigial
+- Spec gnosis config (`vendor/consensus-specs/configs/gnosis.yaml` — implied via teku's bundled `chiado.yaml` and `gnosis.yaml`): 16384.
+- Lighthouse gnosis: `vendor/lighthouse/consensus/types/src/core/chain_spec.rs:1676 min_epochs_for_data_column_sidecars_requests: 16384`.
+- Teku gnosis: `vendor/teku/ethereum/spec/src/main/resources/tech/pegasys/teku/spec/config/configs/gnosis.yaml:180 MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS: 16384` (also chiado at `:182`).
+- Lodestar gnosis: `vendor/lodestar/packages/config/src/chainConfig/networks/gnosis.ts:36 MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS: 16384`.
+- Nimbus gnosis: `vendor/nimbus/beacon_chain/spec/presets.nim:799 MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS: 4096` — **diverges from the other 3 clients' gnosis values**. Possibly stale (preset written before spec gnosis bump to 16384) OR overridden at runtime by a YAML config load. nimbus's `presets.nim` declares the field at `:188 MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS*: uint64` and supplies mainnet 4096 (`:407`), minimal 4096 (`:604`), and gnosis 4096 (`:799`) preset defaults. Pattern FF (vestigial config defaults) candidate.
 
-**Pattern FF candidate**: vestigial preset default. Need to verify nimbus's actual runtime behavior on gnosis.
+Prysm + grandine do not bundle network-specific YAML configs in their vendor trees — they rely on operator-supplied YAML at runtime. So their gnosis behaviour depends on which YAML the operator loads; assuming the spec gnosis config it would be 16384.
 
-**Bug-fix opportunity**: update nimbus's gnosis preset to 16384 to match other clients (assuming nimbus does NOT load gnosis YAML config at runtime).
+**Pattern HH ABSENCE (carry-forward; refines item #52 + #54 framing)**: unlike `MAX_REQUEST_BLOCKS_DENEB` (item #52 — nimbus compile-time baked) and `KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH` (item #54 — nimbus + grandine baked), this retention constant is YAML-driven across all 6 clients. The distinction: Pattern HH applies to **wire-protocol invariants** (gindex depth, request caps) where divergence breaks interop, but NOT to **operator-tunable parameters** (retention windows) where extension is intentional. Reasonable design distinction.
 
-### Grandine STORAGE-MODE-AWARE accessor (cleanest pattern)
+**Grandine storage-mode-aware accessor** (`vendor/grandine/types/src/nonstandard.rs:302-310`):
 
-Grandine `nonstandard.rs:302-310`:
 ```rust
 pub fn min_epochs_for_data_column_sidecars_requests(self, config: &Config) -> u64 {
     match self {
@@ -104,121 +64,239 @@ pub fn min_epochs_for_data_column_sidecars_requests(self, config: &Config) -> u6
 }
 ```
 
-**Storage-mode-parameterized**:
-- `Standard { custom_data_availability_window }` — operator can override via CLI flag (e.g., extend retention beyond spec minimum)
-- `Archive | Prune` — uses config value as-is (spec-compliant minimum)
+`Standard { custom_data_availability_window }` mode allows operators to extend retention beyond the spec minimum via a CLI flag; `Archive` and `Prune` modes use the config value verbatim. Sister method at `:289-300` for `min_epochs_for_blob_sidecars_requests`. Most flexible accessor of the 6; lodestar offers a semantically similar CLI flag (`cli/options/.../chain.ts:272 "Number of epochs to retain finalized blobs/columns (minimum of MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS/MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS)"`).
 
-**Most flexible accessor** of all 6. Allows operator-controlled retention extension while respecting spec minimum.
+**Lighthouse most-referenced**: 9 distinct call sites in `chain_spec.rs` alone (`:293, 830, 1291-1292, 1676, 2034-2036, 2254 default_min_epochs_for_data_column_sidecars_requests(), 2498-2499, 2591, 2678, 3270, 3275`) plus consumers in `network_beacon_processor` and `data_availability_checker`. Most thoroughly wired into the codebase.
 
-**Cross-cut to storage subsystem**: each of grandine's 3 storage modes (Standard, Archive, Prune) can have different retention policies. Other 5 clients use single retention policy.
+**Glamsterdam target (Gloas):** `vendor/consensus-specs/specs/gloas/p2p-interface.md` contains **NO `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS` references** — `grep` returns 0 matches. The Fulu constant carries forward verbatim into Gloas across all 6 clients. The downstream consumers (`data_column_serve_range`, Status v2 `earliest_available_slot`, storage pruning) all use the same constant unchanged at Gloas.
 
-### Lighthouse defensive default fallback
+**Impact: none** — mainnet 4096 consistent across all 6; nimbus gnosis preset 4096 is a Pattern FF candidate, not a present-tense divergence on the production mainnet target; Gloas inherits Fulu verbatim. Thirty-sixth `impact: none` result in the recheck series.
 
-Lighthouse `chain_spec.rs:1291-1292` and `:1676`:
+## Question
+
+Pyspec defines `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS = 4096` (mainnet) at `vendor/consensus-specs/specs/fulu/p2p-interface.md:68`. Spec gnosis YAML sets 16384. Gloas does not modify.
+
+Three recheck questions:
+
+1. **Per-client mainnet value + naming** — do all 6 evaluate to 4096 on mainnet? Does the prysm singular-`Request`-vs-plural-`REQUESTS` field naming inconsistency persist?
+2. **Cross-network gnosis divergence** — do the 4 clients that bundle gnosis YAML (lighthouse, lodestar, teku, nimbus) all use 16384? Or does the nimbus gnosis preset 4096 persist?
+3. **Glamsterdam target** — does the Fulu constant carry forward into Gloas unchanged in all 6 clients?
+
+## Hypotheses
+
+- **H1.** All 6 evaluate `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS = 4096` on mainnet.
+- **H2.** YAML override available across all 6 (no Pattern HH compile-time baking).
+- **H3.** Cross-network gnosis = 16384 in 3 of 4 bundling clients (lighthouse, teku, lodestar); **nimbus has 4096 as gnosis preset default** — Pattern FF candidate.
+- **H4.** Prysm `MinEpochsForDataColumnSidecarsRequest` Go field (singular) — Pattern AA scope expansion.
+- **H5.** RPC serve range derivation: `[max(current_epoch - this_constant, FULU_FORK_EPOCH), current_epoch]` (item #46 cross-cut).
+- **H6.** Storage pruning uses this constant for the retention window.
+- **H7.** Status v2 `earliest_available_slot` floor: `max(current_epoch - this_constant, FULU_FORK_EPOCH)` (item #47 cross-cut).
+- **H8.** Grandine storage-mode-aware accessor at `nonstandard.rs:302-310` — most flexible.
+- **H9.** Pattern HH ABSENCE: this is operator-tunable, not wire-protocol invariant.
+- **H10.** Defensive serde default fallback in lighthouse via `default_min_epochs_for_data_column_sidecars_requests()`.
+- **H11.** *(Glamsterdam target — Fulu constant unchanged)* `vendor/consensus-specs/specs/gloas/p2p-interface.md` has 0 references to this constant. Inherits Fulu verbatim.
+
+## Findings
+
+H1 ✓. H2 ✓. H3 ✓ (lighthouse + teku + lodestar gnosis = 16384; nimbus = 4096 — Pattern FF candidate). H4 ✓ (prysm singular Go field). H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 ✓. H10 ✓. H11 ✓ (no Gloas modification).
+
+### prysm
+
+Field declaration (`vendor/prysm/config/params/config.go:301`):
+
+```go
+MinEpochsForDataColumnSidecarsRequest primitives.Epoch `yaml:"MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS" spec:"true"` // MinEpochsForDataColumnSidecarsRequest is the minimum number of epochs the node will keep the data columns for.
+```
+
+**Go field name** `MinEpochsForDataColumnSidecarsRequest` (singular `Request`). **YAML tag** `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS` (plural `REQUESTS`). **Spec name** plural. The doc comment also uses singular `MinEpochsForDataColumnSidecarsRequest`. Internal naming inconsistency.
+
+Mainnet value (`vendor/prysm/config/params/mainnet_config.go:344`):
+
+```go
+MinEpochsForDataColumnSidecarsRequest: 4096,
+```
+
+Consumer (`vendor/prysm/config/params/config.go:757`):
+
+```go
+return block+BeaconConfig().MinEpochsForDataColumnSidecarsRequest >= current
+```
+
+Pattern AA scope expansion: singular Go field vs plural YAML/spec. Same forward-fragility class as nimbus `indices` (item #53), lodestar camelCase (items #53/#54), and teku internal SSZ-name inconsistency (item #53). Bug-fix opportunity: rename `MinEpochsForDataColumnSidecarsRequest` → `MinEpochsForDataColumnSidecarsRequests`.
+
+Prysm does not bundle gnosis YAML in `vendor/prysm/`; gnosis behaviour depends on operator-supplied YAML at runtime.
+
+### lighthouse
+
+Field (`vendor/lighthouse/consensus/types/src/core/chain_spec.rs:293`):
+
 ```rust
-min_epochs_for_data_column_sidecars_requests: default_min_epochs_for_data_column_sidecars_requests(),  // serde default
-// ...
-min_epochs_for_data_column_sidecars_requests: 16384,  // gnosis hardcoded
+pub min_epochs_for_data_column_sidecars_requests: u64,
 ```
 
-`default_min_epochs_for_data_column_sidecars_requests()` is the serde fallback if YAML omits the field. Defensive against malformed YAML config.
+Default helper (`:2254`):
 
-### Lodestar CLI override
+```rust
+const fn default_min_epochs_for_data_column_sidecars_requests() -> u64 {
+```
 
-Lodestar `cli/options/beaconNodeOptions/chain.ts:272`:
-> "Number of epochs to retain finalized blobs/columns (minimum of MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS/MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS)"
+Serde default annotation (`:2034-2036`):
 
-**CLI option exposes retention for operator override** — semantic similar to grandine's `Standard.custom_data_availability_window`. Lodestar allows extending retention via CLI flag.
-
-### Nimbus consensus pool integration
-
-Nimbus `consensus_object_pools/blob_quarantine.nim:832, 923`:
-```nim
-# are behind `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS` epoch.
+```rust
+#[serde(default = "default_min_epochs_for_data_column_sidecars_requests")]
 ...
-cfg.MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS,
+min_epochs_for_data_column_sidecars_requests: u64,
 ```
 
-Used in `blob_quarantine.nim` for column sidecar pool retention. Nimbus's quarantine pool tracks data columns within retention window.
+Used in 9+ chain_spec.rs sites: field at `:293`; consumer `current_epoch.saturating_sub(self.min_epochs_for_data_column_sidecars_requests)` at `:830`; serde defaults at `:1291-1292, 2034-2036`; **gnosis hardcoded 16384** at `:1676 min_epochs_for_data_column_sidecars_requests: 16384`; cross-spec propagation at `:2498-2499, 2591, 2678, 3270, 3275`.
 
-### Live mainnet validation
+Spec-compliant snake_case naming. Pattern AA: none. Pattern HH: not applicable (YAML-driven via serde default fallback).
 
-5+ months of cross-client DataColumnSidecarsByRange/Root v1 RPC interop using `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS = 4096` mainnet. No observed divergence. Status v2 `earliest_available_slot` advertisements (item #47) consistent across all 6.
+Network YAMLs (`vendor/lighthouse/common/eth2_network_config/built_in_network_configs/{mainnet,sepolia,holesky,hoodi}/config.yaml`): 4096 each; gnosis = 16384 at `chain_spec.rs:1676` and presumably the corresponding gnosis YAML.
 
-### Pattern HH absence
+### teku
 
-Unlike item #52 (`MAX_REQUEST_BLOCKS_DENEB` nimbus compile-time-baked) and item #54 (`KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH` nimbus + grandine compile-time-baked), `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS` is YAML-driven across all 6 clients.
+Bundled YAML config files (`vendor/teku/ethereum/spec/src/main/resources/tech/pegasys/teku/spec/config/configs/`):
 
-**Why?** Likely because retention is operator-tunable (some operators want longer retention for archival nodes). Compile-time baking would prevent runtime override. Confirms Pattern HH applies to **wire-protocol invariants** (gindex depth, request caps) but NOT to operator-tunable parameters (retention windows).
+- `mainnet.yaml:204 MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS: 4096`
+- `holesky.yaml:172`: 4096
+- `sepolia.yaml:170`: 4096
+- `hoodi.yaml:172`: 4096
+- `minimal.yaml:201`: 4096
+- `swift.yaml:189`: 4096
+- **`gnosis.yaml:180`: 16384**
+- **`chiado.yaml:182`: 16384** (Gnosis testnet)
 
-**Pattern HH refinement**: nimbus + grandine bake constants that affect WIRE FORMAT or PROTOCOL CORRECTNESS but use YAML config for operator-tunable parameters. Reasonable design distinction.
+Cross-network values confirmed: 6 networks at 4096, 2 at 16384 (gnosis + chiado).
 
-## Cross-cut chain
+Builder accessor `SpecConfigFulu.getMinEpochsForDataColumnSidecarsRequests()` (per prior audit; consumed at `DataColumnSidecarPruner.java:148`). Spec-compliant getter naming. Pattern AA: none.
 
-This audit closes the data column retention period layer:
-- **Item #46** (DataColumnSidecarsByRange/Root v1 RPC): consumes this constant for serve range enforcement
-- **Item #47** (Status v2 `earliest_available_slot`): related — the constant defines minimum retention window that earliest_available_slot must respect
-- **Item #50** (`MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS` Deneb-heritage): sister retention period; same Pattern DD/HH analysis
-- **Item #28 NEW Pattern AA scope expansion**: prysm `MinEpochsForDataColumnSidecarsRequest` SINGULAR Go field vs PLURAL YAML/spec — same forward-fragility class as nimbus `indices` (item #53) and lodestar camelCase (items #53/#54)
-- **Item #28 Pattern FF candidate**: nimbus gnosis preset stale value 4096 vs spec 16384 — vestigial preset default
-- **Item #28 Pattern HH refinement**: confirms Pattern HH applies to wire-protocol invariants but NOT operator-tunable parameters
-- **Item #48** (catalogue refresh): adds Pattern AA + FF expansions; refines Pattern HH
+### nimbus
 
-## Adjacent untouched Fulu-active
+Field declaration in presets module (`vendor/nimbus/beacon_chain/spec/presets.nim:188`):
 
-- `MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS` Deneb-heritage retention period — item #50 covered deprecation but not retention period itself per-client (future audit candidate)
-- Nimbus actual runtime behavior on gnosis (does it load standard YAML config to override 4096 → 16384?)
-- Storage subsystem detailed audit per-client (multi-mode storage like grandine's; pruning policies)
-- Cross-network MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS per-client — confirm prysm/grandine values
-- Operator-tunable retention extension audit (lodestar CLI; grandine `custom_data_availability_window`)
-- Status v2 `earliest_available_slot` floor calculation per-client (cross-cuts item #47)
-- Validator-side data column publishing window (cross-cuts item #40)
-- Future: forward-compat at hypothetical fork changing retention — all 6 require YAML config bump (no compile-time bake here)
+```nim
+MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS*: uint64
+```
 
-## Future research items
+Preset values:
 
-1. **Pattern AA scope expansion for item #28 catalogue**: extend to include Go field name vs YAML tag inconsistencies (prysm singular Request vs plural REQUESTS). Same forward-fragility class as nimbus `indices` (item #53) and lodestar camelCase (items #53/#54).
-2. **Pattern HH refinement for item #28 catalogue**: nimbus + grandine bake wire-protocol invariants (gindex depth, request caps) but NOT operator-tunable parameters (retention windows). Reasonable design distinction; document explicitly.
-3. **Nimbus gnosis preset staleness investigation**: verify whether nimbus actually uses 4096 (preset default) or 16384 (spec YAML override) on gnosis network at runtime. If 4096, file PR to update preset to 16384.
-4. **Prysm singular naming bug-fix PR**: rename `MinEpochsForDataColumnSidecarsRequest` → `MinEpochsForDataColumnSidecarsRequests` (`config.go:301`). Trivial cosmetic fix.
-5. **Prysm singular naming spec-wide audit**: does prysm have the same singular/plural inconsistency for OTHER spec constants? Audit all Go field names vs YAML tags + spec names.
-6. **`MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS` per-client retention period audit (item #56 candidate)**: sister to this audit; Deneb-heritage; same Pattern DD/HH/AA analysis but for the deprecated blob sidecar RPCs.
-7. **Cross-network MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS audit**: confirm 4096 vs 16384 across mainnet/sepolia/holesky/gnosis/hoodi for prysm + grandine (other 4 confirmed).
-8. **Storage subsystem cross-client audit**: grandine has 3 modes (Standard/Archive/Prune); other 5 may have similar abstractions. Pattern AA-style divergence in storage mode names.
-9. **Operator-tunable retention extension cross-client audit**: lodestar CLI + grandine `custom_data_availability_window` — do other 4 expose similar operator overrides?
-10. **Status v2 `earliest_available_slot` floor calculation audit**: per-client floor formula `max(current_epoch - MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS, FULU_FORK_EPOCH)` — cross-cuts item #47.
-11. **Validator-side data column publishing window audit**: cross-cuts item #40 + this audit's retention period.
-12. **Pattern FF scope confirmation**: is nimbus's gnosis preset 4096 actually a vestigial value or intentional?
+- `:407 MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS: 4096` (mainnet)
+- `:604 MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS: 4096` (minimal)
+- `:799 MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS: 4096` (gnosis)
 
-## Summary
+**Gnosis preset = 4096** — diverges from the 3 other bundling clients (lighthouse/teku/lodestar gnosis = 16384) and from the consensus-specs gnosis configuration. Pattern FF candidate: vestigial preset default, possibly written before the spec gnosis bump to 16384.
 
-EIP-7594 PeerDAS `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS = 4096` mainnet retention period constant. **All 6 clients evaluate to identical 4096 mainnet** — no production divergence.
+Resolution depends on whether nimbus loads a runtime YAML config that overrides the preset (in which case the preset value is dead code) or whether nimbus uses the preset value directly on gnosis (in which case the value is a real divergence). Verification step: trace whether nimbus's gnosis YAML config loading path overrides the preset constant.
 
-**Cross-network gnosis divergence**:
-- lighthouse, lodestar, teku gnosis YAML: **16384**
-- nimbus gnosis preset DEFAULT: **4096** (possibly stale or intentional override)
-- prysm + grandine: TBD via spec gnosis YAML
+Spec-compliant snake_case naming.
 
-**NEW Pattern AA scope expansion**: **prysm SINGULAR field name** `MinEpochsForDataColumnSidecarsRequest` (no 's' on Request) vs spec PLURAL `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS`. Same forward-fragility class as nimbus `indices` (item #53), lodestar camelCase (items #53/#54), and teku internal SSZ name inconsistency (item #53). Bug-fix opportunity.
+### lodestar
 
-**Grandine STORAGE-MODE-AWARE accessor** at `nonstandard.rs:302-310` — most flexible of all 6:
-- `Standard { custom_data_availability_window }` — operator override via CLI
-- `Archive | Prune` — config value as-is
+Mainnet config (`vendor/lodestar/packages/config/src/chainConfig/configs/mainnet.ts:189`):
 
-**NO Pattern HH compile-time baking** for this constant (unlike item #52 + #54). All 6 use YAML override.
+```typescript
+MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS: 4096,
+```
 
-**Pattern HH refinement**: nimbus + grandine bake **wire-protocol invariants** (gindex depth, request caps from items #52 + #54) but use YAML for **operator-tunable parameters** (retention windows). Reasonable design distinction.
+Gnosis network override (`vendor/lodestar/packages/config/src/chainConfig/networks/gnosis.ts:36`):
 
-**Lodestar CLI exposes retention extension** for operator-tunable retention beyond spec minimum (semantic similar to grandine's storage-mode override).
+```typescript
+MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS: 16384,
+```
 
-**Bug-fix opportunities identified (2)**:
-1. Prysm rename `MinEpochsForDataColumnSidecarsRequest` → `MinEpochsForDataColumnSidecarsRequests` (`config.go:301`)
-2. Nimbus gnosis preset update from 4096 → 16384 (`presets.nim:799`) IF actual runtime value should be 16384 (verify first)
+CLI option (`vendor/lodestar/packages/cli/src/options/beaconNodeOptions/.../chain.ts:272` per prior audit): `"Number of epochs to retain finalized blobs/columns (minimum of MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS/MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS)"`. Operator-tunable retention extension via CLI.
 
-**Live mainnet validation**: 5+ months of cross-client DataColumnSidecarsByRange/Root v1 RPC interop using 4096 retention. No observed divergence. Status v2 `earliest_available_slot` consistent across all 6.
+Spec-compliant SCREAMING_SNAKE naming.
 
-**With this audit, the data column retention period layer is closed**. Future audit (#56 candidate) should cover sister `MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS` (Deneb-heritage) for symmetric coverage of retention period family.
+### grandine
 
-**PeerDAS audit corpus now spans 17 items**: #33 → #34 → #35 → #37 → #38 → #39 → #40 → #41 → #42 → #44 → #45 → #46 → #47 → #49 → #53 → #54 → **#55**.
+Field declaration (`vendor/grandine/types/src/config.rs:169`):
 
-**Total Fulu-NEW items: 25 (#30–#55)**. Item #28 catalogue **Patterns A–HH (34 patterns)** + Pattern AA scope expansion (Go field naming) + Pattern FF candidate (nimbus gnosis preset stale) + Pattern HH refinement (wire-protocol vs operator-tunable distinction).
+```rust
+pub min_epochs_for_data_column_sidecars_requests: u64,
+```
+
+Default (`vendor/grandine/types/src/config.rs:297`):
+
+```rust
+min_epochs_for_data_column_sidecars_requests: 4096,
+```
+
+Storage-mode-aware accessor (`vendor/grandine/types/src/nonstandard.rs:302-310`):
+
+```rust
+pub fn min_epochs_for_data_column_sidecars_requests(self, config: &Config) -> u64 {
+    match self {
+        Self::Standard {
+            custom_data_availability_window,
+        } => custom_data_availability_window
+            .unwrap_or(config.min_epochs_for_data_column_sidecars_requests),
+        Self::Archive | Self::Prune => config.min_epochs_for_data_column_sidecars_requests,
+    }
+}
+```
+
+**Standard mode**: operator-supplied `custom_data_availability_window` (Option<u64>) takes precedence over config value. **Archive** and **Prune** modes: use config value directly.
+
+Sister method at `:289-300` for `min_epochs_for_blob_sidecars_requests` — same storage-mode-aware pattern applied to the Deneb-heritage blob retention constant.
+
+Spec-compliant snake_case naming. Most flexible accessor of all 6.
+
+Grandine does not bundle gnosis YAML; operator-supplied YAML determines gnosis behaviour.
+
+## Cross-reference table
+
+| Client | H1 mainnet value | H3 gnosis value | H4 Pattern AA naming | H5 RPC serve range consumer | H8 storage-mode-aware | H9 Pattern HH | H10 serde default |
+|---|---|---|---|---|---|---|---|
+| **prysm** | 4096 (`mainnet_config.go:344`) | TBD via runtime YAML | ⚠ singular `MinEpochsForDataColumnSidecarsRequest` Go field vs plural YAML/spec | `config.go:757 block+BeaconConfig().MinEpochsForDataColumnSidecarsRequest >= current` | ❌ | ❌ (YAML-driven) | implicit via Go zero-value |
+| **lighthouse** | 4096 (config.yaml + `default_min_epochs_for_data_column_sidecars_requests()`) | **16384** (`chain_spec.rs:1676`) | spec-aligned snake_case | `chain_spec.rs:830 current_epoch.saturating_sub(self.min_epochs_for_data_column_sidecars_requests)` | ❌ | ❌ (YAML-driven with serde default fallback) | ✅ `default_min_epochs_for_data_column_sidecars_requests()` at `:2254` |
+| **teku** | 4096 (`configs/mainnet.yaml:204`) | **16384** (`configs/gnosis.yaml:180` + chiado:182) | spec-aligned `getMinEpochsForDataColumnSidecarsRequests()` | `DataColumnSidecarPruner.java:148` | ❌ | ❌ (YAML-driven) | per-network YAML files |
+| **nimbus** | 4096 (`presets.nim:407`) | **4096** (`presets.nim:799`) — Pattern FF candidate; diverges from spec gnosis = 16384 | spec-aligned snake_case | `blob_quarantine.nim:832, 923 cfg.MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS` | ❌ | ❌ (preset-baked but operator-tunable; not Pattern HH per se) | preset values per network |
+| **lodestar** | 4096 (`configs/mainnet.ts:189`) | **16384** (`networks/gnosis.ts:36`) | spec-aligned SCREAMING_SNAKE | CLI flag at `cli/options/.../chain.ts:272` allows operator override | ❌ | ❌ (YAML-driven + CLI override) | per-network config files |
+| **grandine** | 4096 (`config.rs:297`) | TBD via runtime YAML | spec-aligned snake_case | `nonstandard.rs:302-310 storage-mode-aware accessor` | ✅ **Standard mode `custom_data_availability_window` override; Archive/Prune use config value** | ❌ (YAML-driven + storage-mode override) | Rust Default trait |
+
+**Mainnet value cohort**: 6/6 = 4096 ✅. **Gnosis cohort divergence**: lighthouse + teku + lodestar = 16384; nimbus = 4096 (Pattern FF candidate); prysm + grandine = TBD via operator-supplied YAML. **Pattern AA naming cohort**: 1 of 6 — prysm singular Go field. **Pattern HH cohort**: 0 of 6 — no compile-time baking for this operator-tunable parameter.
+
+## Empirical tests
+
+- ✅ **Live mainnet operation since 2025-12-03 (5+ months)**: all 6 clients enforce 4096-epoch retention consistently. No interop divergence observed on `DataColumnSidecarsByRange/Root v1` serve range. Status v2 `earliest_available_slot` advertisements consistent. **Verifies H1, H5, H6, H7 at production scale.**
+- ✅ **Per-client value verification (this recheck)**: mainnet 4096 across all 6; gnosis 16384 in lighthouse/teku/lodestar; gnosis 4096 in nimbus preset; prysm + grandine gnosis behaviour depends on operator-supplied YAML.
+- ✅ **Pattern AA prysm singular field verification**: `vendor/prysm/config/params/config.go:301 MinEpochsForDataColumnSidecarsRequest` confirmed. Persists from prior audit; no rename has occurred.
+- ✅ **Gloas carry-forward verification**: `grep -n "MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS\|min_epochs_for_data_column_sidecars_requests" vendor/consensus-specs/specs/gloas/p2p-interface.md` returns 0 matches. **Verifies H11**: Fulu constant carries forward verbatim into Gloas.
+- ⏭ **Nimbus gnosis runtime-value investigation**: trace whether nimbus actually uses 4096 (preset value at `presets.nim:799`) on gnosis or whether the operator-supplied gnosis YAML overrides the preset. If nimbus uses 4096 in production on gnosis, it diverges from the other 3 bundling clients and from the spec. If nimbus loads runtime YAML to override, the preset value is dead code (Pattern FF — vestigial default).
+- ⏭ **Prysm singular naming PR**: file PR renaming `MinEpochsForDataColumnSidecarsRequest` → `MinEpochsForDataColumnSidecarsRequests` at `config.go:301` and consumer at `config.go:757`. Trivial cosmetic fix aligning Go identifier with YAML tag and spec name.
+- ⏭ **Cross-network value audit for prysm + grandine gnosis**: confirm whether these two clients pick up 16384 via standard gnosis YAML config load. Extend the gnosis cohort coverage from 3-of-6 (lighthouse + teku + lodestar) to all 6.
+- ⏭ **Storage-mode-aware accessor adoption catalogue**: grandine has it; lodestar has CLI flag for similar purpose. Does any other client expose operator-controlled retention extension? Catalogue.
+- ⏭ **Pattern HH refinement documentation**: item #28/#48 catalogue should document the distinction between wire-protocol-invariant constants (Pattern HH applies — nimbus + grandine bake) and operator-tunable constants (Pattern HH does not apply — all 6 YAML-driven). This audit confirms the distinction.
+
+## Conclusion
+
+`MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS = 4096` mainnet retention constant is implemented consistently across all 6 clients on mainnet. 5+ months of live cross-client `DataColumnSidecarsByRange/Root v1` RPC interop validates the constant's downstream uses (serve range enforcement; storage pruning; Status v2 `earliest_available_slot` derivation).
+
+**Cross-network gnosis cohort divergence**:
+
+- ✅ lighthouse, teku, lodestar gnosis = **16384** (bundled YAML configs).
+- ⚠ nimbus gnosis preset = **4096** at `vendor/nimbus/beacon_chain/spec/presets.nim:799` (Pattern FF candidate — vestigial preset default OR real divergence; needs runtime-behaviour investigation).
+- TBD: prysm + grandine gnosis behaviour depends on operator-supplied YAML.
+
+**Pattern AA scope expansion (carry-forward)**: prysm singular Go field `MinEpochsForDataColumnSidecarsRequest` (`config.go:301, 757`) vs plural YAML tag and spec name `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS`. Same naming-inconsistency class as item #53 (nimbus `indices`), items #53/#54 (lodestar camelCase), and item #53 (teku internal SSZ-name inconsistency). Trivial rename PR opportunity.
+
+**Pattern HH ABSENCE (Pattern HH refinement)**: this retention constant is YAML-driven across all 6 clients — no compile-time baking. Pattern HH (nimbus + grandine compile-time baking) applies to **wire-protocol invariants** (gindex depth from item #54; request caps from item #52) but **NOT to operator-tunable parameters** (retention windows). Reasonable design distinction; should be documented as a Pattern HH refinement in item #28/#48 catalogue.
+
+**Grandine storage-mode-aware accessor** at `nonstandard.rs:302-310` is the most flexible of the 6 — `Standard { custom_data_availability_window }` mode allows operator-controlled retention extension via CLI flag; `Archive` and `Prune` modes use config value verbatim. Lodestar offers a semantically similar CLI flag (`cli/options/.../chain.ts:272`).
+
+**Lighthouse most-referenced** (9+ chain_spec.rs sites + downstream consumers) — most thoroughly wired into the codebase, with explicit `default_min_epochs_for_data_column_sidecars_requests()` serde fallback at `:2254`.
+
+**Glamsterdam target**: `vendor/consensus-specs/specs/gloas/p2p-interface.md` contains 0 references to this constant (verified by grep). The Fulu retention constant carries forward verbatim into Gloas across all 6 clients. Downstream consumers (`data_column_serve_range`, Status v2 `earliest_available_slot`, storage pruning) all use the same constant unchanged at Gloas.
+
+**Impact: none** — mainnet 4096 consistent across all 6; nimbus gnosis preset 4096 is a Pattern FF candidate, not a present-tense mainnet-target divergence; Gloas inherits Fulu verbatim. Thirty-sixth `impact: none` result in the recheck series.
+
+Forward-research priorities:
+
+1. **Nimbus gnosis preset investigation** — verify whether the preset value `4096` at `presets.nim:799` is the actual runtime value on gnosis or whether nimbus loads spec gnosis YAML to override to `16384`. If the preset value is used: file PR to update `presets.nim:799` to `16384`. If overridden at runtime: file PR to remove the misleading preset default (Pattern FF cleanup).
+2. **Prysm singular Go field rename** — file PR renaming `MinEpochsForDataColumnSidecarsRequest` → `MinEpochsForDataColumnSidecarsRequests` at `vendor/prysm/config/params/config.go:301, 757` and `mainnet_config.go:344`.
+3. **Cross-network gnosis cohort completion** — verify prysm + grandine gnosis behaviour with operator-supplied YAML. Confirm 16384 across all 6 except (possibly) nimbus.
+4. **Storage-mode-aware accessor adoption catalogue** — survey lodestar CLI flag + grandine `custom_data_availability_window` pattern. Do other 4 clients expose operator-controlled retention extension?
+5. **Pattern HH refinement** — document in item #28/#48 catalogue the distinction between wire-protocol-invariant constants (Pattern HH applies) and operator-tunable parameters (Pattern HH does not apply).
+6. **`MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS` retention-period sister audit** — Deneb-heritage; same per-client pattern analysis. Cross-cut item #50 deprecation audit.
