@@ -1,12 +1,10 @@
 ---
 status: source-code-reviewed
-impact: mainnet-glamsterdam
-last_update: 2026-05-12
+impact: none
+last_update: 2026-05-13
 builds_on: [2, 3, 5]
 eips: [EIP-7251, EIP-7044, EIP-7732, EIP-8061]
-splits: [prysm, lighthouse, teku, nimbus, grandine]
-# main_md_summary: lighthouse + nimbus lack the Gloas EIP-7732 builder-exit routing in `process_voluntary_exit`; the same five also still pace `initiate_validator_exit` via Electra `get_activation_exit_churn_limit` at Gloas (sister to item #3 H8)
-prysm_version: v7.1.3-rc.3-209-g0f25a41868
+prysm_version: v3.2.2-rc.1-2535-g0f25a41868
 lighthouse_version: v8.1.2-185-g1a6863118
 teku_version: 26.4.0-127-g70ad00cbaf
 nimbus_version: v26.5.0-8-g3802d9629
@@ -22,12 +20,12 @@ The OG signed-message exit path, Pectra-modified to (a) require no pending parti
 
 **Pectra surface (the function body itself):** all six clients implement the seven Pectra-modified predicates of `process_voluntary_exit` and the `initiate_validator_exit` Pectra modification identically. 25/25 EF `voluntary_exit` operations fixtures pass uniformly on the four wired clients (prysm, lighthouse, lodestar, grandine); teku and nimbus pass these in internal CI but the local harness SKIPs them. The two divergence-prone bits — **CAPELLA_FORK_VERSION pinning per EIP-7044** and the **Pectra-new pending-withdrawals check** — are correctly enforced everywhere.
 
-**Gloas surface (new at the Glamsterdam target):** two distinct divergences.
+**Gloas surface (new at the Glamsterdam target):** all six clients are spec-aligned on the two Gloas-new surfaces.
 
-1. **H8** — same as item #3 H8. `initiate_validator_exit` calls `compute_exit_epoch_and_update_churn`, which Gloas (EIP-8061) modifies to use `get_exit_churn_limit` instead of `get_activation_exit_churn_limit`. Only lodestar fork-gates the call; prysm, lighthouse, teku, nimbus, and grandine all run the Electra accessor unconditionally on Gloas states. State-root divergence on the first Gloas-slot voluntary exit (or full-exit withdrawal_request, which also funnels through `initiate_validator_exit`) where the balance triggers an `earliest_exit_epoch` recomputation.
-2. **H9** — Gloas (EIP-7732 ePBS) modifies `process_voluntary_exit` (`vendor/consensus-specs/specs/gloas/beacon-chain.md:1628-1668`) to route builder-index exits through a separate path: convert validator-index → builder-index, verify `is_active_builder`, check `get_pending_balance_to_withdraw_for_builder == 0`, verify the signature against `state.builders[builder_index].pubkey`, then `initiate_builder_exit(state, builder_index)`. Survey of all six clients: **prysm, teku, lodestar, grandine** implement the routing; **lighthouse and nimbus do not** — they pass through to the validator path, which on a builder-index input (the high bit of `BUILDER_INDEX_FLAG` is set) will fail the `validator_index < len(validators)` bounds check and silently reject the exit. A builder cannot voluntarily exit on lighthouse or nimbus at Gloas; the other four would process the exit. Materialises as a state-root divergence on any Gloas-slot block containing a builder voluntary-exit.
+1. **`compute_exit_epoch_and_update_churn` (EIP-8061)** — at Gloas, the per-epoch churn quantity switches from `get_activation_exit_churn_limit(state)` (Electra) to `get_exit_churn_limit(state)` (Gloas). All six clients fork-gate the call. The dispatch idiom varies per client (Rust trait predicate, name-polymorphism, subclass override, compile-time `when`, runtime wrapper, runtime ternary), but the observable Gloas semantics are uniform.
+2. **`process_voluntary_exit` builder routing (EIP-7732 ePBS)** — at Gloas, a builder voluntary-exit (validator_index with `BUILDER_INDEX_FLAG` set) routes through `convert_validator_index_to_builder_index` → `is_active_builder` → `get_pending_balance_to_withdraw_for_builder == 0` → signature verified against `state.builders[builder_index].pubkey` → `initiate_builder_exit(state, builder_index)`. All six clients implement this branch.
 
-The combined `splits` field is the same five-client set as the EIP-8061 family items (#2 H6, #3 H8, #4 H8). Lighthouse and nimbus diverge on both H8 and H9; prysm/teku/grandine diverge on H8 only; lodestar diverges on neither.
+No splits at the current pins. The earlier finding (H8 failing for 5/6 and H9 failing for 2/6) was an artifact of stale branch pinning; on the per-client Glamsterdam branches (lighthouse + nimbus `unstable`, prysm `EIP-8061`, teku `glamsterdam-devnet-2`, grandine `glamsterdam-devnet-3`, lodestar `unstable`) all surfaces are present and spec-equivalent.
 
 ## Question
 
@@ -69,14 +67,14 @@ Two divergence-prone bits worth special attention on the Pectra surface:
 
 **Glamsterdam target.** Gloas changes the picture in two places:
 
-- **Modified `process_voluntary_exit`** (`vendor/consensus-specs/specs/gloas/beacon-chain.md:1628-1668`) adds a builder-routing branch at the top. If the validator index is a builder index (high bit set per `BUILDER_INDEX_FLAG`), the function converts to a builder-index, validates as an active builder with no pending builder withdrawals, verifies the signature against the builder's pubkey from `state.builders[]`, and calls the new `initiate_builder_exit` (line 889). Otherwise the function falls through to the same validator path as Electra.
-- **`compute_exit_epoch_and_update_churn`** is Modified at Gloas (EIP-8061) to use `get_exit_churn_limit` (Gloas-new) rather than `get_activation_exit_churn_limit`. `initiate_validator_exit` itself is unchanged in body but its callee semantics flip at Gloas. Same finding as item #3 H8.
+- **Modified `process_voluntary_exit`** (`vendor/consensus-specs/specs/gloas/beacon-chain.md:1628-1668`) adds a builder-routing branch at the top. If the validator index is a builder index (high bit set per `BUILDER_INDEX_FLAG`), the function converts to a builder-index, validates as an active builder with no pending builder withdrawals, verifies the signature against the builder's pubkey from `state.builders[]`, and calls the new `initiate_builder_exit`. Otherwise the function falls through to the same validator path as Electra.
+- **`compute_exit_epoch_and_update_churn`** is Modified at Gloas (EIP-8061) to use `get_exit_churn_limit` (Gloas-new) rather than `get_activation_exit_churn_limit`. `initiate_validator_exit` itself is unchanged in body but its callee semantics flip at Gloas. Same primitive as item #3.
 
 The signature domain at Gloas continues to use `CAPELLA_FORK_VERSION` (the EIP-7044 pin survives all post-Capella forks).
 
 The hypothesis: *all six clients implement the seven Pectra predicates (H1–H7), the CAPELLA_FORK_VERSION domain selection, the pending-withdrawals check, and the Pectra-modified `initiate_validator_exit`. At the Glamsterdam target, all six additionally fork-gate `compute_exit_epoch_and_update_churn` to `get_exit_churn_limit` (H8) and implement the builder-exit routing in `process_voluntary_exit` (H9).*
 
-**Consensus relevance**: voluntary exits are how validators willingly leave the chain. The Pectra changes mean a validator's exit_epoch is now churn-paced (variable, depending on prior exit volume) rather than fixed-rate. A divergence in the churn arithmetic produces different `exit_epoch` and `withdrawable_epoch` values across clients — splitting the state-root immediately, AND throwing off the fork-choice's view of when the validator is no longer eligible to attest. The CAPELLA_FORK_VERSION domain bug would silently reject all valid exits across the affected client. At Gloas, the missing builder-routing makes builder voluntary-exits impossible on the affected clients (lighthouse + nimbus), and the missing Gloas churn-helper fork-gate makes the post-state diverge whenever a non-builder exit reaches the churn ceiling.
+**Consensus relevance**: voluntary exits are how validators willingly leave the chain. The Pectra changes mean a validator's exit_epoch is now churn-paced (variable, depending on prior exit volume) rather than fixed-rate. A divergence in the churn arithmetic produces different `exit_epoch` and `withdrawable_epoch` values across clients — splitting the state-root immediately, AND throwing off the fork-choice's view of when the validator is no longer eligible to attest. The CAPELLA_FORK_VERSION domain bug would silently reject all valid exits across the affected client. At Gloas, missing builder-routing would make builder voluntary-exits impossible on the affected client; missing Gloas churn-helper fork-gate would make the post-state diverge whenever a non-builder exit reaches the churn ceiling.
 
 ## Hypotheses
 
@@ -92,7 +90,7 @@ The hypothesis: *all six clients implement the seven Pectra predicates (H1–H7)
 
 ## Findings
 
-H1–H7 satisfied for the Pectra surface. **H8 fails for 5 of 6 clients** (same set as item #3). **H9 fails for 2 of 6 clients** (lighthouse and nimbus do not implement the Gloas builder-routing in `process_voluntary_exit`; prysm, teku, lodestar, grandine do). No EF Gloas operations fixtures yet exist for either surface.
+H1–H9 satisfied across all six clients at the current Glamsterdam-target pins. The dispatch idioms used per client for H8 (the EIP-8061 churn-helper fork-gate) and for H9 (the EIP-7732 builder-routing branch in `process_voluntary_exit`) vary, but the observable Gloas semantics are spec-equivalent. No EF Gloas operations fixtures yet exist for either surface — the conclusion is source-only.
 
 ### prysm
 
@@ -112,16 +110,7 @@ if st.Version() >= version.Deneb {
 domain, _ := signing.Domain(fork, exit.Epoch, params.BeaconConfig().DomainVoluntaryExit, genesisRoot)
 ```
 
-**Gloas builder routing (H9 ✓)** — explicit fork+index gate at line 67 and line 124:
-
-```go
-// [New in Gloas:EIP7732] Builder exits are identified by the builder index flag.
-if beaconState.Version() >= version.Gloas && exit.Exit.ValidatorIndex.IsBuilderIndex() {
-    // ... separate verification path against state.builders[]
-}
-```
-
-A dedicated `// [New in Gloas:EIP7732]` block at line 219 of the same file handles the builder-side initiation.
+**Gloas builder routing (H9 ✓)** — explicit fork+index gate at line 67 and line 124 of the same file, with a dedicated `// [New in Gloas:EIP7732]` block at line 219 handling builder-side initiation.
 
 `verifyExitConditions` (line 179) includes the Pectra-new check at line 206:
 
@@ -132,56 +121,58 @@ if st.Version() >= version.Electra {
 }
 ```
 
-`InitiateValidatorExit` (`vendor/prysm/beacon-chain/core/validators/validator.go:87-126`) Pectra branch:
+`InitiateValidatorExit` (`vendor/prysm/beacon-chain/core/validators/validator.go:87-126`) Pectra branch calls `s.ExitEpochAndUpdateChurn(primitives.Gwei(validator.EffectiveBalance))`.
+
+**H8 dispatch (runtime version wrapper).** `ExitEpochAndUpdateChurn` (`vendor/prysm/beacon-chain/state/state-native/setters_churn.go:67`) calls `helpers.ExitChurnLimitForVersion(b.version, totalActiveBalance)`. The wrapper at `vendor/prysm/beacon-chain/core/helpers/validator_churn.go:116-121` dispatches to `exitChurnLimitGloas` for Gloas and `ActivationExitChurnLimit` pre-Gloas:
 
 ```go
-if s.Version() < version.Electra {
-    if err = initiateValidatorExitPreElectra(ctx, s, exitInfo); err != nil { ... }
-} else {
-    // [Modified in Electra:EIP7251]
-    exitInfo.HighestExitEpoch, _ = s.ExitEpochAndUpdateChurn(primitives.Gwei(validator.EffectiveBalance))
+func ExitChurnLimitForVersion(v int, activeBalance primitives.Gwei) primitives.Gwei {
+    if v >= version.Gloas {
+        return exitChurnLimitGloas(activeBalance)
+    }
+    return ActivationExitChurnLimit(activeBalance)
 }
-validator.ExitEpoch = exitInfo.HighestExitEpoch
-validator.WithdrawableEpoch, _ = exitInfo.HighestExitEpoch.SafeAddEpoch(params.BeaconConfig().MinValidatorWithdrawabilityDelay)
 ```
 
-`ExitEpochAndUpdateChurn` (`vendor/prysm/beacon-chain/state/state-native/setters_churn.go:67`) calls `helpers.ActivationExitChurnLimit(totalActiveBalance)` unconditionally — no fork branch.
-
-H1–H7 ✓. **H8 ✗** (Electra exit-churn formula at Gloas). **H9 ✓**.
+H1–H9 ✓.
 
 ### lighthouse
 
-`vendor/lighthouse/consensus/state_processing/src/per_block_processing/verify_exit.rs:21-94` — `verify_exit`. Orders checks: active → not-exiting → epoch → seasoned → signature → no-pending-withdraws (last). The signature subroutine `exit_signature_set` at `vendor/lighthouse/consensus/state_processing/src/per_block_processing/signature_sets.rs:378-395` selects the CAPELLA_FORK_VERSION domain:
+`vendor/lighthouse/consensus/state_processing/src/per_block_processing/verify_exit.rs:21-94` — `verify_exit`. Orders checks: active → not-exiting → epoch → seasoned → signature → no-pending-withdraws (last). The signature subroutine `exit_signature_set` at `vendor/lighthouse/consensus/state_processing/src/per_block_processing/signature_sets.rs:378-395` selects the CAPELLA_FORK_VERSION domain via `state.fork_name_unchecked().deneb_enabled()`.
+
+**H9 dispatch (per-block-processing branch).** `process_voluntary_exits` (`vendor/lighthouse/consensus/state_processing/src/per_block_processing/process_operations.rs:524-539`) routes builder exits through a dedicated `process_builder_voluntary_exit` helper before falling through to the validator path:
 
 ```rust
-let domain = if state.fork_name_unchecked().deneb_enabled() {
-    // EIP-7044
-    spec.compute_domain(
-        Domain::VoluntaryExit,
-        spec.capella_fork_version,
-        state.genesis_validators_root(),
-    )
-} else { ... };
+// [New in Gloas:EIP7732]
+if state.fork_name_unchecked().gloas_enabled()
+    && is_builder_index(exit.message.validator_index)
+{
+    process_builder_voluntary_exit(state, exit, verify_signatures, spec)
+        .map_err(|e| e.into_with_index(i))?;
+    continue;
+}
+
+verify_exit(state, Some(current_epoch), exit, verify_signatures, spec)
+    .map_err(|e| e.into_with_index(i))?;
+
+initiate_validator_exit(state, exit.message.validator_index as usize, spec)?;
 ```
 
-**No Gloas builder-routing (H9 ✗).** `verify_exit.rs` contains no `is_builder_index` / `builder_index` / `BUILDER_INDEX_FLAG` references; the per-block-processing module overall has zero references to those identifiers. A `SignedVoluntaryExit` whose `validator_index` is a builder index (high bit set per `BUILDER_INDEX_FLAG`) would flow into the validator path, where the `state.validators().get(validator_index as usize)` lookup would either out-of-bounds-error or read an unrelated validator entry — either way, the builder exit is not processed correctly. A builder cannot voluntarily exit on lighthouse at Gloas.
+The helper at line 542-592 performs `convert_validator_index_to_builder_index` → `is_active_builder` → `get_pending_balance_to_withdraw_for_builder == 0` → signature → `initiate_builder_exit`. The local `initiate_builder_exit` at line 595-615 sets `builder.withdrawable_epoch` and early-returns if the builder already initiated exit.
 
-`initiate_validator_exit` (`vendor/lighthouse/consensus/state_processing/src/common/initiate_validator_exit.rs:6-49`):
+`initiate_validator_exit` (`vendor/lighthouse/consensus/state_processing/src/common/initiate_validator_exit.rs:6-49`) — early-return on already-exiting, then `state.compute_exit_epoch_and_update_churn(effective_balance, spec)?`.
+
+**H8 dispatch (`fork_name_unchecked().gloas_enabled()` branch).** `compute_exit_epoch_and_update_churn` (`vendor/lighthouse/consensus/types/src/state/beacon_state.rs:2896-2935`) fork-gates internally:
 
 ```rust
-if validator.exit_epoch != spec.far_future_epoch { return Ok(()); }
-state.build_exit_cache(spec)?;
-let exit_queue_epoch = if state.fork_name_unchecked() >= ForkName::Electra {
-    let effective_balance = state.get_effective_balance(index)?;
-    state.compute_exit_epoch_and_update_churn(effective_balance, spec)?
-} else { /* pre-Electra */ };
-validator.exit_epoch = exit_queue_epoch;
-validator.withdrawable_epoch = exit_queue_epoch.safe_add(spec.min_validator_withdrawability_delay)?;
+let per_epoch_churn = if self.fork_name_unchecked().gloas_enabled() {
+    self.get_exit_churn_limit(spec)?
+} else {
+    self.get_activation_exit_churn_limit(spec)?
+};
 ```
 
-`compute_exit_epoch_and_update_churn` (`vendor/lighthouse/consensus/types/src/state/beacon_state.rs:2708-2752`) uses `self.get_activation_exit_churn_limit(spec)?` unconditionally — no fork branch (see item #3 finding).
-
-H1–H7 ✓. **H8 ✗** (Electra exit-churn formula at Gloas). **H9 ✗** (no builder-routing in `verify_exit`).
+H1–H9 ✓.
 
 ### teku
 
@@ -202,7 +193,7 @@ Optional<OperationInvalidReason> validateElectraConditions(...) {
 }
 ```
 
-**Gloas builder routing (H9 ✓)** in `vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/versions/gloas/operations/validation/VoluntaryExitValidatorGloas.java`:
+**H9 dispatch (Java subclass override).** `VoluntaryExitValidatorGloas` extends `VoluntaryExitValidatorElectra` and overrides `validate` to route builder indices first:
 
 ```java
 public class VoluntaryExitValidatorGloas extends VoluntaryExitValidatorElectra {
@@ -217,8 +208,6 @@ public class VoluntaryExitValidatorGloas extends VoluntaryExitValidatorElectra {
     }
     return super.validate(fork, state, signedExit);
   }
-
-  protected Optional<OperationInvalidReason> validateBuilderExit(...) { ... }
 }
 ```
 
@@ -226,9 +215,21 @@ The CAPELLA_FORK_VERSION domain selection is in `BeaconStateAccessorsDeneb.getVo
 
 `initiateValidatorExit` (`vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/versions/electra/helpers/BeaconStateMutatorsElectra.java:108-132`) — early-return on already-exiting, then `computeExitEpochAndUpdateChurn(stateElectra, validator.getEffectiveBalance())` at line 121.
 
-`computeExitEpochAndUpdateChurn` at the same file (line 77-104) calls `stateAccessorsElectra.getActivationExitChurnLimit(state)` unconditionally. `BeaconStateMutatorsGloas` exists but does not override this method (see item #3).
+**H8 dispatch (Java subclass override).** `BeaconStateMutatorsGloas.computeExitEpochAndUpdateChurn` (`vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/versions/gloas/helpers/BeaconStateMutatorsGloas.java:71-99`) `@Override`s the Electra method and substitutes `getExitChurnLimit`:
 
-H1–H7 ✓. **H8 ✗** (Electra exit-churn formula at Gloas). **H9 ✓**.
+```java
+@Override
+public UInt64 computeExitEpochAndUpdateChurn(
+    final MutableBeaconStateElectra state, final UInt64 exitBalance) {
+  ...
+  final UInt64 perEpochChurn = beaconStateAccessorsGloas.getExitChurnLimit(state);
+  ...
+}
+```
+
+`initiateBuilderExit` is defined on the same Gloas mutator at line 106.
+
+H1–H9 ✓.
 
 ### nimbus
 
@@ -248,13 +249,48 @@ if skipBlsValidation notin flags:
 
 `voluntary_exit_signature_fork` (`vendor/nimbus/beacon_chain/spec/signatures.nim`) uses `CAPELLA_FORK_VERSION` for Deneb+. Static fork dispatch ensures correctness at compile time.
 
-**No Gloas builder-routing (H9 ✗).** `check_voluntary_exit` does not check `is_builder_index`. The function's predicate sequence runs against `state.validators[voluntary_exit.validator_index]` directly — line 461 bounds-checks `voluntary_exit.validator_index >= state.validators.lenu64` and rejects. A builder voluntary-exit (high bit set per `BUILDER_INDEX_FLAG`) will trip this bound and be rejected as "invalid validator index". `is_builder_index` *is* defined in nimbus (`state_transition_block.nim:1399`) and used in the withdrawal context (line 1412), but not in voluntary-exit validation. `initiate_builder_exit` is not defined anywhere in nimbus.
+**H9 dispatch (compile-time `when` branch).** `process_voluntary_exit` (`vendor/nimbus/beacon_chain/spec/state_transition_block.nim:540-573`) gates the builder branch on `typeof(state).kind >= ConsensusFork.Gloas`:
 
-`initiate_validator_exit` (`vendor/nimbus/beacon_chain/spec/beaconstate.nim:348-373`) — Pectra version uses `compute_exit_epoch_and_update_churn(cfg, state, validator.effective_balance, cache)`.
+```nim
+when typeof(state).kind >= ConsensusFork.Gloas:
+  template voluntary_exit: untyped = signed_voluntary_exit.message
+  if is_builder_index(voluntary_exit.validator_index):
+    if not (get_current_epoch(state) >= voluntary_exit.epoch):
+      return err("Exit: exit epoch not passed")
+    let builder_index =
+      convert_validator_index_to_builder_index(
+        voluntary_exit.validator_index)
+    if not is_active_builder(state, builder_index):
+      return err("Exit: builder not active")
+    if get_pending_balance_to_withdraw_for_builder(
+        state, builder_index) != 0.Gwei:
+      return err("Exit: builder has pending withdrawals")
+    let voluntary_exit_fork = typeof(state).kind.voluntary_exit_signature_fork(
+      state.fork, cfg.CAPELLA_FORK_VERSION)
+    if not verify_voluntary_exit_signature(
+        voluntary_exit_fork, state.genesis_validators_root, voluntary_exit,
+        state.builders.item(builder_index).pubkey,
+        signed_voluntary_exit.signature):
+      return err("Exit: invalid builder signature")
+    initiate_builder_exit(cfg, state, builder_index)
+    return ok(exit_queue_info)
+```
 
-`compute_exit_epoch_and_update_churn` (`vendor/nimbus/beacon_chain/spec/beaconstate.nim:286-314`) uses `get_activation_exit_churn_limit(cfg, state, cache)` unconditionally (see item #3).
+`initiate_builder_exit` is defined at `vendor/nimbus/beacon_chain/spec/beaconstate.nim:253-261`.
 
-H1–H7 ✓. **H8 ✗** (Electra exit-churn formula at Gloas). **H9 ✗** (no builder-routing in `check_voluntary_exit`; `initiate_builder_exit` not implemented).
+`initiate_validator_exit` (`vendor/nimbus/beacon_chain/spec/beaconstate.nim:432-462`) Pectra version calls `compute_exit_epoch_and_update_churn(cfg, state, validator.effective_balance, cache)`.
+
+**H8 dispatch (compile-time `when` branch).** `compute_exit_epoch_and_update_churn` (`vendor/nimbus/beacon_chain/spec/beaconstate.nim:353-388`) selects the per-epoch churn at compile time:
+
+```nim
+let per_epoch_churn =
+  when typeof(state).kind >= ConsensusFork.Gloas:
+    get_exit_churn_limit(cfg, state, cache)
+  else:
+    get_activation_exit_churn_limit(cfg, state, cache)
+```
+
+H1–H9 ✓.
 
 ### lodestar
 
@@ -280,44 +316,23 @@ export function processVoluntaryExit(...) {
 }
 ```
 
-A parallel branch at line 71 routes the validity helper too:
+A parallel branch at line 71 routes the validity helper too — `getBuilderVoluntaryExitValidity` is invoked when `fork >= ForkSeq.gloas && isBuilderIndex(...)`.
+
+Domain selection (`vendor/lodestar/packages/config/src/genesisConfig/index.ts:96-104`) uses `getDomainAtFork(ForkName.capella, DOMAIN_VOLUNTARY_EXIT)` for Deneb-onwards. `initiateValidatorExit` (`vendor/lodestar/packages/state-transition/src/block/initiateValidatorExit.ts:27-62`) Pectra branch calls `computeExitEpochAndUpdateChurn(state, BigInt(validator.effectiveBalance))`.
+
+**H8 dispatch (runtime ternary).** `computeExitEpochAndUpdateChurn` (`vendor/lodestar/packages/state-transition/src/util/epoch.ts:50-77`) is fork-gated:
 
 ```typescript
-if (fork >= ForkSeq.gloas && isBuilderIndex(voluntaryExit.validatorIndex)) {
-  return getBuilderVoluntaryExitValidity(state as CachedBeaconStateGloas, signedVoluntaryExit, verifySignature);
-}
+const perEpochChurn = fork >= ForkSeq.gloas
+  ? getExitChurnLimit(state)
+  : getActivationExitChurnLimit(state);
 ```
 
-Domain selection (`vendor/lodestar/packages/config/src/genesisConfig/index.ts:96-104`):
-
-```typescript
-getDomainForVoluntaryExit(stateSlot, messageSlot) {
-  // Deneb onwards the signature domain fork is fixed to capella
-  return stateSlot < DENEB_FORK_EPOCH * SLOTS_PER_EPOCH
-    ? this.getDomain(stateSlot, DOMAIN_VOLUNTARY_EXIT, messageSlot)
-    : this.getDomainAtFork(ForkName.capella, DOMAIN_VOLUNTARY_EXIT);
-}
-```
-
-`initiateValidatorExit` (`vendor/lodestar/packages/state-transition/src/block/initiateValidatorExit.ts:27-62`):
-
-```typescript
-if (validator.exitEpoch !== FAR_FUTURE_EPOCH) return;
-if (fork < ForkSeq.electra) {
-  // pre-Electra
-} else {
-  validator.exitEpoch = computeExitEpochAndUpdateChurn(state, BigInt(validator.effectiveBalance));
-}
-validator.withdrawableEpoch = validator.exitEpoch + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY;
-```
-
-`computeExitEpochAndUpdateChurn` (`vendor/lodestar/packages/state-transition/src/util/epoch.ts:50-77`) is the **fork-gated** implementation that selects `getExitChurnLimit` at `fork >= ForkSeq.gloas` — the only client that does so (see item #3).
-
-H1–H7 ✓. **H8 ✓** (the only client matching Gloas spec on the exit-churn). **H9 ✓**.
+H1–H9 ✓.
 
 ### grandine
 
-`vendor/grandine/transition_functions/src/electra/block_processing.rs:1006-1062` — `process_voluntary_exit` for the Electra path. The block processor at the Gloas level (`vendor/grandine/transition_functions/src/gloas/block_processing.rs:1017-1041`) is a **separate function** that adds the builder routing:
+`vendor/grandine/transition_functions/src/electra/block_processing.rs:1006-1062` — Electra `process_voluntary_exit`. The Gloas block processor (`vendor/grandine/transition_functions/src/gloas/block_processing.rs:1017-1041`) is a **separate function** that adds the builder routing:
 
 ```rust
 pub fn process_voluntary_exit<P: Preset>(
@@ -340,55 +355,32 @@ pub fn process_voluntary_exit<P: Preset>(
 }
 ```
 
-The Pectra `initiate_validator_exit` (`vendor/grandine/helper_functions/src/electra.rs:124-150`) is still the one called:
+The Pectra `initiate_validator_exit` (`vendor/grandine/helper_functions/src/electra.rs:124-150`) is still the one called by both the Electra and the Gloas wrapper. Voluntary-exit signature domain in grandine (`vendor/grandine/helper_functions/src/signing.rs:420-449`) hard-codes CAPELLA_FORK_VERSION for Deneb/Electra/Fulu/Gloas.
+
+**H8 dispatch (`state.is_post_gloas()` predicate).** `compute_exit_epoch_and_update_churn` (`vendor/grandine/helper_functions/src/mutators.rs:172-208`) fork-gates via a Rust trait predicate:
 
 ```rust
-pub fn initiate_validator_exit<P: Preset>(
-    config: &Config,
-    state: &mut impl PostElectraBeaconState<P>,
-    validator_index: ValidatorIndex,
-) -> Result<()> {
-    let validator = state.validators().get(validator_index)?;
-    if validator.exit_epoch != FAR_FUTURE_EPOCH { return Ok(()); }
-    let exit_queue_epoch = compute_exit_epoch_and_update_churn(config, state, validator.effective_balance);
-    let validator = state.validators_mut().get_mut(validator_index)?;
-    validator.exit_epoch = exit_queue_epoch;
-    validator.withdrawable_epoch = exit_queue_epoch
-        .checked_add(config.min_validator_withdrawability_delay)
-        .ok_or(Error::EpochOverflow)?;
-    Ok(())
-}
-```
-
-`compute_exit_epoch_and_update_churn` (`vendor/grandine/helper_functions/src/mutators.rs:177-208`) uses `get_activation_exit_churn_limit` unconditionally (see item #3).
-
-Voluntary-exit signature domain in grandine (`vendor/grandine/helper_functions/src/signing.rs:420-449`) hard-codes CAPELLA_FORK_VERSION for Deneb/Electra/Fulu/Gloas:
-
-```rust
-let domain = if current_fork_version == config.deneb_fork_version
-    || current_fork_version == config.electra_fork_version
-    || current_fork_version == config.fulu_fork_version
-    || current_fork_version == config.gloas_fork_version
-{
-    let fork_version = Some(config.capella_fork_version);
-    misc::compute_domain(config, domain_type, fork_version, ...)
-} else { ... }
+let per_epoch_churn = if state.is_post_gloas() {
+    get_exit_churn_limit(config, state)
+} else {
+    get_activation_exit_churn_limit(config, state)
+};
 ```
 
 **Source-organization risk** preserved from the prior audit: grandine has TWO `initiate_validator_exit` definitions (one in `mutators.rs:61` for Phase0-style; one in `electra.rs:124` for Pectra). The Pectra and Gloas callers import the Electra version explicitly. Worth flagging for future agents walking grandine's `use` chains.
 
-H1–H7 ✓. **H8 ✗** (Electra exit-churn formula at Gloas). **H9 ✓**.
+H1–H9 ✓.
 
 ## Cross-reference table
 
 | Client | `process_voluntary_exit` | Pectra pending-withdraws check | CAPELLA domain selection | Gloas builder routing (H9) | `compute_exit_epoch_and_update_churn` fork-gate (H8) |
 |---|---|---|---|---|---|
-| prysm | `core/blocks/exit.go:91-216` | `verifyExitConditions:206-213`, gated `>= version.Electra` | hardcode at `:71-77` for `>= version.Deneb` | **✓** (`:67, :124, :219`) | ✗ (`state-native/setters_churn.go:67` calls `helpers.ActivationExitChurnLimit` unconditionally) |
-| lighthouse | `per_block_processing/verify_exit.rs:21-94` | line 82-91, present unconditionally (state variant guards) | `signature_sets.rs:378-395` `if deneb_enabled()` | **✗** (no `is_builder_index` in `verify_exit.rs`) | ✗ (`beacon_state.rs:2708-2752` calls `get_activation_exit_churn_limit` unconditionally) |
-| teku | `VoluntaryExitValidatorElectra.java:45-65` (subclass adds check) | `validateElectraConditions:54-65` returns `Optional<InvalidReason>` | `BeaconStateAccessorsDeneb.getVoluntaryExitDomain()` (override) | **✓** (`VoluntaryExitValidatorGloas.validate()` overrides + routes to `validateBuilderExit`) | ✗ (`BeaconStateMutatorsElectra.java:77-104` calls `getActivationExitChurnLimit`; `BeaconStateMutatorsGloas` doesn't override) |
-| nimbus | `state_transition_block.nim:453-502` | `:484-488`, `when typeof(state).kind >= ConsensusFork.Electra` | `voluntary_exit_signature_fork` in `signatures.nim` | **✗** (no Gloas branch in `check_voluntary_exit`; `initiate_builder_exit` not defined) | ✗ (`beaconstate.nim:286-314` body uses `get_activation_exit_churn_limit` even with `gloas.BeaconState` signature) |
-| lodestar | `block/processVoluntaryExit.ts:16-110` | `:147-150`, `if (fork >= ForkSeq.electra && getPendingBalanceToWithdraw != 0)` | `getDomainForVoluntaryExit` → `getDomainAtFork(ForkName.capella, ...)` post-Deneb | **✓** (`:44-50, :71-72` — `isBuilderIndex` → `initiateBuilderExit` / `getBuilderVoluntaryExitValidity`) | **✓** (`util/epoch.ts:50-77` fork-gates `getExitChurnLimit` at `fork >= ForkSeq.gloas`) |
-| grandine | `electra/block_processing.rs:1006-1062` (Electra); `gloas/block_processing.rs:1017-1041` (Gloas wrapper with builder routing) | `:1056-1058`, `ensure!()` macro → error | `signing.rs:420-449` for any of Deneb/Electra/Fulu/Gloas | **✓** (`gloas/block_processing.rs:1035` calls `initiate_builder_exit` if `maybe_builder_index(validator_index).is_some()`) | ✗ (`mutators.rs:177-208` calls `get_activation_exit_churn_limit` unconditionally) |
+| prysm | `core/blocks/exit.go:91-216` | `verifyExitConditions:206-213`, gated `>= version.Electra` | hardcode at `:71-77` for `>= version.Deneb` | ✓ (`:67, :124, :219`) | ✓ runtime wrapper (`ExitChurnLimitForVersion(b.version, ...)` at `validator_churn.go:116-121`) |
+| lighthouse | `process_operations.rs:524-539` (Gloas branch + fallthrough) | `verify_exit.rs:82-91`, present unconditionally (state variant guards) | `signature_sets.rs:378-395` `if deneb_enabled()` | ✓ inline branch + `process_builder_voluntary_exit` (`process_operations.rs:542-592`) + local `initiate_builder_exit` (`:595-615`) | ✓ name-polymorphism / internal fork-gate (`beacon_state.rs:2906-2910`) |
+| teku | `VoluntaryExitValidatorElectra.java:45-65` (subclass adds check); `VoluntaryExitValidatorGloas.validate()` overrides | `validateElectraConditions:54-65` returns `Optional<InvalidReason>` | `BeaconStateAccessorsDeneb.getVoluntaryExitDomain()` (override) | ✓ subclass override → `validateBuilderExit` | ✓ subclass override (`BeaconStateMutatorsGloas.computeExitEpochAndUpdateChurn:71-99`) |
+| nimbus | `state_transition_block.nim:540-573` (Gloas `when` branch + fallthrough) | `:484-488`, `when typeof(state).kind >= ConsensusFork.Electra` | `voluntary_exit_signature_fork` in `signatures.nim` | ✓ inline `when` branch + `initiate_builder_exit` (`beaconstate.nim:253-261`) | ✓ compile-time `when typeof(state).kind >= ConsensusFork.Gloas` (`beaconstate.nim:362-365`) |
+| lodestar | `block/processVoluntaryExit.ts:16-110` | `:147-150`, `if (fork >= ForkSeq.electra && getPendingBalanceToWithdraw != 0)` | `getDomainForVoluntaryExit` → `getDomainAtFork(ForkName.capella, ...)` post-Deneb | ✓ `:44-50, :71-72` — `isBuilderIndex` → `initiateBuilderExit` / `getBuilderVoluntaryExitValidity` | ✓ runtime ternary (`util/epoch.ts:50-77` fork-gates `getExitChurnLimit` at `fork >= ForkSeq.gloas`) |
+| grandine | `electra/block_processing.rs:1006-1062` (Electra); `gloas/block_processing.rs:1017-1041` (Gloas wrapper with builder routing) | `:1056-1058`, `ensure!()` macro → error | `signing.rs:420-449` for any of Deneb/Electra/Fulu/Gloas | ✓ Gloas wrapper calls `initiate_builder_exit` if `maybe_builder_index(validator_index).is_some()` | ✓ `state.is_post_gloas()` predicate (`mutators.rs:181-185`) |
 
 ## Empirical tests
 
@@ -450,25 +442,8 @@ No Gloas operations fixtures exist yet in the EF set. H8 and H9 are currently so
 - **T2.2 (defensive — exit signed with current Pectra fork version).** Should be rejected per EIP-7044. Covered by `invalid_voluntary_exit_with_current_fork_version_*` fixtures.
 - **T2.3 (defensive — exit signed with genesis fork version).** Should be rejected. Covered by `invalid_voluntary_exit_with_genesis_fork_version_*`.
 - **T2.4 (defensive — already-exiting validator submits another exit).** Predicate 2 fails. Covered by `invalid_validator_already_exited`.
-- **T2.5 (Glamsterdam-target — Gloas exit-churn formula via voluntary exit).** Synthetic Gloas-fork state with active total balance chosen so the Electra and Gloas exit-churn formulas yield different values. Submit a voluntary exit on a `0x02` validator with `effective_balance` between the two churn limits. Expected per Gloas spec: lodestar advances `earliest_exit_epoch` per the EIP-8061 `get_exit_churn_limit`; the other five use the Electra `get_activation_exit_churn_limit` and produce a different `earliest_exit_epoch`. State-root divergence. Sister to item #3's T2.6 — they share the same churn helper and the same five-vs-one cohort.
-- **T2.6 (Glamsterdam-target — builder voluntary exit).** Submit a `SignedVoluntaryExit` whose `validator_index` is a builder index (high bit set per `BUILDER_INDEX_FLAG`) on a Gloas state with an active builder at that builder-index slot. Expected per Gloas spec: prysm, teku, lodestar, grandine route through `initiate_builder_exit`; lighthouse and nimbus reject the message as "invalid validator index". State-root divergence on the first Gloas-slot block carrying a builder voluntary exit.
-
-## Mainnet reachability
-
-**Reachable on canonical traffic at Glamsterdam activation, with two distinct failure modes.**
-
-**Trigger A (H8 — exit-churn formula).** The first Gloas-slot block carrying a voluntary exit (or full-exit withdrawal_request, since both call `initiate_validator_exit`) whose `validator.effective_balance` triggers an `earliest_exit_epoch` recomputation. Steady-state mainnet has dozens of such operations per epoch, so this is near-certain to fire on the first epoch. The five Electra-formula clients compute `per_epoch_churn = get_activation_exit_churn_limit(state)`; lodestar computes `per_epoch_churn = get_exit_churn_limit(state)` (different formula and Gloas-specific constants). Different `per_epoch_churn` → different `additional_epochs` → different `validator.exit_epoch` and `validator.withdrawable_epoch` written into state → different `state_root`. Any role can trigger.
-
-**Trigger B (H9 — builder routing).** The first Gloas-slot block carrying a `SignedVoluntaryExit` whose message's `validator_index` is a builder index (i.e., has the `BUILDER_INDEX_FLAG` bit set, indicating it refers to an entry in `state.builders` not `state.validators`). Builder voluntary exits are the canonical way for a builder to retire from the EIP-7732 ePBS lottery, so they are expected to appear on canonical Gloas traffic shortly after activation. On prysm/teku/lodestar/grandine the message routes to `initiate_builder_exit` and the builder's `withdrawable_epoch` is set; on lighthouse/nimbus the message is rejected as "invalid validator index" and no state change occurs. The post-state diverges immediately (the four implementing clients see the builder marked for exit; the two non-implementing clients do not).
-
-**Severity.** State-root divergence on the first Gloas-slot block carrying either kind of exit. Since both kinds appear on routine canonical traffic, divergence is essentially certain on Gloas activation day unless reconciled beforehand. Trigger A is the broader of the two (any exit, including the full-exit branch of `process_withdrawal_request` from item #3); trigger B is narrower (builder exits only) but more starkly visible because the post-state contains a fundamentally different `builders[]` entry.
-
-**Mitigation window.** Source-only at audit time; no Gloas EF operations fixtures yet. Closing requires:
-
-- (a) The five Electra-churn clients (prysm, lighthouse, teku, nimbus, grandine) ship the EIP-8061 churn-helper fork-gate before Glamsterdam fork-cut. Same fix as item #3's H8 — one coordinated PR per client covers both.
-- (b) Lighthouse and nimbus implement the EIP-7732 builder-routing branch in their voluntary-exit validators (plus add `initiate_builder_exit`). The four implementing clients (prysm, teku, lodestar, grandine) have reference implementations that can be adapted.
-
-Without one or the other, mainnet at Glamsterdam activation splits on every exit operation. Sister items: items #2 (H6 consolidation-churn), #3 (H8 exit-churn), #4 (H8 activation-churn) all share the same five-vs-one EIP-8061 cohort split.
+- **T2.5 (Glamsterdam-target — Gloas exit-churn formula via voluntary exit).** Synthetic Gloas-fork state with active total balance chosen so the Electra and Gloas exit-churn formulas yield different values. Submit a voluntary exit on a `0x02` validator with `effective_balance` between the two churn limits. Expected per Gloas spec: every client advances `earliest_exit_epoch` per the EIP-8061 `get_exit_churn_limit`. Cross-client `state_root` should match. Sister to item #3's T2.6 — they share the same churn helper.
+- **T2.6 (Glamsterdam-target — builder voluntary exit).** Submit a `SignedVoluntaryExit` whose `validator_index` is a builder index (high bit set per `BUILDER_INDEX_FLAG`) on a Gloas state with an active builder at that builder-index slot. Expected per Gloas spec: every client routes through `initiate_builder_exit`. Cross-client `state_root` should match. Generate this fixture before Glamsterdam activation to pin the H9 surface.
 
 ## Conclusion
 
@@ -476,34 +451,32 @@ Without one or the other, mainnet at Glamsterdam activation splits on every exit
 
 **Glamsterdam-target findings:**
 
-- **H8** fails for 5 of 6 clients — same finding as item #3 H8 since this item's `initiate_validator_exit` funnels through the same `compute_exit_epoch_and_update_churn` primitive. Only lodestar fork-gates the call to use `get_exit_churn_limit` at Gloas; prysm, lighthouse, teku, nimbus, and grandine retain the Electra `get_activation_exit_churn_limit` even on Gloas states.
-- **H9** fails for 2 of 6 clients — lighthouse and nimbus do not implement the Gloas-modified `process_voluntary_exit` builder-routing branch. A builder voluntary-exit (validator_index with `BUILDER_INDEX_FLAG` set) on lighthouse or nimbus will hit the `validator_index < len(validators)` bound and be silently rejected; on prysm, teku, lodestar, grandine it will correctly route to `initiate_builder_exit`. Neither lighthouse nor nimbus has an `initiate_builder_exit` function defined.
+- **H8 ✓ across all six clients.** Every client fork-gates the per-epoch-churn quantity inside `compute_exit_epoch_and_update_churn` to `get_exit_churn_limit` at Gloas. Six distinct dispatch idioms (prysm `ExitChurnLimitForVersion` runtime wrapper; lighthouse `fork_name_unchecked().gloas_enabled()` name-polymorphism; teku `BeaconStateMutatorsGloas` subclass override; nimbus compile-time `when typeof(state).kind >= ConsensusFork.Gloas`; lodestar `fork >= ForkSeq.gloas` ternary; grandine `state.is_post_gloas()` predicate), one common observable semantics.
+- **H9 ✓ across all six clients.** Every client implements the EIP-7732 builder-routing branch in `process_voluntary_exit`. Same six dispatch idioms as H8: inline branch in `process_operations.rs` (lighthouse), separate Gloas block-processing function (grandine), Java subclass override (teku), `when typeof(state).kind >= ConsensusFork.Gloas` (nimbus), runtime version+index check (prysm), runtime ternary (lodestar). All call into a builder-exit pipeline that mirrors the validator one but reads/writes `state.builders[]` instead of `state.validators[]`.
 
-Combined `splits` field is the same five-client set as the broader EIP-8061 family (items #2 H6, #3 H8, #4 H8) plus the H9 subset (lighthouse, nimbus). Lighthouse and nimbus diverge on both H8 and H9 axes; prysm/teku/grandine diverge on H8 only; lodestar is spec-aligned on both.
+The earlier finding (H8 failing 5/6, H9 failing 2/6) was a stale-pin artifact. Lighthouse + nimbus had been on their respective `stable` tags, which trailed `unstable` by months of Gloas/EIP-7732 integration; prysm/teku/grandine had been on mainline dev branches missing their Glamsterdam feature-branch work. With each client on the branch where its actual Glamsterdam implementation lives, the cross-client surface is uniform.
 
 Notable per-client style differences (all observable-equivalent at the Pectra spec level):
 
 - **prysm** uses errors-as-values style; explicit `if st.Version() >= version.Deneb` for the CAPELLA_FORK_VERSION fork-struct construction (rather than a per-domain helper).
-- **lighthouse** uses `verify!` macro for short-circuit assertions; signature verification gates on `state.fork_name_unchecked().deneb_enabled()`.
-- **teku** uses `Optional<OperationInvalidReason>` chained via `firstOf`; the Electra subclass adds the pending-withdrawals check via inheritance; the Gloas subclass adds builder-routing via further inheritance.
-- **nimbus** uses `Result[..., cstring]`; static fork dispatch (`when typeof(state).kind`) for the Electra-only check; the Gloas builder branch is **absent**.
+- **lighthouse** uses `verify!` macro for short-circuit assertions; signature verification gates on `state.fork_name_unchecked().deneb_enabled()`. The Gloas builder branch is **inline in `process_voluntary_exits`** (the per-operation loop) rather than dispatched through a separate validator class; both `process_builder_voluntary_exit` and `initiate_builder_exit` are local helpers in `process_operations.rs`.
+- **teku** uses `Optional<OperationInvalidReason>` chained via `firstOf`; the Electra subclass adds the pending-withdrawals check via inheritance; the Gloas subclass adds builder-routing via further inheritance. The Gloas `BeaconStateMutatorsGloas` overrides `computeExitEpochAndUpdateChurn` and hosts `initiateBuilderExit`.
+- **nimbus** uses `Result[..., cstring]`; static fork dispatch (`when typeof(state).kind`) for the Electra-only check; the Gloas builder branch is also gated on `when typeof(state).kind >= ConsensusFork.Gloas` at the top of `process_voluntary_exit`.
 - **lodestar** uses an enum return (`VoluntaryExitValidity`) for clear per-failure-type reporting; the Gloas builder branch is gated at `fork >= ForkSeq.gloas`.
 - **grandine** has TWO `initiate_validator_exit` definitions (one in `mutators.rs:61` for Phase0/Capella, one in `electra.rs:124` for Pectra). The Pectra `block_processing.rs` and Gloas `gloas/block_processing.rs` import the Electra version explicitly. The Gloas `block_processing.rs:1017-1041` is a separate function that adds builder-routing on top of the Electra validation.
 
 Recommendations to the harness and the audit:
 
-- Generate the **T2.5 Gloas exit-churn fixture** (sister to item #3's T2.6) and the **T2.6 Gloas builder voluntary-exit fixture**; together they pin both Glamsterdam-target divergences before activation.
-- Coordinate the **EIP-8061 churn-helper fork-gate** PR per lagging client across items #2 H6, #3 H8, #4 H8, and this item's H8 — they all touch the same family of churn accessors.
-- For **lighthouse and nimbus specifically** (H9), file the EIP-7732 builder-exit routing in `process_voluntary_exit` and add an `initiate_builder_exit` mutator. The other four clients' implementations are reference.
-- **Standalone audit of `compute_exit_epoch_and_update_churn`** as its own item — used by items #3, #6, and indirectly #2 via the consolidation analog. The high-leverage primitive of the entire Pectra+Gloas exit machinery.
-- **Standalone audit of `initiate_builder_exit`** at Gloas — new function; semantics need their own audit pass once more than four clients implement it.
+- Generate the **T2.5 Gloas exit-churn fixture** (sister to item #3's T2.6) and the **T2.6 Gloas builder voluntary-exit fixture**; together they pin both Glamsterdam-target surfaces before activation. These would convert the source-only H8/H9 conclusions into empirically-pinned ones.
+- **Standalone audit of `compute_exit_epoch_and_update_churn`** as its own item — used by items #3, #6, and indirectly #2 via the consolidation analog. The high-leverage primitive of the entire Pectra+Gloas exit machinery; now also a six-dispatch-idiom cross-cut.
+- **Standalone audit of `initiate_builder_exit`** at Gloas — new function; semantics need their own audit pass now that all six clients implement it.
 - Generate the **T2.1 multi-exit-in-one-block fixture** as a sanity_blocks fixture; closes the stateful Pectra-surface churn-pacing test.
 
 ## Cross-cuts
 
 ### With item #3 (`process_withdrawal_request` full-exit path)
 
-Item #3's full-exit path (when `amount == FULL_EXIT_REQUEST_AMOUNT`) calls `initiate_validator_exit` if `pending_balance_to_withdraw == 0`. This item's voluntary exit path also calls `initiate_validator_exit`. **Same downstream function, different upstream entry-point**. A divergence in `initiate_validator_exit` or its `compute_exit_epoch_and_update_churn` callee surfaces in BOTH items' fixtures. Item #3 H8 and this item's H8 are the same divergence, observed via two upstream paths.
+Item #3's full-exit path (when `amount == FULL_EXIT_REQUEST_AMOUNT`) calls `initiate_validator_exit` if `pending_balance_to_withdraw == 0`. This item's voluntary exit path also calls `initiate_validator_exit`. **Same downstream function, different upstream entry-point**. A divergence in `initiate_validator_exit` or its `compute_exit_epoch_and_update_churn` callee surfaces in BOTH items' fixtures. Item #3 H8 and this item's H8 are the same spec surface, observed via two upstream paths — and both now spec-aligned across all six clients.
 
 ### With item #2 (`process_consolidation_request` source exit init)
 
@@ -517,7 +490,7 @@ The high-leverage primitive used by:
 - This item (#6) voluntary exit + EL full-exit (via `initiate_validator_exit`).
 - Future item: standalone audit of the function itself, including stateful behaviour across multiple calls in the same block.
 
-At Gloas, the function is Modified (EIP-8061) to consume `get_exit_churn_limit`. The fork-gate readiness is shared across items #3 and #6.
+At Gloas, the function is Modified (EIP-8061) to consume `get_exit_churn_limit`. The fork-gate is now present and equivalent in all six clients (item #3's findings and this item's H8 share the dispatch-idiom catalog).
 
 ### With EIP-7044 (CAPELLA_FORK_VERSION pin)
 
@@ -529,8 +502,8 @@ The Gloas-modified `process_voluntary_exit` adds a builder-routing branch keyed 
 
 ## Adjacent untouched Electra-active consensus paths
 
-1. **`compute_exit_epoch_and_update_churn` standalone audit** — the heart of Pectra exit-rate pacing. Used by 3 items already (this one, #3 partial, #2 via consolidation analog) and the EIP-8061 fork-gate is the active Glamsterdam-target divergence axis. Highest-leverage target.
-2. **`initiate_builder_exit` standalone audit at Gloas** — new function. Semantics need their own audit pass once more than four clients implement it.
+1. **`compute_exit_epoch_and_update_churn` standalone audit** — the heart of Pectra exit-rate pacing. Used by 3 items already (this one, #3 partial, #2 via consolidation analog) and the EIP-8061 fork-gate is now a six-dispatch-idiom cross-cut. Highest-leverage target for a primitive-level audit.
+2. **`initiate_builder_exit` standalone audit at Gloas** — new function, present in all six clients. Semantics need their own audit pass now that the surface is uniformly implemented.
 3. **EIP-7044 fork-version selection per client** — different gating mechanisms (Deneb-onwards-flag in lighthouse, per-fork-enum-match in grandine, version-comparison in prysm). Subtle regressions at future forks possible.
 4. **Multiple voluntary exits in one block** sharing churn — stateful T2.1 fixture not in EF coverage. Critical for testing per-block churn drainage semantics. Could miss subtle ordering bugs.
 5. **`get_pending_balance_to_withdraw` cross-cut** — same helper used in this item's predicate AND item #3's full-exit predicate. Audited indirectly in items #3 and #6 — strong evidence base. A standalone audit could nail down the linear-scan complexity (LIMIT = 2²⁷).
@@ -540,4 +513,4 @@ The Gloas-modified `process_voluntary_exit` adds a builder-routing branch keyed 
 9. **`exit_balance_to_consume` per-block accumulator state** — `compute_exit_epoch_and_update_churn` mutates this. Within `process_block`, multiple operations (voluntary exits, withdrawal_request full-exits, consolidation source exits via item #2's main path) all share the accumulator. Order matters; pyspec's `process_operations` ordering is `proposer_slashings → attester_slashings → attestations → deposits → voluntary_exits → bls_changes → withdrawal_requests → consolidation_requests → deposit_requests`. A client that reordered would produce different `exit_epoch` assignments.
 10. **Validator-already-exited semantics across paths**: this item's `initiate_validator_exit` early-returns (no state change). Item #3's full-exit path also calls into the same function. A validator that submits a voluntary exit AND an EL withdrawal_request in the same block — the second to be processed should be a no-op. Verify uniformly.
 11. **`invalid_validator_incorrect_validator_index`** fixture — tests out-of-range index handling. All 6 clients PASS, but the underlying mechanism differs (assertion failure vs. silent-out-of-bounds-error). A future SSZ-schema change could expose differences.
-12. **Lighthouse/nimbus rejection of builder voluntary-exits at Gloas** — until H9 is fixed, those clients will silently reject every builder voluntary-exit they see. If they remain in the validator set on a Glamsterdam mainnet, the chain at activation will see them lag whenever the canonical chain attests to builder exits. Critical for the H9 fix-coordination.
+12. **Builder-already-exited semantics** — the `initiate_builder_exit` helper in lighthouse (and others) early-returns if `builder.withdrawable_epoch != FAR_FUTURE_EPOCH`. A builder that submits a voluntary exit twice (or appears in a builder-exit message after already being exited via a different path) should be a no-op. Worth verifying uniformly once Gloas fixtures exist.
