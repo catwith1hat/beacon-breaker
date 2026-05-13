@@ -24,7 +24,6 @@ Full methodology, prompt templates, and repository conventions: [METHODOLOGY.md]
 
 | # | Finding | Split | Mainnet reach |
 |---|---|---|---|
-| [#16](items/016/) | chokepoint audit for the EIP-8061 churn rework — only lodestar fork-gates `compute_exit_epoch_and_update_churn` to `get_exit_churn_limit` and `get_consolidation_churn_limit` to the Gloas-quotient formula at the Gloas fork; the other five clients run the Electra formulas unconditionally on Gloas states (cascades into items #2 H6, #3 H8, #4 H8, #6 H8, #8 H9, #9 H10) | prysm, lighthouse, teku, nimbus, grandine (5-vs-1) | mainnet-glamsterdam |
 | [#17](items/017/) | the ejection branch of `process_registry_updates` calls `initiate_validator_exit`, propagating the EIP-8061 churn-helper divergence (item #16 H12) — only lodestar fork-gates the underlying `compute_exit_epoch_and_update_churn` at Gloas | prysm, lighthouse, teku, nimbus, grandine (5-vs-1) | mainnet-glamsterdam |
 | [#19](items/019/) | at Gloas, `process_execution_payload` is REMOVED (per EIP-7732 ePBS) and replaced by `process_execution_payload_bid` + `process_parent_execution_payload` + `verify_execution_payload_envelope`; lighthouse alone has not implemented any of the three replacement helpers in `consensus/state_processing/src/` | lighthouse (1-vs-5) | mainnet-glamsterdam |
 | [#22](items/022/) | nimbus treats 0x03 (builder) credentials as compounding at Gloas+ via stale `has_compounding_withdrawal_credential` OR-fold — pre-Gloas 0x03 deposit forks effective_balance at Gloas activation | nimbus (1-vs-5) | mainnet-glamsterdam |

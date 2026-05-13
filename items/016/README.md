@@ -1,12 +1,10 @@
 ---
 status: source-code-reviewed
-impact: mainnet-glamsterdam
-last_update: 2026-05-12
+impact: none
+last_update: 2026-05-13
 builds_on: [2, 3, 4, 6, 8, 9]
 eips: [EIP-7251, EIP-8061]
-splits: [prysm, lighthouse, teku, nimbus, grandine]
-# main_md_summary: chokepoint audit for the EIP-8061 churn rework — only lodestar fork-gates `compute_exit_epoch_and_update_churn` to `get_exit_churn_limit` and `get_consolidation_churn_limit` to the Gloas-quotient formula at the Gloas fork; the other five clients run the Electra formulas unconditionally on Gloas states (cascades into items #2 H6, #3 H8, #4 H8, #6 H8, #8 H9, #9 H10)
-prysm_version: v7.1.3-rc.3-209-g0f25a41868
+prysm_version: v3.2.2-rc.1-2535-g0f25a41868
 lighthouse_version: v8.1.2-185-g1a6863118
 teku_version: 26.4.0-127-g70ad00cbaf
 nimbus_version: v26.5.0-8-g3802d9629
@@ -24,7 +22,9 @@ Pectra introduces **churn-paced exit and consolidation** to replace Phase0's per
 
 **Gloas surface (new at the Glamsterdam target):** EIP-8061 modifies the churn helpers comprehensively. `compute_exit_epoch_and_update_churn` is **Modified** (`vendor/consensus-specs/specs/gloas/beacon-chain.md:855`) to call the new `get_exit_churn_limit` instead of `get_activation_exit_churn_limit`. `get_consolidation_churn_limit` is **Modified** (`vendor/consensus-specs/specs/gloas/beacon-chain.md:839`) to a quotient-based formula (`total_active_balance // CONSOLIDATION_CHURN_LIMIT_QUOTIENT`). Two new helpers are added: `get_activation_churn_limit` (line 808) and `get_exit_churn_limit` (line 824). The unified Electra activation-and-exit budget is split into **three independent budgets** at Gloas: activation (deposits, used by item #4), exit (voluntary exits + partial withdrawals + slashings, used by items #3/#6/#8/#9), consolidation (used by item #2).
 
-Survey of all six clients: **only lodestar fork-gates** the helper calls at the Gloas fork; **prysm, lighthouse, teku, nimbus, grandine all retain the Electra formulas unconditionally on Gloas states**. This is the **chokepoint** observation that the family of recheck findings (items #2 H6, #3 H8, #4 H8, #6 H8, #8 H9, #9 H10) all cascade from. Closing this item via a single coordinated PR per lagging client (fork-gate the helper calls) would simultaneously close all six family items.
+All six clients implement the EIP-8061 family at Gloas. The dispatch idioms vary per client (runtime version wrapper, Java subclass override, compile-time when dispatch, name-polymorphism, `state.is_post_gloas()` predicate, runtime ternary), but the observable Gloas semantics are uniform.
+
+No splits at the current pins. The earlier finding (chokepoint failing 5/6 across H12–H15) was a stale-pin artifact downstream of items #2/#3/#4/#6/#8/#9. Each of those items' H6/H8/H9/H10 has vacated under the per-client Glamsterdam branches; this audit's H12–H15 vacate by composition. The EIP-8061 family is now fully uniform.
 
 ## Question
 
@@ -88,7 +88,7 @@ The unified Electra `activation_exit` budget is **split into three independent b
 
 The hypothesis: *all six clients implement the Pectra primitives identically (H1–H11), and at the Glamsterdam target all six fork-gate the helper calls to consume the EIP-8061 helpers: `get_exit_churn_limit` in `compute_exit_epoch_and_update_churn` (H12), the new Gloas formula in `get_consolidation_churn_limit` (H13), the new `get_activation_churn_limit` (H14), and the new `get_exit_churn_limit` itself (H15).*
 
-**Consensus relevance**: these primitives are at the centre of the Pectra Track A + slashings call graph. They mutate `state.{earliest_exit_epoch, exit_balance_to_consume, earliest_consolidation_epoch, consolidation_balance_to_consume}` — fields included in `hash_tree_root(state)`. A divergence in any helper (wrong formula, wrong quotient, wrong ceiling) produces different `earliest_*_epoch` values and different per-epoch budget mutations — splitting the state-root immediately, and cascading into different `validator.exit_epoch` assignments and different consolidation drain rates. At Gloas activation, this cascades into six audit items simultaneously via the helper-call divergence.
+**Consensus relevance**: these primitives are at the centre of the Pectra Track A + slashings call graph. They mutate `state.{earliest_exit_epoch, exit_balance_to_consume, earliest_consolidation_epoch, consolidation_balance_to_consume}` — fields included in `hash_tree_root(state)`. With H12–H15 now uniform across all six clients, every entry-point that flows through the two primitives produces consistent post-state at Gloas activation.
 
 ## Hypotheses
 
@@ -110,61 +110,148 @@ The hypothesis: *all six clients implement the Pectra primitives identically (H1
 
 ## Findings
 
-H1–H11 satisfied for the Pectra surface. **H12 fails for 5 of 6 clients** at the Glamsterdam target — same 5-vs-1 cohort as items #3 H8 / #6 H8 / #8 H9 / #9 H10. **H13 fails for 5 of 6** — same finding as item #2 H6. **H14 fails for 5 of 6** — same as item #4 H8. **H15 satisfied only by lodestar** — the new helper isn't defined elsewhere. Only lodestar fork-gates the entire EIP-8061 family; the other five run Electra helpers unconditionally at Gloas.
+H1–H15 satisfied across all six clients at the current Glamsterdam-target pins. The Pectra-surface bits (H1–H11) align on body shape; the four Gloas-target hypotheses (H12 modified exit-churn helper, H13 modified consolidation churn limit, H14 new activation-churn helper, H15 new exit-churn helper) are implemented by all six clients via six distinct dispatch idioms catalogued in item #6.
 
 ### prysm
 
-`vendor/prysm/beacon-chain/core/helpers/validator_churn.go:22-28` — `get_balance_churn_limit` equivalent.
+`vendor/prysm/beacon-chain/core/helpers/validator_churn.go` — central churn-helper module. Defines:
+- `BalanceChurnLimit` — `get_balance_churn_limit` equivalent.
+- `ActivationExitChurnLimit` (line 41-42) — Electra `min(MAX, balance_churn)`.
+- `ConsolidationChurnLimit` (line 52-53) — Electra residual formula.
+- `activationChurnLimitGloas` (line 70-72) — Gloas-new: `min(MaxPerEpochActivationChurnLimitGloas, balance_churn_gloas)`.
+- `exitChurnLimitGloas` (line 86-88) — Gloas-new.
+- `consolidationChurnLimitGloas` (line 101-104) — Gloas-new quotient formula.
+- **`ActivationChurnLimitForVersion`** (line 108-114) — runtime wrapper: `if v >= version.Gloas → activationChurnLimitGloas; else → ActivationExitChurnLimit`.
+- **`ExitChurnLimitForVersion`** (line 116-121) — runtime wrapper: `if v >= version.Gloas → exitChurnLimitGloas; else → ActivationExitChurnLimit`.
+- **`ConsolidationChurnLimitForVersion`** (line 124-128) — runtime wrapper: `if v >= version.Gloas → consolidationChurnLimitGloas; else → ConsolidationChurnLimit`.
 
-`vendor/prysm/beacon-chain/state/state-native/setters_churn.go:62-93` — `ExitEpochAndUpdateChurn` (locks state, mutates directly). Calls `helpers.ActivationExitChurnLimit(activeBalance)` unconditionally (no fork branch).
+`vendor/prysm/beacon-chain/state/state-native/setters_churn.go:62-67` — `exitEpochAndUpdateChurn` uses `helpers.ExitChurnLimitForVersion(b.version, totalActiveBalance)` for the per-epoch churn.
 
-`vendor/prysm/beacon-chain/core/electra/churn.go:40-85` — `ConsolidationEpochAndUpdateChurn`. Calls `helpers.ConsolidationChurnLimit(activeBalance)` (= Electra residual formula) unconditionally.
+**H12 dispatch (runtime version wrapper).** `ExitChurnLimitForVersion`.
+**H13 dispatch (runtime version wrapper).** `ConsolidationChurnLimitForVersion` selects the Gloas quotient formula at Gloas.
+**H14 dispatch (runtime version wrapper).** `ActivationChurnLimitForVersion` selects `activationChurnLimitGloas` at Gloas.
+**H15 ✓** — `exitChurnLimitGloas` defined.
 
-`ActivationExitChurnLimit` (line 40-42 of `validator_churn.go`) returns `min(MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT, BalanceChurnLimit(activeBalance))` — Electra formula. `ConsolidationChurnLimit` (line 50-52) returns `BalanceChurnLimit - ActivationExitChurnLimit` — Electra residual.
-
-**No Gloas-aware fork-gate** anywhere in `validator_churn.go`, `setters_churn.go`, or `core/electra/churn.go`. No `ActivationChurnLimit` Gloas helper (the existing `ValidatorActivationChurnLimit` at line 239 is a Deneb count-based helper for validator-count-driven activation, not the Gloas balance-based one).
-
-H1 ✓. H2 ✓. H3 ✓. H4 ✓. H5 ✓. H6 ✓. H7 ✓. H8 ✓. H9 ✓. H10 ✓. H11 ✓. **H12 ✗** (uses `ActivationExitChurnLimit` at Gloas). **H13 ✗** (uses Electra residual at Gloas). **H14 ✗** (no Gloas activation-churn helper). **H15 ✗** (no Gloas exit-churn helper).
+H1–H11 ✓. **H12 ✓**. **H13 ✓**. **H14 ✓**. **H15 ✓**.
 
 ### lighthouse
 
-`vendor/lighthouse/consensus/types/src/state/beacon_state.rs:2623-2631` — `get_balance_churn_limit`. `:2634-2642` — `get_activation_exit_churn_limit`. `:2644-2648` — `get_consolidation_churn_limit` (Electra residual).
+`vendor/lighthouse/consensus/types/src/state/beacon_state.rs:2623-2631` — `get_balance_churn_limit` (fork-gated quotient inside via `single_pass.rs:1009-1019`).
 
-`:2708-2752` — `compute_exit_epoch_and_update_churn`. The variant `match` at the end explicitly accepts `BeaconState::Electra(_) | BeaconState::Fulu(_) | BeaconState::Gloas(_)` (lines 2744-2748), but **the churn-limit call at line 2716 is `self.get_activation_exit_churn_limit(spec)?` unconditionally** — no Gloas branch.
+**H14 dispatch (name-polymorphism).** `:2780-2793 get_activation_exit_churn_limit` — name-polymorphic, body fork-gates internally:
 
-`:2753-2798` — `compute_consolidation_epoch_and_update_churn`. Same pattern: `get_consolidation_churn_limit(spec)` unconditionally.
+```rust
+let max_limit = if self.fork_name_unchecked().gloas_enabled() {
+    spec.max_per_epoch_activation_churn_limit_gloas
+} else {
+    spec.max_per_epoch_activation_exit_churn_limit
+};
+Ok(std::cmp::min(max_limit, self.get_balance_churn_limit(spec)?))
+```
 
-Lighthouse has a separate `get_activation_churn_limit` at `beacon_state.rs:2036-2050` — but it's the **Deneb-era count-based formula** (`min(spec.max_per_epoch_activation_churn_limit, get_validator_churn_limit)`) using `get_validator_churn_limit` (validator-count-based), NOT the Gloas balance-based formula with `CHURN_LIMIT_QUOTIENT_GLOAS`. And it's never called from `process_pending_deposits` (per item #4 H8 finding). The presence of a Deneb-named helper under a Gloas-spec name is a footgun.
+At Gloas, this function implements the Gloas spec's `get_activation_churn_limit` semantics (Gloas-new MAX + Gloas-new quotient via `get_balance_churn_limit`'s internal fork-gate).
 
-H1–H11 ✓. **H12 ✗**. **H13 ✗**. **H14 ✗** (Deneb-flavour function exists but doesn't match Gloas spec). **H15 ✗**.
+**H15 ✓.** `:2798-2800 get_exit_churn_limit` is the Gloas-new helper (uncapped variant).
+
+**H13 dispatch (internal fork-gate).** `:2802-2812 get_consolidation_churn_limit`:
+
+```rust
+if self.fork_name_unchecked().gloas_enabled() {
+    let total_active_balance = self.get_total_active_balance()?;
+    let churn = total_active_balance.safe_div(spec.consolidation_churn_limit_quotient)?;
+    Ok(churn.safe_sub(churn.safe_rem(spec.effective_balance_increment)?)?)
+} else {
+    self.get_balance_churn_limit(spec)?
+        .safe_sub(self.get_activation_exit_churn_limit(spec)?)
+        .map_err(Into::into)
+}
+```
+
+**H12 dispatch (internal fork-gate).** `:2896-2935 compute_exit_epoch_and_update_churn` at lines 2906-2910:
+
+```rust
+let per_epoch_churn = if self.fork_name_unchecked().gloas_enabled() {
+    self.get_exit_churn_limit(spec)?
+} else {
+    self.get_activation_exit_churn_limit(spec)?
+};
+```
+
+The local function name-polymorphism extends into `per_epoch_processing/single_pass.rs:994-1007` (`get_activation_exit_churn_limit` local fn) and `:1009-1019` (`get_balance_churn_limit` local fn) — both fork-gate the MAX/QUOTIENT internally for the in-pass deposit-processing path.
+
+H1–H11 ✓. **H12 ✓**. **H13 ✓**. **H14 ✓** (via name-polymorphism — `get_activation_exit_churn_limit` returns Gloas semantics at Gloas). **H15 ✓**.
 
 ### teku
 
-`vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/versions/electra/helpers/BeaconStateAccessorsElectra.java:85-91` — `getActivationExitChurnLimit`. Co-located in the Electra helpers.
+`vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/versions/electra/helpers/BeaconStateAccessorsElectra.java:85-91` — `getActivationExitChurnLimit` (Electra formula).
+`BeaconStateMutatorsElectra.java:77-104` — `computeExitEpochAndUpdateChurn` (calls `getActivationExitChurnLimit`).
+`:135-168` — `computeConsolidationEpochAndUpdateChurn`.
 
-`vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/versions/electra/helpers/BeaconStateMutatorsElectra.java:77-104` — `computeExitEpochAndUpdateChurn`. Calls `stateAccessorsElectra.getActivationExitChurnLimit(state)` at line 91 unconditionally.
+**H12 dispatch (Java subclass override).** `vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/versions/gloas/helpers/BeaconStateMutatorsGloas.java:71-99` overrides `computeExitEpochAndUpdateChurn` and substitutes `beaconStateAccessorsGloas.getExitChurnLimit(state)` at line 78.
 
-`:135-168` — `computeConsolidationEpochAndUpdateChurn`. Calls `getConsolidationChurnLimit` (= residual model).
+**H14 dispatch (Java subclass override).** `vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/versions/gloas/helpers/BeaconStateAccessorsGloas.java:101-103`:
 
-The Gloas namespace at `vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/versions/gloas/helpers/` contains `BeaconStateAccessorsGloas`, `BeaconStateMutatorsGloas`, `MiscHelpersGloas`, `PredicatesGloas` — but **none of them override `getActivationExitChurnLimit`, `getConsolidationChurnLimit`, `computeExitEpochAndUpdateChurn`, or `computeConsolidationEpochAndUpdateChurn`**. The Electra implementations are inherited unchanged at Gloas.
+```java
+public UInt64 getActivationChurnLimit(final BeaconStateElectra state) {
+    return getBalanceChurnLimit(state)
+        .min(configGloas.getMaxPerEpochActivationChurnLimitGloas());
+}
+```
 
-H1–H11 ✓. **H12 ✗**. **H13 ✗**. **H14 ✗** (no Gloas activation-churn helper override). **H15 ✗**.
+`getExitChurnLimit` (H15 ✓) is defined in the same file at line 111.
+
+**H13 dispatch (Java subclass override).** `BeaconStateAccessorsGloas.java:124-127`:
+
+```java
+public UInt64 getConsolidationChurnLimit(final BeaconStateElectra state) {
+    return getTotalActiveBalance(state).dividedBy(configGloas.getConsolidationChurnLimitQuotient());
+}
+```
+
+`EpochProcessorGloas.java:73-75` overrides `getPendingDepositsChurnLimit` to call `beaconStateAccessorsGloas.getActivationChurnLimit(state)` — wiring the Gloas activation helper into item #4's deposit-drain path.
+
+H1–H11 ✓. **H12 ✓**. **H13 ✓**. **H14 ✓**. **H15 ✓**.
 
 ### nimbus
 
-`vendor/nimbus/beacon_chain/spec/beaconstate.nim:253-262` — `get_balance_churn_limit`. `:265-274` — `get_activation_exit_churn_limit`. `:276-284` — `get_consolidation_churn_limit*` (Electra residual; signature accepts `electra.BeaconState | fulu.BeaconState | gloas.BeaconState` but body is Electra formula).
+`vendor/nimbus/beacon_chain/spec/beaconstate.nim:253-262` — `get_balance_churn_limit`. `:265-274` — `get_activation_exit_churn_limit` (Electra).
 
-`:286-314` — `compute_exit_epoch_and_update_churn*`. Signature accepts the same union type. Body line 293: `let per_epoch_churn = get_activation_exit_churn_limit(cfg, state, cache)` — unconditional Electra helper call.
+**H14 dispatch (compile-time `when` variant function).** `:305 get_activation_churn_limit*` — Gloas-new helper with explicit spec reference at `:304`:
 
-`:317-345` — `compute_consolidation_epoch_and_update_churn*`. Same pattern.
+```nim
+# https://github.com/ethereum/consensus-specs/blob/v1.7.0-alpha.7/specs/gloas/beacon-chain.md#new-get_activation_churn_limit
+func get_activation_churn_limit*(...)
+```
 
-The compile-time fork-dispatch (union type on the function signature) allows the Gloas variant to be dispatched, but the **body itself does not branch on fork version** — the Electra helper is called regardless of whether the state is `electra`, `fulu`, or `gloas`.
+**H15 ✓.** `get_exit_churn_limit*` defined at line 319.
 
-H1–H11 ✓. **H12 ✗** (Electra helper at Gloas). **H13 ✗** (Electra residual at Gloas). **H14 ✗**. **H15 ✗**.
+**H13 dispatch (compile-time `when` variant function).** `:332-339` defines the Electra `get_consolidation_churn_limit*` (residual model); `:341-349` defines the Gloas variant:
+
+```nim
+# https://github.com/ethereum/consensus-specs/blob/v1.7.0-alpha.7/specs/gloas/beacon-chain.md#modified-get_consolidation_churn_limit
+func get_consolidation_churn_limit*(...) =
+  total_active_balance(state, cache) div cfg.CONSOLIDATION_CHURN_LIMIT_QUOTIENT
+```
+
+Compile-time dispatch via the union-type / per-fork signature.
+
+**H12 dispatch (compile-time `when` branch).** `compute_exit_epoch_and_update_churn*` at `:353-388` selects the per-epoch churn at compile time:
+
+```nim
+let per_epoch_churn =
+  when typeof(state).kind >= ConsensusFork.Gloas:
+    get_exit_churn_limit(cfg, state, cache)
+  else:
+    get_activation_exit_churn_limit(cfg, state, cache)
+```
+
+Similarly `:397 get_consolidation_churn_limit(cfg, state, cache)` is dispatched per-fork via the union-type signature.
+
+H1–H11 ✓. **H12 ✓**. **H13 ✓**. **H14 ✓**. **H15 ✓**.
 
 ### lodestar
 
-`vendor/lodestar/packages/state-transition/src/util/validator.ts:66-78` — `getBalanceChurnLimit`. `:88-93` — `getActivationExitChurnLimit` (Electra). `:95-103` — **`getActivationChurnLimit` (Gloas-new)** with explicit JSDoc reference to the Gloas spec. `:107-114` — **`getExitChurnLimit` (Gloas-new)**.
+`vendor/lodestar/packages/state-transition/src/util/validator.ts:66-78` — `getBalanceChurnLimit`. `:88-93` — `getActivationExitChurnLimit` (Electra). `:95-103` — **`getActivationChurnLimit` (Gloas-new)** with explicit JSDoc spec reference. `:107-114` — **`getExitChurnLimit` (Gloas-new)**.
 
 ```typescript
 // Gloas spec ref: gloas/beacon-chain.md#new-get_activation_churn_limit
@@ -178,52 +265,72 @@ export function getActivationChurnLimit(epochCtx: EpochCache): number {
 }
 
 // Gloas spec ref: gloas/beacon-chain.md#new-get_exit_churn_limit
-export function getExitChurnLimit(epochCtx: EpochCache): number {
-  return getBalanceChurnLimit(
-    epochCtx.totalActiveBalanceIncrements,
-    epochCtx.config.CHURN_LIMIT_QUOTIENT_GLOAS,
-    epochCtx.config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA
-  );
-}
+export function getExitChurnLimit(epochCtx: EpochCache): number { ... }
 ```
 
-`:115-130` — `getConsolidationChurnLimit` (**fork-gated** — `if (fork >= ForkSeq.gloas) { return getBalanceChurnLimit(..., CONSOLIDATION_CHURN_LIMIT_QUOTIENT, 0); }` else residual).
+**H13 dispatch (runtime ternary).** `:115-130 getConsolidationChurnLimit`: `if (fork >= ForkSeq.gloas) { return getBalanceChurnLimit(..., CONSOLIDATION_CHURN_LIMIT_QUOTIENT, 0); }` else residual.
 
-`vendor/lodestar/packages/state-transition/src/util/epoch.ts:50-77` — `computeExitEpochAndUpdateChurn` (**fork-gated**):
+**H12 dispatch (runtime ternary).** `vendor/lodestar/packages/state-transition/src/util/epoch.ts:50-77 computeExitEpochAndUpdateChurn`:
 
 ```typescript
 const perEpochChurn =
   fork >= ForkSeq.gloas ? getExitChurnLimit(state.epochCtx) : getActivationExitChurnLimit(state.epochCtx);
 ```
 
-`:78-108` — `computeConsolidationEpochAndUpdateChurn` (also fork-gated via `getConsolidationChurnLimit(fork, ...)`).
+`:78-108 computeConsolidationEpochAndUpdateChurn` also fork-gated via `getConsolidationChurnLimit(fork, ...)`.
 
 Mainnet config (`vendor/lodestar/packages/config/src/chainConfig/configs/mainnet.ts`): `CHURN_LIMIT_QUOTIENT_GLOAS = 32768`, `MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT_GLOAS = 256_000_000_000`, `CONSOLIDATION_CHURN_LIMIT_QUOTIENT = 65536`.
 
-H1–H11 ✓. **H12 ✓**. **H13 ✓**. **H14 ✓**. **H15 ✓** — the only client with the full EIP-8061 helper family wired and fork-gated.
+H1–H11 ✓. **H12 ✓**. **H13 ✓**. **H14 ✓**. **H15 ✓**.
 
 ### grandine
 
-`vendor/grandine/helper_functions/src/accessors.rs:954-960` — `get_balance_churn_limit`. The helpers `get_activation_exit_churn_limit` (~line 970) and `get_consolidation_churn_limit` (line 974-979) are in the same file with Electra formulas.
+`vendor/grandine/helper_functions/src/accessors.rs:954-960` — `get_balance_churn_limit`.
 
-`vendor/grandine/helper_functions/src/mutators.rs:177-209` — `compute_exit_epoch_and_update_churn`. Body uses `get_activation_exit_churn_limit(config, state)` unconditionally — no fork branch.
+**H14 dispatch (`state.is_post_gloas()` predicate).** `:991 get_activation_churn_limit` — Gloas-new helper, called at the activation-churn site in `process_pending_deposits` (item #4).
 
-`:211-248` — `compute_consolidation_epoch_and_update_churn`. Uses `get_consolidation_churn_limit(config, state)` (Electra residual) unconditionally.
+**H15 ✓.** `get_exit_churn_limit` is defined alongside (per item #6 finding).
 
-Grandine has a **single definition** of each primitive (notable consistency vs items #6/#9/#10/#12/#14 where it has multiple per-fork variants). The single definition is **not fork-aware** — at Gloas, the Electra formulas continue to fire.
+**H13 dispatch (`state.is_post_gloas()` predicate).** `:977-989 get_consolidation_churn_limit`:
 
-H1–H11 ✓. **H12 ✗** (Electra helper at Gloas). **H13 ✗** (Electra residual at Gloas). **H14 ✗** (no Gloas activation-churn helper). **H15 ✗** (no Gloas exit-churn helper).
+```rust
+pub fn get_consolidation_churn_limit<P: Preset>(
+    config: &Config,
+    state: &impl BeaconState<P>,
+) -> Gwei {
+    if state.is_post_gloas() {
+        // Gloas: quotient formula
+        ...
+            .div(config.consolidation_churn_limit_quotient)
+        ...
+    } else {
+        // Electra: residual
+    }
+}
+```
+
+**H12 dispatch (`state.is_post_gloas()` predicate).** `vendor/grandine/helper_functions/src/mutators.rs:172-208 compute_exit_epoch_and_update_churn`:
+
+```rust
+let per_epoch_churn = if state.is_post_gloas() {
+    get_exit_churn_limit(config, state)
+} else {
+    get_activation_exit_churn_limit(config, state)
+};
+```
+
+H1–H11 ✓. **H12 ✓**. **H13 ✓**. **H14 ✓**. **H15 ✓**.
 
 ## Cross-reference table
 
 | Client | `get_balance_churn_limit` | `compute_exit_epoch_and_update_churn` (H12) | `get_consolidation_churn_limit` (H13) | New `get_activation_churn_limit` (H14) | New `get_exit_churn_limit` (H15) |
 |---|---|---|---|---|---|
-| prysm | `core/helpers/validator_churn.go:22-28` | ✗ (`state-native/setters_churn.go:62-93` calls `ActivationExitChurnLimit` unconditionally) | ✗ (`validator_churn.go:50-52` returns Electra residual; `core/electra/churn.go:40-85` uses it) | ✗ (no Gloas balance-based helper; `ValidatorActivationChurnLimit` exists but is Deneb count-based) | ✗ |
-| lighthouse | `consensus/types/src/state/beacon_state.rs:2623-2631` | ✗ (`:2708-2752` calls `self.get_activation_exit_churn_limit(spec)?` unconditionally; variant `match` accepts Gloas but doesn't override) | ✗ (`:2644-2648` Electra residual) | ✗ (`:2036-2050 get_activation_churn_limit` is Deneb count-based — footgun name) | ✗ |
-| teku | `versions/electra/helpers/BeaconStateAccessorsElectra.java:85-91` | ✗ (`BeaconStateMutatorsElectra.java:77-104` calls `getActivationExitChurnLimit`; `BeaconStateMutatorsGloas` doesn't override) | ✗ (`BeaconStateAccessorsElectra` Electra residual; `BeaconStateAccessorsGloas` doesn't override) | ✗ | ✗ |
-| nimbus | `spec/beaconstate.nim:253-262` | ✗ (`:286-314` body uses `get_activation_exit_churn_limit` even with `gloas.BeaconState` signature) | ✗ (`:276-284` Electra residual) | ✗ | ✗ |
-| lodestar | `util/validator.ts:66-78` | **✓** (`util/epoch.ts:50-77` fork-gates `getExitChurnLimit` at `fork >= ForkSeq.gloas`) | **✓** (`util/validator.ts:115-130` fork-gates Gloas quotient at `fork >= ForkSeq.gloas`) | **✓** (`util/validator.ts:95-103` Gloas-new helper with spec reference) | **✓** (`util/validator.ts:107-114` Gloas-new helper with spec reference) |
-| grandine | `helper_functions/src/accessors.rs:954-960` | ✗ (`helper_functions/src/mutators.rs:177-209` calls `get_activation_exit_churn_limit` unconditionally) | ✗ (`accessors.rs:974-979` Electra residual) | ✗ | ✗ |
+| prysm | `core/helpers/validator_churn.go:22-28` | ✓ runtime wrapper (`ExitChurnLimitForVersion(b.version, ...)` at `validator_churn.go:116-121`) | ✓ runtime wrapper (`ConsolidationChurnLimitForVersion(b.version, ...)` at `:124-128`; `consolidationChurnLimitGloas` at `:101-104`) | ✓ runtime wrapper (`ActivationChurnLimitForVersion` at `:108-114`; `activationChurnLimitGloas` at `:70-72`) | ✓ `exitChurnLimitGloas` at `:86-88` |
+| lighthouse | `consensus/types/src/state/beacon_state.rs:2623-2631` | ✓ internal fork-gate (`:2906-2910` uses `gloas_enabled()` to choose between `get_exit_churn_limit` and `get_activation_exit_churn_limit`) | ✓ internal fork-gate (`:2802-2812` Gloas quotient formula vs Electra residual) | ✓ name-polymorphism (`:2780-2793 get_activation_exit_churn_limit` internally fork-gates MAX + QUOTIENT to produce Gloas-spec semantics at Gloas) | ✓ `:2798-2800 get_exit_churn_limit` |
+| teku | `versions/electra/helpers/BeaconStateAccessorsElectra.java:85-91` | ✓ subclass override (`BeaconStateMutatorsGloas.computeExitEpochAndUpdateChurn:71-99` substitutes `getExitChurnLimit`) | ✓ subclass override (`BeaconStateAccessorsGloas.getConsolidationChurnLimit:124-127` quotient formula) | ✓ subclass override (`BeaconStateAccessorsGloas.getActivationChurnLimit:101-103`; wired via `EpochProcessorGloas.getPendingDepositsChurnLimit:73-75`) | ✓ `BeaconStateAccessorsGloas.getExitChurnLimit:111` |
+| nimbus | `spec/beaconstate.nim:253-262` | ✓ compile-time `when typeof(state).kind >= ConsensusFork.Gloas` (`beaconstate.nim:362-365`) | ✓ compile-time per-fork variant function (`:341-349` Gloas variant with quotient formula) | ✓ compile-time per-fork variant function (`:305 get_activation_churn_limit*` with Gloas spec reference) | ✓ `get_exit_churn_limit*` at `:319` |
+| lodestar | `util/validator.ts:66-78` | ✓ runtime ternary (`util/epoch.ts:50-77` fork-gates `getExitChurnLimit` at `fork >= ForkSeq.gloas`) | ✓ runtime ternary (`util/validator.ts:115-130` fork-gates Gloas quotient at `fork >= ForkSeq.gloas`) | ✓ runtime ternary (`util/validator.ts:95-103` Gloas-new helper with spec reference) | ✓ `util/validator.ts:107-114` Gloas-new helper with spec reference |
+| grandine | `helper_functions/src/accessors.rs:954-960` | ✓ `state.is_post_gloas()` predicate (`mutators.rs:181-185`) | ✓ `state.is_post_gloas()` predicate (`accessors.rs:977-989` Gloas quotient vs Electra residual) | ✓ `state.is_post_gloas()` predicate (`accessors.rs:991 get_activation_churn_limit`) | ✓ `accessors.rs get_exit_churn_limit` |
 
 ## Empirical tests
 
@@ -243,73 +350,60 @@ H1–H11 ✓. **H12 ✗** (Electra helper at Gloas). **H13 ✗** (Electra residu
 
 ### Gloas-surface
 
-No Gloas EF fixtures yet for the churn primitives. H12–H15 are currently source-only. The family findings (items #2 H6, #3 H8, #4 H8, #6 H8, #8 H9, #9 H10) are the corroborating evidence — each of those Gloas-target divergences cascades from this audit's H12/H13/H14 failures.
+No Gloas EF fixtures yet for the churn primitives. H12–H15 are currently source-only. The family findings (items #2 H6, #3 H8, #4 H8, #6 H8, #8 H9, #9 H10) have all vacated under the per-client Glamsterdam branches, providing strong corroboration that the chokepoint is uniform.
 
 ### Suggested fuzzing vectors
 
 #### T1 — Mainline canonical
 - **T1.1 (priority — generate dedicated EF fixture set for the primitives).** Pre-state with known `earliest_exit_epoch` + `exit_balance_to_consume` + total active balance + Pectra fork epoch; call with known `exit_balance`; verify expected post-state. Pure-function fuzzing, directly cross-clientable.
 - **T1.2 (priority — Pectra residual-budget verification).** State with known `get_balance_churn_limit` = X, `get_activation_exit_churn_limit` = min(MAX, X). Verify `get_consolidation_churn_limit = X - min(MAX, X)`.
-- **T1.3 (Glamsterdam-target — Gloas independent-budget verification).** Gloas state. Verify `get_activation_churn_limit = min(MAX_GLOAS, max(MIN_E, TAB/QUOTIENT_GLOAS))`, `get_exit_churn_limit = max(MIN_E, TAB/QUOTIENT_GLOAS)`, `get_consolidation_churn_limit = TAB/CONSOLIDATION_QUOTIENT - mod`. Lodestar would produce three distinct values; the other five would produce the Electra residual model values.
-- **T1.4 (Glamsterdam-target — `compute_exit_epoch_and_update_churn` fork-gate).** Synthetic Gloas state. Call the primitive with known `exit_balance`. Lodestar advances `earliest_exit_epoch` per the Gloas `get_exit_churn_limit` ceiling; the other five per the Electra `get_activation_exit_churn_limit` ceiling. Different `earliest_exit_epoch` written into state — pin the divergence numerically.
+- **T1.3 (Glamsterdam-target — Gloas independent-budget verification).** Gloas state. Verify `get_activation_churn_limit = min(MAX_GLOAS, max(MIN_E, TAB/QUOTIENT_GLOAS))`, `get_exit_churn_limit = max(MIN_E, TAB/QUOTIENT_GLOAS)`, `get_consolidation_churn_limit = TAB/CONSOLIDATION_QUOTIENT - mod`. All six clients should produce identical values.
+- **T1.4 (Glamsterdam-target — `compute_exit_epoch_and_update_churn` fork-gate).** Synthetic Gloas state. Call the primitive with known `exit_balance`. All six clients advance `earliest_exit_epoch` per the Gloas `get_exit_churn_limit` ceiling. Cross-client `state_root` should match.
 
 #### T2 — Adversarial probes
 - **T2.1 (priority — `exit_balance == 0` no-op).** The if-guard doesn't fire; post-state becomes `exit_balance_to_consume = consumed - 0 = consumed`. Verify all 6 clients handle identically.
 - **T2.2 (priority — `exit_balance == exit_balance_to_consume` boundary).** Strict `>` vs `>=` cross-validation. Per H8, equal values DON'T trigger the additional-epochs path.
 - **T2.3 (priority — extreme `exit_balance` overflow).** `exit_balance = 2048 ETH × 1000 validators = 2.048e15 gwei`. Verify `additional_epochs` math doesn't overflow.
-- **T2.4 (Glamsterdam-target — multi-call same block).** 3 voluntary exits + 1 partial withdrawal + 1 consolidation in same block. Each calls a different primitive but all share the same `state.exit_balance_to_consume` for the exit-side. Lodestar consumes the Gloas-formula budget; the other five consume the Electra-formula budget. Different per-validator `exit_epoch` assignments across the cohort.
+- **T2.4 (Glamsterdam-target — multi-call same block).** 3 voluntary exits + 1 partial withdrawal + 1 consolidation in same block. Each calls a different primitive but all share the same `state.exit_balance_to_consume` for the exit-side. All six clients consume the Gloas-formula budget; cross-client `state_root` should match.
 - **T2.5 (defensive — `MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA` floor never triggered on mainnet).** Verify `total_active_balance / quotient >> 128 ETH` at mainnet stake levels.
 - **T2.6 (defensive — teku's `minusMinZero` underflow-masking).** Assert H10's invariant `consumed >= exit_balance` is unreachable to violate; teku's saturating subtraction would silently mask any future bug that did violate it.
-
-## Mainnet reachability
-
-**Reachable on canonical traffic at Glamsterdam activation, on every block carrying any Track A operation (voluntary exit, partial withdrawal request, consolidation request) or any slashing operation** — i.e., essentially every Gloas-slot block, since slashings + exits + partial withdrawals are routine canonical traffic.
-
-**Trigger.** The first Gloas-slot block that invokes `compute_exit_epoch_and_update_churn` or `compute_consolidation_epoch_and_update_churn`. Lodestar dispatches the spec-correct `get_exit_churn_limit` / `get_consolidation_churn_limit` (Gloas-modified). The other five dispatch the Electra `get_activation_exit_churn_limit` / residual `get_consolidation_churn_limit`. Different `per_epoch_churn` values → different `additional_epochs` → different `earliest_exit_epoch` / `earliest_consolidation_epoch` written into state → different `validator.exit_epoch` assignments via `initiate_validator_exit` (item #6) and `slash_validator` (items #8, #9) → divergent state roots.
-
-**Severity.** This is the **chokepoint** divergence. A single coordinated PR per lagging client (fork-gate the helper calls inside the two primitive functions) closes:
-
-- Item #2 H6 (consolidation-churn modified formula)
-- Item #3 H8 (`compute_exit_epoch_and_update_churn` → `get_exit_churn_limit`)
-- Item #4 H8 (`process_pending_deposits` → `get_activation_churn_limit`)
-- Item #6 H8 (voluntary-exit cascade)
-- Item #8 H9 (attester-slashing cascade)
-- Item #9 H10 (proposer-slashing cascade)
-- This item's H12–H15 directly
-
-Six items in the EIP-8061 family. The fix scope is narrow: each lagging client needs to add the two Gloas-new helpers (`get_activation_churn_limit`, `get_exit_churn_limit`), fork-gate `compute_exit_epoch_and_update_churn` to use `get_exit_churn_limit` at Gloas, fork-gate `process_pending_deposits` to use `get_activation_churn_limit` at Gloas, and fork-gate `get_consolidation_churn_limit` to the Gloas quotient formula. Lodestar's implementation at `util/validator.ts:88-130` + `util/epoch.ts:50-108` is the reference.
-
-**Mitigation window.** Source-only at audit time; no Gloas EF fixtures for the primitives. Closing requires the five lagging clients (prysm, lighthouse, teku, nimbus, grandine) to ship the EIP-8061 fork-gate before Glamsterdam fork-cut. Without it, mainnet at Glamsterdam activation forks the lodestar cohort from the rest on every block carrying any churn-paced operation.
 
 ## Conclusion
 
 **Status: source-code-reviewed.** Source review of all six clients against the updated checkouts (versions per front matter) confirms the Pectra-surface hypotheses (H1–H11) remain satisfied: identical `get_balance_churn_limit` / `get_activation_exit_churn_limit` / `get_consolidation_churn_limit` formulas, identical `compute_*_and_update_churn` algorithms (max-epoch, strict `<` new-epoch detection, full-budget reset, ceiling-division, state-mutation order, underflow-safe subtraction). 396 implicit fixture invocations from items #2/#3/#6/#8/#9 cross-validate the Pectra surface — no divergence observed.
 
-**Glamsterdam-target findings (chokepoint).** Four new hypotheses (H12–H15) capture the EIP-8061 fork-gate requirements:
+**Glamsterdam-target findings (chokepoint).** All four EIP-8061 hypotheses (H12–H15) are satisfied across all six clients:
 
-- **H12** (compute_exit_epoch fork-gate) — only lodestar uses `get_exit_churn_limit` at Gloas; five fail.
-- **H13** (consolidation-churn modified formula) — only lodestar uses the quotient-based formula at Gloas; five fail.
-- **H14** (new `get_activation_churn_limit`) — only lodestar defines and uses it; five fail.
-- **H15** (new `get_exit_churn_limit`) — only lodestar defines and uses it; five fail.
+- **H12 ✓** (compute_exit_epoch fork-gate) — every client fork-gates `compute_exit_epoch_and_update_churn` to consume `get_exit_churn_limit` at Gloas.
+- **H13 ✓** (consolidation-churn modified formula) — every client fork-gates `get_consolidation_churn_limit` to the Gloas quotient formula at Gloas.
+- **H14 ✓** (new `get_activation_churn_limit`) — every client defines and uses the Gloas-new activation-churn helper (lighthouse via name-polymorphism on `get_activation_exit_churn_limit`).
+- **H15 ✓** (new `get_exit_churn_limit`) — every client defines the Gloas-new exit-churn helper.
 
-**This is the chokepoint of the EIP-8061 family.** Six other items (#2 H6, #3 H8, #4 H8, #6 H8, #8 H9, #9 H10) cascade from these primitive failures. Closing them requires a single coordinated fix-PR scope per lagging client: add the two Gloas-new helpers (`get_activation_churn_limit`, `get_exit_churn_limit`), fork-gate the two compute primitives, fork-gate `get_consolidation_churn_limit`.
+Six distinct dispatch idioms catalogued across the EIP-8061 family:
+- **prysm** uses runtime version wrappers (`ActivationChurnLimitForVersion`, `ExitChurnLimitForVersion`, `ConsolidationChurnLimitForVersion`).
+- **lighthouse** uses name-polymorphism for the activation-churn function (`get_activation_exit_churn_limit` body fork-gates MAX + QUOTIENT internally) plus internal fork-gate inside `compute_exit_epoch_and_update_churn` and `get_consolidation_churn_limit`.
+- **teku** uses Java subclass override polymorphism (`BeaconStateAccessorsGloas`, `BeaconStateMutatorsGloas` override the four helpers).
+- **nimbus** uses compile-time per-fork variant functions and `when typeof(state).kind >= ConsensusFork.Gloas` dispatch.
+- **lodestar** uses runtime `fork >= ForkSeq.gloas` ternaries throughout.
+- **grandine** uses the `state.is_post_gloas()` predicate at every fork-gated call site.
+
+**This chokepoint was the source of the EIP-8061 family findings.** Six other items (#2 H6, #3 H8, #4 H8, #6 H8, #8 H9, #9 H10) all cascaded from these primitive failures. With each lagging client now on its Glamsterdam branch — prysm `EIP-8061`, teku `glamsterdam-devnet-2`, grandine `glamsterdam-devnet-3`, lighthouse and nimbus `unstable` — the entire family has vacated. The fix was already shipped across the five branches before this audit re-pinned.
 
 Notable per-client style differences:
 
-- **prysm** has asymmetric file placement (exit in `state-native/setters_churn.go`, consolidation in `core/electra/churn.go`). Multiple defensive math layers (`math.Div64` for consolidation, raw division for exit). At Gloas, no fork-gate anywhere.
-- **lighthouse** uses explicit `BeaconState::Electra(_) | Fulu(_) | Gloas(_)` match in the compute primitives — but the churn-limit call inside is unconditional. The `get_activation_churn_limit` function defined at `beacon_state.rs:2036-2050` is the Deneb count-based formula, not the Gloas balance-based one — a footgun under the Gloas spec name.
-- **teku** uses subclass-override polymorphism throughout; `BeaconStateAccessorsGloas` / `BeaconStateMutatorsGloas` exist but neither overrides the four functions in question.
-- **nimbus** uses compile-time union-type dispatch (`electra | fulu | gloas BeaconState`) but the function body is fork-agnostic.
-- **lodestar** has the full EIP-8061 plumbing with explicit spec references in JSDoc comments — the only spec-aligned client at Gloas across all four primitives.
-- **grandine** has a single definition of each primitive (cleaner than items #6/#9/#10/#12/#14 which had multiple per-fork variants) but no fork-gate in the body.
+- **prysm** has a clean three-`*ForVersion` wrapper pattern (`ActivationChurnLimitForVersion`, `ExitChurnLimitForVersion`, `ConsolidationChurnLimitForVersion`) — narrowest dispatch surface.
+- **lighthouse** uses name-polymorphism (`get_activation_exit_churn_limit` is the Gloas-meaning activation-churn function via internal fork-gate). Documented at `:2778-2779`: "From Gloas onwards this is the activation-only churn limit (EIP-8061); exits use [`Self::get_exit_churn_limit`]."
+- **teku** uses subclass-override polymorphism — `BeaconStateAccessorsGloas` overrides four helpers cleanly.
+- **nimbus** uses compile-time per-fork variant functions with explicit spec references (`# https://.../gloas/beacon-chain.md#new-get_activation_churn_limit`).
+- **lodestar** has the full EIP-8061 plumbing with explicit spec references in JSDoc comments and uniform runtime fork-ternary dispatch.
+- **grandine** uses the `state.is_post_gloas()` Rust trait predicate uniformly across all four hypotheses.
 
 Recommendations to the harness and the audit:
 
 - **Generate dedicated EF fixture set for the primitives** — pure-function, directly fuzzable; closes the gap to source-only verification.
-- **Cross-client byte-for-byte equivalence test** — feed identical pre-state + exit_balance to all 6 clients; compare post-state fields + return value. Lodestar will differ from the others on Gloas inputs.
-- **Coordinate the EIP-8061 fork-gate fix** across the five lagging clients (prysm, lighthouse, teku, nimbus, grandine). Single PR per client with narrow scope (add 2 helpers + fork-gate 2 compute primitives + fork-gate 1 churn-limit accessor). Closes 6 family items simultaneously.
-- **lighthouse's `get_activation_churn_limit` Deneb-name vs Gloas-spec footgun** — rename the Deneb-era helper to `get_validator_activation_churn_limit` (or similar) to disambiguate from the Gloas-spec function with the same name. A careless future patch could replace `get_activation_exit_churn_limit` with this `get_activation_churn_limit` thinking it was Gloas-correct.
-- **Codify nimbus's union-type fork-dispatch** — currently the union type allows the function to be called for Gloas states, but the body is fork-agnostic. Add an explicit `when state is gloas.BeaconState` branch at the body level.
+- **Cross-client byte-for-byte equivalence test** — feed identical pre-state + exit_balance to all 6 clients; compare post-state fields + return value. Should match uniformly across all six clients at both Pectra and Gloas inputs.
+- **Standalone audit of `compute_activation_exit_epoch`** — used by every Pectra exit/consolidation/activation path; downstream of this item.
+- **Document the six-dispatch-idiom catalog** as a reference for future fork-gating audits — H12–H15 illustrate that observable Gloas semantics can be achieved through structurally distinct mechanisms.
 
 ## Cross-cuts
 
@@ -326,28 +420,28 @@ This item is the **chokepoint** of the family. Each family item observed the div
 | #8 | H9 | same as #6 (via `slash_validator → initiate_validator_exit`) |
 | #9 | H10 | same as #8 |
 
-All cascading from this item's H12/H13/H14/H15. Closing this item closes the family.
+All vacated under the per-client Glamsterdam branches. The chokepoint closes by composition.
 
 ### With item #11 (`upgrade_to_electra`) + sister `upgrade_to_gloas`
 
-Item #11 initialises `state.exit_balance_to_consume = get_activation_exit_churn_limit(post)` at Pectra activation. Sister item `upgrade_to_gloas` should similarly initialise per the Gloas helpers (`exit_balance_to_consume = get_exit_churn_limit(post)`, `consolidation_balance_to_consume = get_consolidation_churn_limit(post)`). Whether each client's `upgrade_to_gloas` uses the Gloas-correct helpers is a sister audit gap.
+Item #11 initialises `state.exit_balance_to_consume = get_activation_exit_churn_limit(post)` at Pectra activation. Sister item `upgrade_to_gloas` similarly initialises per the Gloas helpers (`exit_balance_to_consume = get_exit_churn_limit(post)`, `consolidation_balance_to_consume = get_consolidation_churn_limit(post)`). Whether each client's `upgrade_to_gloas` uses the Gloas-correct helpers is a sister audit gap — but given the now-uniform helper implementations at the Glamsterdam branches, the upgrade-time seeding should be consistent across all six clients.
 
 ### With item #5 (`process_pending_consolidations`)
 
-Item #5 reads `consolidation_balance_to_consume` set by this item's `compute_consolidation_epoch_and_update_churn`. At Gloas, lodestar writes a different value than the other five clients via H13's divergence — but item #5 itself is impact: none because the function body is unchanged. The propagation through state reads doesn't amplify the divergence at item #5.
+Item #5 reads `consolidation_balance_to_consume` set by this item's `compute_consolidation_epoch_and_update_churn`. With this item now uniform across all six clients, the propagation through state reads also produces uniform post-state.
 
 ### With item #10 (`process_slashings`)
 
-Item #10 reads `state.slashings[]` set by this item's caller chain (items #8 H9 / #9 H10 via `slash_validator`). At Gloas, the cascade through this item affects `validator.exit_epoch` and `validator.withdrawable_epoch` but NOT the `state.slashings[]` vector values (which are set to `validator.effective_balance` — unchanged by the churn helpers). Item #10 is impact: none because the slashings-vector entries themselves are not divergent.
+Item #10 reads `state.slashings[]` set by this item's caller chain (items #8 H9 / #9 H10 via `slash_validator`). The cascade through this item affects `validator.exit_epoch` and `validator.withdrawable_epoch` but NOT the `state.slashings[]` vector values (which are set to `validator.effective_balance` — unchanged by the churn helpers). Item #10 was always impact: none on this axis.
 
 ## Adjacent untouched
 
 1. **Generate dedicated EF fixture set** — highest-priority gap closure.
 2. **Cross-client byte-for-byte equivalence test** — pre-state + exit_balance → post-state + return value across all 6 clients.
 3. **Edge case fixtures**: `exit_balance == 0`, `exit_balance == exit_balance_to_consume`, extreme `exit_balance`.
-4. **lighthouse's `get_activation_churn_limit` Deneb-name vs Gloas-spec footgun** — codify the disambiguation.
+4. **lighthouse's name-polymorphism documentation** — `get_activation_exit_churn_limit` doubles as the Gloas-meaning activation-churn function; the docstring at `:2778-2779` explicitly notes this. Worth tracking as a reference example for future fork-gating audits.
 5. **teku's `minusMinZero` saturating subtraction underflow-masking contract test** — assert algorithm invariants unreachable.
-6. **prysm's asymmetric file placement** — codify the structural differences for documentation.
+6. **prysm's `*ForVersion` wrapper pattern documentation** — narrowest dispatch surface; reference for future fork-gating.
 7. **lodestar BigInt-Number coercion** — pre-emptive fuzz target for any future amount-unit change.
 8. **`MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA` floor never triggered on mainnet** — formal verification.
 9. **`MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT` consolidation asymmetry** — Pectra-only (Gloas splits the budgets).
@@ -355,6 +449,6 @@ Item #10 reads `state.slashings[]` set by this item's caller chain (items #8 H9 
 11. **`get_total_active_balance(state)` cache coherence audit across all 6 clients** — invalidation timing at slot boundaries.
 12. **Multi-call-same-block stateful fixture** — 3 voluntary exits + 1 consolidation + 1 partial withdrawal in same block all consuming shared budgets.
 13. **Cross-cut with item #11 / sister `upgrade_to_gloas`** — verify the upgrade-time seeding of `exit_balance_to_consume` / `consolidation_balance_to_consume` interacts correctly with the FIRST call to these primitives post-fork.
-14. **Coordinated EIP-8061 fork-gate PR scope** — single PR per lagging client (prysm, lighthouse, teku, nimbus, grandine) closes items #2 H6, #3 H8, #4 H8, #6 H8, #8 H9, #9 H10, and this item's H12-H15. Reference implementation: lodestar's `util/validator.ts:88-130` + `util/epoch.ts:50-108`.
-15. **nimbus union-type fork-dispatch** — currently fork-agnostic body; add explicit `when state is gloas.BeaconState` branch for spec-traceability.
-16. **Gloas `CONSOLIDATION_CHURN_LIMIT_QUOTIENT = 65536` vs `CHURN_LIMIT_QUOTIENT_GLOAS = 32768` value verification** — the two quotients have different mainnet values (per lodestar's `chainConfig/configs/mainnet.ts`). Verify all client configs match at Glamsterdam activation.
+14. **Six-dispatch-idiom uniformity catalog** — H12–H15 across the six clients showcase six structurally distinct mechanisms achieving the same observable Gloas semantics. Useful reference for future fork-gating audits.
+15. **nimbus per-fork variant functions** — explicit spec references in code comments (e.g. `# https://.../gloas/beacon-chain.md#new-get_activation_churn_limit`) are the strongest spec-traceability pattern.
+16. **Gloas `CONSOLIDATION_CHURN_LIMIT_QUOTIENT = 65536` vs `CHURN_LIMIT_QUOTIENT_GLOAS = 32768` value verification** — the two quotients have different mainnet values. Verify all client configs match at Glamsterdam activation.
