@@ -1,143 +1,160 @@
-# Item 53 — `DataColumnsByRootIdentifier` SSZ container audit (Fulu-NEW; consumed by `DataColumnSidecarsByRoot v1` RPC, item #46)
+---
+status: source-code-reviewed
+impact: none
+last_update: 2026-05-13
+builds_on: [28, 34, 45, 46, 47, 50, 52]
+eips: [EIP-7594]
+prysm_version: v7.1.3-rc.3-213-gd35d65625f
+lighthouse_version: v8.1.3
+teku_version: 26.4.0-72-gc05af0eaa0
+nimbus_version: v26.3.1
+lodestar_version: v1.42.0-69-g35940ffd61
+grandine_version: 2.0.4-18-geeb33a92
+---
 
-**Status:** no-divergence-pending-fixture-run on SSZ wire format; **multiple naming/casing divergences found** — audited 2026-05-04. **Twenty-third Fulu-NEW item, FIFTEENTH PeerDAS audit, FIRST FULU-NEW SSZ-CONTAINER detail audit**. Consumed by `DataColumnSidecarsByRoot v1` RPC (item #46) as `List[DataColumnsByRootIdentifier, MAX_REQUEST_BLOCKS_DENEB]` (item #52 cap).
+# 53: `DataColumnsByRootIdentifier` SSZ container audit — Fulu-NEW container consumed by `DataColumnSidecarsByRoot v1`; Pattern AA + FF scope expansion
 
-**Spec definition** (`fulu/p2p-interface.md` "Containers" section):
+## Summary
+
+Fulu-NEW SSZ container (`vendor/consensus-specs/specs/fulu/p2p-interface.md:72-75`):
+
 ```python
 class DataColumnsByRootIdentifier(Container):
     block_root: Root
     columns: List[ColumnIndex, NUMBER_OF_COLUMNS]
 ```
 
-2-field SSZ container:
-- `block_root: Root` (Bytes32 fixed)
-- `columns: List[ColumnIndex, NUMBER_OF_COLUMNS]` (variable-length list of uint64, max 128)
+Two-field container — `block_root: Root` (Bytes32 fixed) + `columns: List[ColumnIndex, NUMBER_OF_COLUMNS]` (variable-length list of `uint64`, cap = 128). Consumed by `DataColumnSidecarsByRoot v1` RPC (item #46) as `List[DataColumnsByRootIdentifier, MAX_REQUEST_BLOCKS_DENEB]` (item #52 cap = 128 outer; item #33 cap = 128 inner).
 
-Used in `DataColumnSidecarsByRoot v1` request: `List[DataColumnsByRootIdentifier, MAX_REQUEST_BLOCKS_DENEB]` (max 128 entries — item #52 cap).
+**Semantic shift from Deneb's `BlobIdentifier`**: Deneb's `(block_root, index: uint64)` carries a single blob index per identifier. Fulu's `(block_root, columns: List[...])` carries a list of column indices per identifier — **batched** request shape. For multi-column requests, the plural model is ~5× more bandwidth-efficient (fewer redundant `block_root` headers).
 
-**Major findings**:
-1. **Spec model divergence from `BlobIdentifier`**: Deneb's `BlobIdentifier` is `(block_root, index: uint64)` — singular blob per identifier. Fulu's `DataColumnsByRootIdentifier` is `(block_root, columns: List[...])` — **plural columns per identifier**. Semantic shift: batch-of-columns-per-block-root. Reduces request payload size for multi-column-per-block requests.
-2. **Nimbus field-name divergence**: uses `indices` (`fulu.nim:111`) instead of spec's `columns`.
-3. **Teku internal naming inconsistency**: Java class `DataColumnsByRootIdentifierSchema` but SSZ container name passed to `ContainerSchema2` constructor is `"DataColumnIdentifier"` (`DataColumnsByRootIdentifierSchema.java:32`).
-4. **Lodestar camelCase**: uses `blockRoot` (TypeScript convention) vs spec `block_root` — handled via `jsonCase: "eth2"` for JSON serialization.
-5. **Nimbus has BOTH containers**: vestigial Deneb-style `DataColumnIdentifier(block_root, index)` (`fulu.nim:104-106`) AND new Fulu `DataColumnsByRootIdentifier(block_root, indices)` (`:109-111`). Suggests compatibility with older Fulu draft spec.
+**Fulu surface (carried forward from 2026-05-04 audit; cap value):** all 6 clients evaluate `NUMBER_OF_COLUMNS = 128` as the inner cap. **No production divergence on SSZ wire format** — SSZ encoding is field-order + type based, not field-name based, so the cosmetic naming divergences below produce byte-identical encodings.
 
-**SSZ wire-format consequence**: ALL 6 clients produce IDENTICAL SSZ bytes because SSZ encoding is field-order-and-type based, NOT field-name based. Naming divergences are COSMETIC at SSZ wire level but affect: (a) JSON REST API responses, (b) cross-team communication, (c) spec compliance.
+**Naming divergence cohort (Pattern AA scope expansion)**:
 
-**NEW Pattern AA scope expansion** (cross-cuts items #45 + #47): per-client SSZ container naming divergence extends from version-numbering (V2 vs V3) to FIELD NAMES (`columns` vs `indices`) and INTERNAL CLASS-VS-SSZ-NAME inconsistencies (teku).
+- **nimbus** uses `indices: DataColumnIndices` instead of spec's `columns` (`vendor/nimbus/beacon_chain/spec/datatypes/fulu.nim:109-111`). Same forward-fragility class as items #45 (MetaData v3) and #47 (Status v2) where Pattern AA describes SSZ container version-numbering divergence — this audit extends Pattern AA to FIELD NAMES.
+- **teku** has internal Java-class-vs-SSZ-container-name inconsistency: Java class is `DataColumnsByRootIdentifier`, but the SSZ container name string passed to `ContainerSchema2` is `"DataColumnIdentifier"` (singular, no "ByRoot") at `vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/datastructures/networking/libp2p/rpc/DataColumnsByRootIdentifierSchema.java:32`. The SSZ field names `"block_root"` and `"columns"` (`:33-34`) are spec-aligned — the inconsistency is only in the container-name metadata.
+- **lodestar** uses camelCase `blockRoot` (TypeScript convention) vs spec `block_root` at `vendor/lodestar/packages/types/src/fulu/sszTypes.ts:85`. Handled via `jsonCase: "eth2"` so JSON serialisation outputs spec snake_case.
 
-## Scope
+**Pattern FF scope expansion** (carried forward from item #50 grandine `max_request_blob_sidecars_fulu` vestigial field): cohort lifts from {grandine} to {grandine, nimbus} for VESTIGIAL DATA TYPES:
 
-In: `DataColumnsByRootIdentifier` SSZ container per-client implementation; field naming; type generics; column cap (NUMBER_OF_COLUMNS = 128); validation logic; comparison to legacy `BlobIdentifier` (Deneb-heritage); per-client class/struct organization; JSON serialization conventions.
+- **nimbus** (`vendor/nimbus/beacon_chain/spec/datatypes/fulu.nim:103-106`) carries a SECOND container `DataColumnIdentifier { block_root, index: ColumnIndex }` (singular, Deneb-style) alongside `DataColumnsByRootIdentifier` (plural). Spec-comment URLs reveal the singular form references `v1.5.0-alpha.10` (older draft); plural form references commit `b8b5fbb8d1...` (newer). Compatibility relic from earlier Fulu testnets.
+- **grandine** (`vendor/grandine/types/src/fulu/containers.rs:153-167`) **also carries BOTH** SSZ structs: `DataColumnIdentifier { block_root, index: ColumnIndex }` (singular, lines 153-159) AND `DataColumnsByRootIdentifier<P: Preset> { block_root, columns: ContiguousList<...> }` (plural, lines 161-167). **NEW finding this recheck** — previously Pattern FF was nimbus-only on this surface.
 
-Out: `DataColumnSidecarsByRoot v1` RPC handler architecture (item #46 covered); `DataColumnSidecar` schema (covered in items #34/#37); `compute_max_request_data_column_sidecars()` cap (item #49); `MAX_REQUEST_BLOCKS_DENEB` cap (item #52); `BlobIdentifier` Deneb-heritage container (covered implicitly via item #50).
+(teku, prysm, lighthouse have references to "DataColumnIdentifier" in non-SSZ utility/build-config sites — teku has a `record DataColumnIdentifier(Bytes32 blockRoot, UInt64 columnIndex)` Java record at `vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/datastructures/util/DataColumnIdentifier.java:20` as an internal data type; prysm has it in `BUILD.bazel:189`; lighthouse only as a code comment at `chain_spec.rs:2303`. None of these are SSZ wire types.)
+
+**Glamsterdam target (Gloas):** `vendor/consensus-specs/specs/gloas/p2p-interface.md` contains NO `DataColumnsByRootIdentifier` or `DataColumnIdentifier` references — verified by `grep -rn "DataColumnsByRootIdentifier\|DataColumnIdentifier" vendor/consensus-specs/specs/gloas/` returning 0 matches. The Fulu container carries forward verbatim into Gloas across all 6 clients. The `DataColumnSidecarsByRoot v1` RPC protocol IDs remain V1 at Gloas (per item #46 recheck), and the request-payload SSZ container is unchanged — but Gloas's `DataColumnSidecar` payload reshape (item #46 cross-cut) means the response shape changes while the request shape does not.
+
+**Spec-undefined edge cases (Pattern T family)**: spec is silent on whether empty `columns` list should be rejected, whether duplicate column indices should be rejected, and whether out-of-range indices should be rejected (the latter implicitly capped by the SSZ list-type bound). **None of the 6 clients explicitly validate these**.
+
+**Impact: none** — SSZ wire format byte-identical across all 6 (validated by 5+ months of mainnet cross-client `DataColumnSidecarsByRoot v1` exchanges); naming divergences are cosmetic at the SSZ layer; Gloas carries the Fulu container verbatim. Thirty-fourth `impact: none` result in the recheck series.
+
+## Question
+
+Pyspec defines the container at `vendor/consensus-specs/specs/fulu/p2p-interface.md:72-75`. The spec also references it as the request list element at `:494 List[DataColumnsByRootIdentifier, MAX_REQUEST_BLOCKS_DENEB]`. Gloas does not modify the container.
+
+Three recheck questions:
+
+1. **SSZ wire format** — do all 6 clients still produce byte-identical encodings of the 2-field container? Does the cohort of naming-divergent implementations (nimbus `indices`, teku `"DataColumnIdentifier"` schema name, lodestar `blockRoot`) persist?
+2. **Pattern FF vestigial data types** — does the {nimbus, grandine} cohort carrying BOTH the singular `DataColumnIdentifier` and plural `DataColumnsByRootIdentifier` SSZ structs persist? Has either client removed the dead singular type since the 2026-05-04 audit?
+3. **Glamsterdam target** — does the Fulu container carry forward unchanged into Gloas in all 6 clients?
 
 ## Hypotheses
 
-| # | Hypothesis | Verdict | Rationale |
-|---|---|---|---|
-| H1 | All 6 clients have a `DataColumnsByRootIdentifier` container (or analog) | ✅ all 6 | Spec-defined |
-| H2 | Container is 2-field: `block_root: Root, columns: List[ColumnIndex, NUMBER_OF_COLUMNS]` | ✅ all 6 (semantically) | Spec-defined; field names differ |
-| H3 | All 6 cap `columns` at NUMBER_OF_COLUMNS = 128 | ✅ all 6 | All 6 use NUMBER_OF_COLUMNS or hardcoded 128 |
-| H4 | All 6 use field name `columns` per spec | ❌ 5 of 6 (prysm, lighthouse, teku, lodestar, grandine); **nimbus uses `indices`** | Field-name divergence |
-| H5 | All 6 use snake_case `block_root` per spec | ❌ 5 of 6; **lodestar uses camelCase `blockRoot`** | TypeScript convention |
-| H6 | Class/struct name matches spec name `DataColumnsByRootIdentifier` | ✅ all 6 | All match spec name |
-| H7 | Internal SSZ container name (e.g., teku's `ContainerSchema2` constructor arg) matches class name | ❌ teku uses `"DataColumnIdentifier"` (singular, no "ByRoot") at `Schema.java:32` | NAMING INCONSISTENCY within teku |
-| H8 | Validation: empty `columns` list rejected | ❌ none of 6 explicitly reject empty | Spec-undefined edge case |
-| H9 | Validation: duplicate column indices rejected | ❌ none of 6 explicitly reject | Spec-undefined edge case |
-| H10 | All 6 SSZ-encode identically (field-order + types) | ✅ all 6 | SSZ field-name-agnostic |
-| H11 | Vestigial Deneb-style `(block_root, index)` container alongside | ❌ only **nimbus** has both `DataColumnIdentifier` (singular) AND `DataColumnsByRootIdentifier` (plural) | Pattern FF-style vestigial code |
+- **H1.** All 6 clients have `DataColumnsByRootIdentifier` (or an analog with spec-aligned field types).
+- **H2.** Container is 2-field semantically: `block_root: Root` + `columns: List[ColumnIndex, NUMBER_OF_COLUMNS]`.
+- **H3.** All 6 cap the inner `columns` list at `NUMBER_OF_COLUMNS = 128`.
+- **H4.** Field name `columns` per spec: 5 of 6 (prysm, lighthouse, teku, lodestar, grandine); nimbus uses `indices` (Pattern AA scope expansion).
+- **H5.** Field name `block_root` per spec (snake_case): 5 of 6; lodestar uses camelCase `blockRoot` (TypeScript convention) but maps to spec snake_case via `jsonCase: "eth2"`.
+- **H6.** SSZ container name in metadata: 5 of 6 use `"DataColumnsByRootIdentifier"`; teku uses `"DataColumnIdentifier"` (internal Pattern AA inconsistency at `DataColumnsByRootIdentifierSchema.java:32`).
+- **H7.** SSZ wire-format identical across all 6 (field-order + types match).
+- **H8.** Pattern FF — vestigial `DataColumnIdentifier` (singular Deneb-style) SSZ container present in {nimbus, grandine}. **NEW finding this recheck**: grandine joins the cohort; previously thought nimbus-only.
+- **H9.** Spec-undefined edge cases (empty list, duplicate indices, out-of-range indices) not explicitly validated in any client.
+- **H10.** *(Glamsterdam target)* `vendor/consensus-specs/specs/gloas/p2p-interface.md` does NOT modify the container. Carries forward verbatim.
+- **H11.** Live mainnet cross-client interop validates byte-identical encoding for 5+ months.
 
-## Per-client cross-reference
+## Findings
 
-| Client | Container source | Container name | Field 1 (block_root) | Field 2 (columns) | Vestigial? |
-|---|---|---|---|---|---|
-| **prysm** | `proto/prysm/v1alpha1/data_columns.proto:48-51` (protobuf-generated SSZ) | `DataColumnsByRootIdentifier` | `block_root: bytes [ssz_size=32]` | `columns: repeated uint64 [ssz_max=128]` (HARDCODED 128) | NO |
-| **lighthouse** | `consensus/types/src/data/data_column_sidecar.rs:32-38` | `DataColumnsByRootIdentifier<E>` | `block_root: Hash256` | `columns: VariableList<ColumnIndex, E::NumberOfColumns>` (generic) | NO |
-| **teku** | `ethereum/spec/src/main/java/tech/pegasys/teku/spec/datastructures/networking/libp2p/rpc/DataColumnsByRootIdentifier.java:26-61` + `Schema.java:27-35` | Class: `DataColumnsByRootIdentifier`; **SSZ container name: `"DataColumnIdentifier"` (Schema:32)** | `getBlockRoot() -> Bytes32` | `getColumns() -> List<UInt64>` (`SszUInt64ListSchema.create(specConfig.getNumberOfColumns())`) | NO |
-| **nimbus** | `beacon_chain/spec/datatypes/fulu.nim:108-111` | `DataColumnsByRootIdentifier* = object` | `block_root*: Eth2Digest` | **`indices*: DataColumnIndices`** (DataColumnIndices = `List[ColumnIndex, Limit(NUMBER_OF_COLUMNS)]`) | **YES** — also has `DataColumnIdentifier` (singular, `block_root + index`) at `:104-106` |
-| **lodestar** | `packages/types/src/fulu/sszTypes.ts:83-89` | `DataColumnsByRootIdentifier` (typeName) | **`blockRoot: Root` (camelCase)** | `columns: ListBasicType(ColumnIndex, NUMBER_OF_COLUMNS)` (camelCase) | NO |
-| **grandine** | `types/src/fulu/containers.rs:163-167` | `DataColumnsByRootIdentifier<P: Preset>` | `block_root: H256` | `columns: ContiguousList<ColumnIndex, P::NumberOfColumns>` (preset-parameterized) | NO |
+H1 ✓. H2 ✓. H3 ✓. H4 ✓ (nimbus `indices` divergent). H5 ✓ (lodestar camelCase). H6 ✓ (teku `"DataColumnIdentifier"` SSZ container name). H7 ✓. **H8 ⚠ UPDATE**: grandine joins Pattern FF cohort — previously thought nimbus-only. H9 ✓. H10 ✓ (no Gloas modification). H11 ✓.
 
-## Notable per-client findings
+### prysm
 
-### CRITICAL — Nimbus uses `indices` instead of `columns` (Pattern AA scope expansion)
+Protobuf-generated SSZ container (`vendor/prysm/proto/prysm/v1alpha1/data_columns.proto:48-51`):
 
-Nimbus `fulu.nim:108-111`:
-```nim
-# https://github.com/ethereum/consensus-specs/blob/b8b5fbb8d16f52d42a716fa93289062fe2124c7c/specs/fulu/p2p-interface.md#datacolumnsbyrootidentifier
-DataColumnsByRootIdentifier* = object
-    block_root*: Eth2Digest
-    indices*: DataColumnIndices
+```protobuf
+message DataColumnsByRootIdentifier {
+  bytes block_root = 1 [ (ethereum.eth.ext.ssz_size) = "32" ];
+  repeated uint64 columns = 2 [ (ethereum.eth.ext.ssz_max) = "128" ];
+}
 ```
 
-Where `DataColumnIndices* = List[ColumnIndex, Limit(NUMBER_OF_COLUMNS)]` (`:83`).
+**Spec-aligned naming** for both fields (`block_root`, `columns`). Cap **hardcoded as `"128"`** in the `ssz_max` annotation rather than derived from `NUMBER_OF_COLUMNS` (Pattern DD trace: prysm hardcodes derived constants).
 
-**Spec field name is `columns`**; nimbus uses `indices`. **Pattern AA scope expansion** — covers FIELD NAMES not just version numbering. Same forward-fragility class.
+No vestigial `DataColumnIdentifier` SSZ container — the reference at `vendor/prysm/proto/prysm/v1alpha1/BUILD.bazel:189` is to the legacy data-columns proto type and not currently used as a wire container in v1alpha1.
 
-**SSZ wire impact**: NONE. SSZ encoding is field-order+type based. Both `(Eth2Digest, List[uint64, 128])` produce identical bytes regardless of field name.
+H1–H11 satisfied. Spec-aligned, no Pattern AA contribution.
 
-**Non-SSZ impact**:
-- JSON REST API responses (e.g., `/eth/v1/beacon/...`) would have key `indices` in nimbus vs `columns` in other 5
-- Cross-team debugging/communication confusion
-- Spec compliance — nimbus deviates
+### lighthouse
 
-**Possible motivation**: nimbus's vestigial `DataColumnIdentifier` (singular) at `:104-106` uses `index*: ColumnIndex` field name; the plural variant at `:109-111` extends naming to `indices*` for symmetry. Cosmetic decision but spec-divergent.
+Rust struct (`vendor/lighthouse/consensus/types/src/data/data_column_sidecar.rs:32-38`):
 
-**Bug-fix opportunity**: rename `indices` → `columns` in nimbus to match spec; preserve old name as alias for compat if needed.
+```rust
+/// Identifies a set of data columns associated with a specific beacon block.
+#[derive(Encode, Decode, Clone, Debug, PartialEq, TreeHash, Deserialize)]
+#[context_deserialize(ForkName)]
+pub struct DataColumnsByRootIdentifier<E: EthSpec> {
+    pub block_root: Hash256,
+    pub columns: VariableList<ColumnIndex, E::NumberOfColumns>,
+}
+```
 
-### CRITICAL — Teku internal naming inconsistency
+**Spec-aligned naming**. Generic `<E: EthSpec>` parameter — `NumberOfColumns` resolves to 128 on mainnet via preset.
 
-Teku `DataColumnsByRootIdentifierSchema.java:27-35`:
+Comment "Identifies a set of data columns associated with a specific beacon block" captures the plural semantic accurately.
+
+`chain_spec.rs:2303` has a code comment referencing "DataColumnIdentifiers" plural but no separate SSZ struct.
+
+H1–H11 satisfied. Spec-aligned, no Pattern AA contribution.
+
+### teku
+
+Java class (`vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/datastructures/networking/libp2p/rpc/DataColumnsByRootIdentifier.java:26-27`):
+
+```java
+public class DataColumnsByRootIdentifier
+    extends Container2<DataColumnsByRootIdentifier, SszBytes32, SszUInt64List> {
+```
+
+Schema (`vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/datastructures/networking/libp2p/rpc/DataColumnsByRootIdentifierSchema.java:27-35`):
+
 ```java
 public class DataColumnsByRootIdentifierSchema
     extends ContainerSchema2<DataColumnsByRootIdentifier, SszBytes32, SszUInt64List> {
 
   public DataColumnsByRootIdentifierSchema(final SpecConfigFulu specConfig) {
     super(
-        "DataColumnIdentifier",  // <-- SSZ container name passed to ContainerSchema2
-        ...
-    );
+        "DataColumnIdentifier",
+        namedSchema("block_root", SszPrimitiveSchemas.BYTES32_SCHEMA),
+        namedSchema("columns", SszUInt64ListSchema.create(specConfig.getNumberOfColumns())));
   }
 ```
 
-**Java class** `DataColumnsByRootIdentifierSchema` BUT **SSZ container name** `"DataColumnIdentifier"` (singular, no "ByRoot"). Naming inconsistency within teku.
+**Internal Java-class-vs-SSZ-name inconsistency**: Java class `DataColumnsByRootIdentifier`, but the SSZ container name passed to `ContainerSchema2` constructor is `"DataColumnIdentifier"` (singular, no "ByRoot"). The SSZ field names `"block_root"` and `"columns"` are spec-aligned at `:33-34`.
 
-**SSZ wire impact**: NONE. SSZ container name is metadata used for SSZ tree-hashing introspection, not on the wire.
+**SSZ wire impact**: NONE — the container-name string is metadata for SSZ tree-hashing introspection, not on the wire.
 
-**Non-SSZ impact**:
-- SSZ tree visualization tools may show "DataColumnIdentifier" while spec/code says "DataColumnsByRootIdentifier"
-- Cross-team confusion when reading teku source
-- Likely a leftover from earlier draft spec where the container WAS called `DataColumnIdentifier`
+**Tooling impact**: SSZ tree visualisation tools may show `"DataColumnIdentifier"` while spec/code says `"DataColumnsByRootIdentifier"`. Cross-team confusion when reading teku source. Likely a leftover from earlier draft spec where the container WAS called `DataColumnIdentifier`. Trivial bug-fix opportunity: rename the constructor literal at `Schema.java:32`.
 
-**Bug-fix opportunity**: change `"DataColumnIdentifier"` → `"DataColumnsByRootIdentifier"` at `Schema.java:32`. Trivial fix.
+Pattern AA cohort contribution: **internal class-vs-SSZ-name inconsistency** (new sub-category of Pattern AA at this audit).
 
-**Same Pattern AA family** as item #45 (MetaData v3) + item #47 (Status v2) where teku consistently fork-names containers — but here teku has internal inconsistency, NOT consistent fork-naming.
+`vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/datastructures/util/DataColumnIdentifier.java:20` is a non-SSZ Java record `(Bytes32 blockRoot, UInt64 columnIndex)` used as an internal bookkeeping type — NOT a wire-format SSZ container. So teku does NOT carry a vestigial SSZ `DataColumnIdentifier` (the singular SSZ container exists only in nimbus + grandine per H8).
 
-### Lodestar camelCase convention
+H1–H7 ✓; H6 ⚠ teku internal inconsistency.
 
-Lodestar `sszTypes.ts:83-89`:
-```typescript
-export const DataColumnsByRootIdentifier = new ContainerType(
-  {
-    blockRoot: Root,
-    columns: new ListBasicType(ColumnIndex, NUMBER_OF_COLUMNS),
-  },
-  {typeName: "DataColumnsByRootIdentifier", jsonCase: "eth2"}
-);
-```
+### nimbus
 
-Lodestar uses camelCase `blockRoot` (TypeScript convention) vs spec snake_case `block_root`. Handled via `jsonCase: "eth2"` config which converts to spec snake_case for JSON serialization.
+Container declarations (`vendor/nimbus/beacon_chain/spec/datatypes/fulu.nim:103-111`):
 
-**SSZ wire impact**: NONE.
-**JSON impact**: lodestar's `jsonCase: "eth2"` serializes as `block_root` matching spec.
-**Non-spec impact**: TypeScript developers see `blockRoot` in source code; spec readers see `block_root`. Standard lodestar convention across all containers.
-
-This is **systematic camelCase** for lodestar across all SSZ containers (consistent with TypeScript norms), so lower divergence concern than nimbus's per-container `indices` decision.
-
-### Nimbus vestigial `DataColumnIdentifier` (singular) — Pattern FF candidate
-
-Nimbus `fulu.nim:103-111`:
 ```nim
 # https://github.com/ethereum/consensus-specs/blob/v1.5.0-alpha.10/specs/fulu/p2p-interface.md#datacolumnidentifier
 DataColumnIdentifier* = object
@@ -150,134 +167,129 @@ DataColumnsByRootIdentifier* = object
     indices*: DataColumnIndices
 ```
 
-**Two containers** — one Deneb-style singular `(block_root, index)` and one Fulu-style plural `(block_root, indices)`. Spec-comment URLs reference DIFFERENT spec versions:
-- `DataColumnIdentifier`: `v1.5.0-alpha.10` — **older draft spec**
-- `DataColumnsByRootIdentifier`: `b8b5fbb8d1...` — **newer commit hash**
+Where `DataColumnIndices* = List[ColumnIndex, Limit(NUMBER_OF_COLUMNS)]` (per the type declaration earlier in the same file).
 
-**Pattern FF (vestigial config fields)** scope expansion — also applies to vestigial DATA TYPES from earlier spec drafts. Nimbus retained `DataColumnIdentifier` for compatibility with earlier Fulu testnets that used the singular model.
+**Two divergences from spec**:
 
-**Bug-fix opportunity**: remove `DataColumnIdentifier` from nimbus if no consumer remains. Verify via grep for usage.
+1. **Field name `indices` instead of spec `columns`** at `:111`. Pattern AA scope expansion (this audit) — naming divergence at the FIELD-NAME layer, not just version-numbering.
+2. **Vestigial `DataColumnIdentifier` singular SSZ object** at `:103-106`. Pattern FF — leftover from earlier Fulu spec drafts (referenced via `v1.5.0-alpha.10` URL). The newer plural variant references a non-tagged commit hash.
 
-### Comparison to legacy `BlobIdentifier`
+`shortLog*(x: seq[DataColumnIdentifier])` at `:575` and `shortLog*(xs: seq[DataColumnsByRootIdentifier])` at `:578` confirm both types have consumers (at least at the logging level).
 
-Lighthouse `blob_sidecar.rs`:
+**SSZ wire impact**: NONE for the field-name divergence — `(Eth2Digest, List[uint64, 128])` SSZ-encodes identically regardless of field name. The vestigial type is a separate SSZ container with different wire shape (`(Root, ColumnIndex)`); it doesn't conflict with the plural form on the wire.
+
+**Non-SSZ impact**: nimbus JSON REST API responses (e.g., `/eth/v1/...` endpoints exposing this container) emit `indices` key vs spec/other-5-clients' `columns`. Spec-compliance gap.
+
+Bug-fix opportunities: (a) rename `indices` → `columns` to match spec; (b) audit usage of `DataColumnIdentifier` singular and remove if dead code.
+
+Pattern AA cohort contribution: field-name divergence. Pattern FF cohort contribution: vestigial SSZ data type.
+
+### lodestar
+
+ContainerType (`vendor/lodestar/packages/types/src/fulu/sszTypes.ts:83-89`):
+
+```typescript
+export const DataColumnsByRootIdentifier = new ContainerType(
+  {
+    blockRoot: Root,
+    columns: new ListBasicType(ColumnIndex, NUMBER_OF_COLUMNS),
+  },
+  {typeName: "DataColumnsByRootIdentifier", jsonCase: "eth2"}
+);
+```
+
+**camelCase `blockRoot` vs spec snake_case `block_root`**. Lodestar uses camelCase consistently across all SSZ containers (TypeScript convention). `jsonCase: "eth2"` config converts to spec snake_case for JSON serialisation.
+
+`columns` field name matches spec; `typeName: "DataColumnsByRootIdentifier"` matches spec.
+
+**SSZ wire impact**: NONE.
+**JSON impact**: matches spec via `jsonCase: "eth2"`.
+**Source-code impact**: TypeScript developers see `blockRoot` while spec readers see `block_root`. Standard lodestar convention.
+
+Pattern AA cohort contribution: CASING convention (not strict spec violation due to `jsonCase: "eth2"` translation). Less concerning than nimbus's `indices` divergence.
+
+### grandine
+
+Container declarations (`vendor/grandine/types/src/fulu/containers.rs:153-167`):
+
 ```rust
-pub struct BlobIdentifier {
-    pub block_root: Hash256,
-    pub index: u64,
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Deserialize, Serialize, Ssz)]
+#[serde(bound = "", deny_unknown_fields)]
+pub struct DataColumnIdentifier {
+    pub block_root: H256,
+    #[serde(with = "serde_utils::string_or_native")]
+    pub index: ColumnIndex,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug, Deserialize, Serialize, Ssz)]
+#[serde(bound = "", deny_unknown_fields)]
+pub struct DataColumnsByRootIdentifier<P: Preset> {
+    pub block_root: H256,
+    #[serde(with = "serde_utils::string_or_native_sequence")]
+    pub columns: ContiguousList<ColumnIndex, P::NumberOfColumns>,
 }
 ```
 
-Deneb-heritage. **Singular** — one identifier per blob (one `block_root` + one `index`).
+**Spec-aligned field names** for both fields in the plural form. Preset-parameterised cap via `P::NumberOfColumns`.
 
-Fulu's `DataColumnsByRootIdentifier`: **Plural** — one identifier per block_root with multiple `columns`. Spec evolution: batched column requests reduce per-identifier overhead.
+**NEW finding this recheck — Pattern FF cohort extends to grandine**: grandine carries BOTH the singular `DataColumnIdentifier` (lines 153-159, with `index: ColumnIndex`) AND the plural `DataColumnsByRootIdentifier` (lines 161-167, with `columns: ContiguousList<...>`). Both have `Ssz` derive macros — they are both wire-shape SSZ containers. Previously this recheck pass marked Pattern FF as nimbus-only on this surface; grandine joins.
 
-For a request fetching all 128 columns of one block:
-- BlobIdentifier (Deneb): 6 blobs × `(32 + 8)` bytes = 240 bytes for header
-- DataColumnsByRootIdentifier (Fulu): 1 identifier × `(32 + 4 + 128*8)` bytes = 1060 bytes (with SSZ length prefix for variable list)
+Unlike nimbus, grandine does NOT annotate the spec URLs in its source comments, so we cannot determine from the file alone whether `DataColumnIdentifier` is a deliberate retention (e.g., for testnet compatibility) or an undisturbed earlier-draft remnant.
 
-For multi-block requests with all 128 columns each:
-- BlobIdentifier × 128 columns × 8 blocks = 1024 identifiers × 40 bytes = 40960 bytes
-- DataColumnsByRootIdentifier × 8 blocks = 8 identifiers × 1060 bytes = 8480 bytes
-- **5x reduction** in request size
+Pattern AA cohort contribution: NONE (spec-aligned naming on plural form). Pattern FF cohort contribution: vestigial SSZ data type (new this recheck).
 
-Spec's plural model is bandwidth-efficient for multi-column requests — common in PeerDAS sync.
+## Cross-reference table
 
-### SSZ wire-format consistency
+| Client | H2 container declaration | H4 field name (columns) | H5 field name (block_root) | H6 SSZ container name in metadata | H8 vestigial DataColumnIdentifier (singular SSZ) | Pattern AA contribution | Pattern FF contribution |
+|---|---|---|---|---|---|---|---|
+| **prysm** | `data_columns.proto:48-51 message DataColumnsByRootIdentifier { bytes block_root; repeated uint64 columns [ssz_max=128]; }` | ✅ `columns` | ✅ `block_root` (snake_case) | ✅ `DataColumnsByRootIdentifier` (proto message name) | ❌ none (only `BUILD.bazel:189` reference) | none | none |
+| **lighthouse** | `consensus/types/src/data/data_column_sidecar.rs:32-38 pub struct DataColumnsByRootIdentifier<E: EthSpec> { pub block_root: Hash256, pub columns: VariableList<ColumnIndex, E::NumberOfColumns> }` | ✅ `columns` | ✅ `block_root` (snake_case via Rust convention) | ✅ via tree-hash derive | ❌ none (only code comment at `chain_spec.rs:2303`) | none | none |
+| **teku** | `DataColumnsByRootIdentifier.java:26-27 extends Container2<...>`; `DataColumnsByRootIdentifierSchema.java:33-34 namedSchema("block_root"), namedSchema("columns")` | ✅ `columns` (`:34`) | ✅ `block_root` (`:33`) | ⚠ **`"DataColumnIdentifier"` (singular)** at `DataColumnsByRootIdentifierSchema.java:32` — class-vs-SSZ-name internal inconsistency | ❌ no SSZ singular (only non-SSZ Java record at `util/DataColumnIdentifier.java:20`) | internal class-vs-SSZ-name inconsistency (new Pattern AA sub-category) | none |
+| **nimbus** | `fulu.nim:108-111 DataColumnsByRootIdentifier* = object { block_root*: Eth2Digest, indices*: DataColumnIndices }` | ❌ **`indices`** (Pattern AA scope expansion — field-name divergence) | ✅ `block_root` | n/a (Nim's SSZ derive emits the type name) | ✅ **`DataColumnIdentifier* = object { block_root, index: ColumnIndex }`** at `:104-106` with `v1.5.0-alpha.10` spec-comment URL | field-name divergence (`indices`) | vestigial SSZ singular type |
+| **lodestar** | `sszTypes.ts:83-89 export const DataColumnsByRootIdentifier = new ContainerType({ blockRoot: Root, columns: new ListBasicType(ColumnIndex, NUMBER_OF_COLUMNS) }, {typeName: "DataColumnsByRootIdentifier", jsonCase: "eth2"})` | ✅ `columns` | ⚠ camelCase `blockRoot` (mapped to spec snake_case via `jsonCase: "eth2"`) | ✅ `DataColumnsByRootIdentifier` | ❌ none | camelCase convention (TypeScript) | none |
+| **grandine** | `fulu/containers.rs:161-167 pub struct DataColumnsByRootIdentifier<P: Preset> { pub block_root: H256, pub columns: ContiguousList<ColumnIndex, P::NumberOfColumns> }` | ✅ `columns` | ✅ `block_root` (snake_case via Rust convention) | ✅ via Ssz derive | ✅ **`pub struct DataColumnIdentifier { pub block_root: H256, pub index: ColumnIndex }`** at `:153-159` (NEW this recheck) | none | **vestigial SSZ singular type (NEW this recheck)** |
 
-Despite naming divergences, ALL 6 clients produce IDENTICAL SSZ bytes:
-- Field 0: `Root` / `Bytes32` / `H256` / `Hash256` / `Eth2Digest` (32 bytes fixed) — same wire format
-- Field 1: `List[uint64, 128]` (variable length with 4-byte length prefix + uint64 entries) — same wire format
+**Pattern AA cohort (naming divergence)**: nimbus `indices` + teku `"DataColumnIdentifier"` SSZ metadata + lodestar `blockRoot` (mapped). **Pattern FF cohort (vestigial SSZ data types)**: {nimbus, grandine} — **NEW finding**: grandine joins, previously thought nimbus-only on this surface. **SSZ wire format**: byte-identical across all 6.
 
-SSZ specifies field-order serialization, NOT field-name serialization. So `(block_root, columns)` and `(block_root, indices)` SSZ-encode identically.
+## Empirical tests
 
-**Live mainnet validation**: 5+ months of cross-client DataColumnSidecarsByRoot v1 RPC interop without observed format-divergence — confirms SSZ wire compatibility.
+- ✅ **Live mainnet operation since 2025-12-03 (5+ months)**: cross-client `DataColumnSidecarsByRoot v1` exchanges deserialize successfully across all 6 client pairs. No SSZ format-divergence observed. **Verifies H7 + H11 at production scale.**
+- ✅ **Per-client container declaration verification (this recheck)**: all 6 declaration sites confirmed via file:line citations above. Pattern AA cohort (nimbus + teku + lodestar) unchanged. Pattern FF cohort extends to grandine (NEW).
+- ✅ **Gloas carry-forward verification**: `grep -rn "DataColumnsByRootIdentifier\|DataColumnIdentifier" vendor/consensus-specs/specs/gloas/` returns 0 matches. Container carries forward verbatim into Gloas.
+- ⏭ **Nimbus rename PR**: change `indices` → `columns` in `vendor/nimbus/beacon_chain/spec/datatypes/fulu.nim:111`. Optionally retain `indices` as a deprecated alias for callers.
+- ⏭ **Teku internal-naming PR**: change `"DataColumnIdentifier"` → `"DataColumnsByRootIdentifier"` at `vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/datastructures/networking/libp2p/rpc/DataColumnsByRootIdentifierSchema.java:32`. Trivial fix; aligns SSZ container name with Java class name.
+- ⏭ **Vestigial SSZ type cleanup audit**: grep both nimbus and grandine for consumers of the singular `DataColumnIdentifier` SSZ type. If no consumer, file removal PRs.
+- ⏭ **Cross-client interop test for edge cases**: empty `columns` list, duplicate column indices, out-of-range indices (>= NUMBER_OF_COLUMNS). Spec-undefined behaviour — verify per-client uniformity (Pattern T family).
+- ⏭ **JSON REST API audit**: verify nimbus's JSON outputs use `columns` not `indices` (if any JSON endpoint surfaces this container). Spec compliance gap candidate.
+- ⏭ **Pattern AA + FF catalogue update**: refresh item #28/#48 to reflect this recheck's expansions — Pattern AA now spans (i) version-numbering (items #45 + #47), (ii) FIELD NAMES (item #53 nimbus `indices`), (iii) CASING convention (item #53 lodestar `blockRoot`), (iv) INTERNAL class-vs-SSZ-name inconsistency (item #53 teku). Pattern FF now spans (i) config fields (item #50 grandine `max_request_blob_sidecars_fulu`), (ii) SSZ data types ({nimbus, grandine} `DataColumnIdentifier` singular).
 
-### Validation gaps across all 6
+## Conclusion
 
-**Spec is silent** on:
-- Whether empty `columns` list should be rejected (effectively a no-op request)
-- Whether duplicate column indices should be rejected (`columns: [3, 3, 5]`)
-- Whether out-of-range indices should be rejected (`columns: [200]` when NUMBER_OF_COLUMNS = 128) — list type cap enforces this implicitly
+The Fulu-NEW `DataColumnsByRootIdentifier` SSZ container is byte-identical across all 6 clients on the wire — SSZ encoding is field-order + type based, so the cosmetic naming divergences below do not produce divergent wire bytes. 5+ months of live mainnet cross-client `DataColumnSidecarsByRoot v1` exchanges validate the wire-format compatibility.
 
-**None of the 6 explicitly validate empty or duplicate `columns`**. Spec-undefined edge case (Pattern T-style). Each client may behave differently:
-- Returns empty response for empty request? Or rejects?
-- Returns duplicate sidecars for duplicate request indices? Or deduplicates?
+**Pattern AA scope expansion (carried forward from prior audit)**: per-client SSZ container naming divergence — three sub-categories on this surface:
 
-**Forward research candidate**: cross-client interop test for empty/duplicate `columns` in DataColumnSidecarsByRoot v1 request.
+- **Field name** (nimbus `indices` vs spec `columns` at `fulu.nim:111`).
+- **CASING convention** (lodestar camelCase `blockRoot` mapped to spec snake_case via `jsonCase: "eth2"` at `sszTypes.ts:85`).
+- **Internal class-vs-SSZ-name inconsistency** (teku Java class `DataColumnsByRootIdentifier` vs SSZ container name `"DataColumnIdentifier"` at `DataColumnsByRootIdentifierSchema.java:32`).
 
-## Cross-cut chain
+**Pattern FF scope expansion (NEW finding this recheck)**: vestigial SSZ data types — cohort grows from nimbus-only to **{nimbus, grandine}**. Both carry a singular `DataColumnIdentifier { block_root, index: ColumnIndex }` SSZ struct alongside the plural `DataColumnsByRootIdentifier`. The singular form predates the spec evolution from singular-per-blob to plural-per-block-root identifiers. Nimbus annotates the spec URL evolution (`v1.5.0-alpha.10` → newer commit); grandine carries the singular form without spec-URL annotation. Other 4 clients have no SSZ singular form (teku has a non-SSZ Java record, lighthouse has a code comment, prysm has a BUILD.bazel reference).
 
-This audit closes the Fulu-NEW SSZ container detail layer:
-- **Item #46** (DataColumnSidecarsByRange/Root v1 RPC handlers): consumes this container
-- **Item #52** (`MAX_REQUEST_BLOCKS_DENEB`): caps the request list at 128 entries
-- **Item #34** (DataColumnSidecar verification): cross-cut on container family
-- **Item #45** (MetaData v3 — Pattern AA): per-client SSZ container naming divergence; this audit EXTENDS Pattern AA from version numbering (V2 vs V3) to FIELD NAMES (`columns` vs `indices`) and INTERNAL CLASS-VS-SSZ-NAME inconsistency (teku)
-- **Item #47** (Status v2 — Pattern AA): teku consistently fork-names containers, but here teku has internal inconsistency
-- **Item #44** (PartialDataColumnSidecar — Pattern Z): related Fulu-NEW container, only nimbus implements
-- **Item #28 Pattern AA scope expansion**: now covers (a) version-numbering divergence (items #45 + #47), (b) FIELD-NAMING divergence (item #53 nimbus `indices`), (c) CASING convention (item #53 lodestar `blockRoot`), (d) INTERNAL inconsistency (item #53 teku `"DataColumnIdentifier"` SSZ name)
-- **Item #28 Pattern FF scope expansion**: also covers vestigial DATA TYPES (nimbus `DataColumnIdentifier` singular), not just config fields
-- **Item #48** (catalogue refresh): adds Pattern AA + FF expansions
+**Semantic shift from Deneb's BlobIdentifier**: Deneb's `(block_root, index)` carries one blob index per identifier; Fulu's `(block_root, columns)` carries multiple column indices per identifier. ~5× bandwidth reduction for multi-column requests — common in PeerDAS sync where a node may request all 128 columns from a single block.
 
-## Adjacent untouched Fulu-active
+**Glamsterdam target**: `vendor/consensus-specs/specs/gloas/p2p-interface.md` contains NO `DataColumnsByRootIdentifier` or `DataColumnIdentifier` references. Fulu container carries forward verbatim into Gloas across all 6 clients. The `DataColumnSidecarsByRoot v1` request payload SSZ shape is unchanged at Gloas (the Gloas-modified payload reshape per item #46 affects only the response sidecar, not the request identifier).
 
-- `BlobIdentifier` Deneb-heritage container detailed cross-client comparison (precursor to DataColumnsByRootIdentifier)
-- `PartialDataColumnSidecar` SSZ container detail audit (item #44 covered implementation gap; container schema cross-client TBD)
-- `PartialDataColumnPartsMetadata` SSZ container (Fulu-NEW per spec line 30)
-- `PartialDataColumnHeader` SSZ container (Fulu-NEW per spec line 31)
-- DataColumnSidecar SSZ container detail audit (items #34/#37 covered usage; per-client schema TBD)
-- BlobsBundle SSZ container Fulu-modified (validator-side; covered implicitly in item #40)
-- ExecutionPayloadEnvelope SSZ container (Gloas-NEW; pre-emptive audit candidate)
-- SignedExecutionPayloadBid SSZ container (Gloas-NEW)
-- InclusionList + SignedInclusionList SSZ containers (Heze-NEW per item #29 finding)
-- Cross-client SSZ container naming convention catalogue (extending Pattern AA)
-- nimbus `DataColumnIdentifier` (singular) usage audit — is it dead code?
+**Spec-undefined edge cases (Pattern T family)**: none of the 6 explicitly reject empty `columns` lists, duplicate indices, or out-of-range indices. The list-type cap implicitly enforces the upper bound, but per-client behaviour on empty/duplicate inputs is unspecified.
 
-## Future research items
+**Impact: none** — SSZ wire format byte-identical; naming divergences are cosmetic at the wire layer; Gloas inherits the Fulu container verbatim. Thirty-fourth `impact: none` result in the recheck series.
 
-1. **Pattern AA scope expansion for item #28 catalogue**: extend from version-numbering (V2/V3) to FIELD NAMES (`columns` vs `indices`) and INTERNAL CLASS-VS-SSZ-NAME inconsistencies (teku `"DataColumnIdentifier"`). Same forward-fragility class.
-2. **Pattern FF scope expansion**: extends from config fields (grandine `max_request_blob_sidecars_fulu`) to vestigial DATA TYPES (nimbus `DataColumnIdentifier` singular). Same forward-fragility class.
-3. **Nimbus rename PR**: change `indices` → `columns` in `DataColumnsByRootIdentifier` to match spec. Preserve old name as deprecated alias for backward compat.
-4. **Nimbus dead code removal PR**: remove `DataColumnIdentifier` (singular) if no consumer remains. Audit usage first.
-5. **Teku internal-naming PR**: change `"DataColumnIdentifier"` → `"DataColumnsByRootIdentifier"` at `DataColumnsByRootIdentifierSchema.java:32`. Trivial fix.
-6. **Cross-client interop test for empty/duplicate `columns`**: spec-undefined edge case (Pattern T-style). Test whether all 6 handle uniformly.
-7. **JSON REST API response audit**: do all 6 produce `block_root` (or `blockRoot` for lodestar) per spec? Particularly nimbus may produce `indices` in JSON outputs — spec compliance gap.
-8. **Cross-client SSZ container naming convention catalogue**: systematically catalogue all Fulu-NEW SSZ container names + field names per client. Extend Pattern AA.
-9. **Spec-validation test for Fulu-NEW SSZ containers**: generate fixtures encoding/decoding `DataColumnsByRootIdentifier` from each client; verify cross-client round-trip equivalence.
-10. **PartialDataColumnSidecar/Header/PartsMetadata SSZ schema audit (item #54+ candidates)**: similar Fulu-NEW SSZ container family; only nimbus implements (per item #44).
-11. **DataColumnSidecar detailed schema audit (item #54+ candidate)**: items #34/#37 covered usage; per-client field-by-field schema cross-check is pending.
-12. **Compare to ExecutionPayloadEnvelope (Gloas-NEW)**: pre-emptive audit candidate. Likely similar Pattern AA divergence opportunities.
-13. **BlobIdentifier (Deneb-heritage) cross-client name/field audit**: parallel to this audit; baseline for understanding Pattern AA spread.
+Forward-research priorities:
 
-## Summary
-
-Fulu-NEW `DataColumnsByRootIdentifier` SSZ container (`fulu/p2p-interface.md` Containers section): 2-field container `(block_root: Root, columns: List[ColumnIndex, NUMBER_OF_COLUMNS])`. Consumed by `DataColumnSidecarsByRoot v1` RPC (item #46) as `List[DataColumnsByRootIdentifier, MAX_REQUEST_BLOCKS_DENEB]` (max 128 entries, item #52 cap).
-
-**SSZ wire format identical across all 6 clients** because SSZ encoding is field-order+type based. Live mainnet validates 5+ months of cross-client interop without format-divergence.
-
-**Multiple naming divergences identified**:
-- **Nimbus** (`fulu.nim:111`): field name `indices` instead of spec `columns`
-- **Teku** (`Schema.java:32`): SSZ container name `"DataColumnIdentifier"` (singular, no "ByRoot") inside Java class `DataColumnsByRootIdentifierSchema` — internal inconsistency
-- **Lodestar** (`sszTypes.ts:84`): camelCase `blockRoot` vs spec snake_case `block_root` (handled via `jsonCase: "eth2"`)
-- **Nimbus** (`fulu.nim:104-106`): vestigial `DataColumnIdentifier` (singular Deneb-style) alongside Fulu's plural variant — leftover from older spec draft
-
-**NEW Pattern AA scope expansion**: extend from version-numbering (item #45 + #47) to FIELD NAMES (nimbus `indices`), CASING (lodestar `blockRoot`), and INTERNAL class-vs-SSZ-name inconsistency (teku). Same forward-fragility class.
-
-**NEW Pattern FF scope expansion**: extend from config fields (grandine `max_request_blob_sidecars_fulu` from item #50) to vestigial DATA TYPES (nimbus `DataColumnIdentifier` singular). Same forward-fragility class.
-
-**Spec model evolution from BlobIdentifier**: Deneb's `BlobIdentifier(block_root, index)` is singular (one identifier per blob); Fulu's `DataColumnsByRootIdentifier(block_root, columns)` is plural (one identifier per block_root with multiple columns). 5x bandwidth reduction for multi-column requests. Common in PeerDAS sync.
-
-**Validation gaps across all 6**: none explicitly reject empty `columns` list, duplicate indices, or out-of-range indices (latter implicitly capped by list type). Spec-undefined edge cases (Pattern T-style).
-
-**Bug-fix opportunities identified**:
-1. Nimbus rename `indices` → `columns` (`fulu.nim:111`)
-2. Nimbus remove vestigial `DataColumnIdentifier` (`:104-106`) if dead code
-3. Teku rename `"DataColumnIdentifier"` → `"DataColumnsByRootIdentifier"` (`Schema.java:32`)
-
-**Heritage-spec evolution finding**: nimbus comments reveal Fulu spec went through `v1.5.0-alpha.10 DataColumnIdentifier (singular)` → `b8b5fbb8d1... DataColumnsByRootIdentifier (plural)` evolution. Other 5 clients only have the plural variant.
-
-**With this audit, the Fulu-NEW SSZ container detail layer is opened**. Future audits should cover PartialDataColumnSidecar/Header/PartsMetadata family (only nimbus implements per item #44) and DataColumnSidecar detailed schema cross-check.
-
-**Total Fulu-NEW items: 23 (#30–#53)**. Item #28 catalogue Patterns A–HH (34 patterns) + Pattern AA + FF scope expansions (no NEW pattern letter, but expanded scope).
-
-**PeerDAS audit corpus now spans 15 items**: #33 → #34 → #35 → #37 → #38 → #39 → #40 → #41 → #42 → #44 → #45 → #46 → #47 → #49 → **#53**. Fifteen-item arc covering consensus-critical PeerDAS surface end-to-end + SSZ container detail.
+1. **Nimbus rename PR** — `indices` → `columns` at `fulu.nim:111` to match spec.
+2. **Teku internal-naming PR** — `"DataColumnIdentifier"` → `"DataColumnsByRootIdentifier"` at `DataColumnsByRootIdentifierSchema.java:32`. Trivial fix.
+3. **Vestigial SSZ type cleanup audit** — grep both nimbus and grandine for consumers of the singular `DataColumnIdentifier` SSZ type. If no consumer, file removal PRs.
+4. **Pattern AA + FF catalogue update** — refresh item #28/#48 to reflect this recheck's scope expansions:
+   - Pattern AA: + field names + casing convention + internal class-vs-SSZ-name inconsistency
+   - Pattern FF: + vestigial SSZ data types (grandine joins nimbus on this surface)
+5. **Cross-client interop edge-case test** — empty `columns`, duplicate indices, out-of-range indices (Pattern T family).
+6. **JSON REST API audit** — verify nimbus JSON outputs use `columns` not `indices` if any endpoint exposes the container.
