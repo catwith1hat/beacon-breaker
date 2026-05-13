@@ -24,7 +24,6 @@ Full methodology, prompt templates, and repository conventions: [METHODOLOGY.md]
 
 | # | Finding | Split | Mainnet reach |
 |---|---|---|---|
-| [#12](items/012/) | lighthouse has not implemented the Gloas EIP-7732 builder-withdrawal phases in `process_withdrawals` — neither `get_builder_withdrawals` (drain `state.builder_pending_withdrawals`) nor `get_builders_sweep_withdrawals` (cyclic sweep over `state.builders`) is wired into `per_block_processing/` | lighthouse (1-vs-5) | mainnet-glamsterdam |
 | [#13](items/013/) | lighthouse has not implemented the Gloas EIP-7732 `process_operations` restructure — still calls the three request dispatchers (gated only by `electra_enabled()` which fires at Gloas too) and lacks the new `process_payload_attestation` dispatcher | lighthouse (1-vs-5) | mainnet-glamsterdam |
 | [#14](items/014/) | lighthouse has not implemented the Gloas EIP-7732 Modified `process_deposit_request` — no builder-routing branch, no `apply_deposit_for_builder`; at Gloas, builder-credentialled deposits would be queued as validator deposits instead of immediately applied to the builder | lighthouse (1-vs-5) | mainnet-glamsterdam |
 | [#15](items/015/) | lighthouse and grandine have not implemented `engine_newPayloadV5` (Gloas) — both still on V4 only; the other four clients (prysm, teku, nimbus, lodestar) have the V5 plumbing wired | lighthouse, grandine (2-vs-4) | mainnet-glamsterdam |
