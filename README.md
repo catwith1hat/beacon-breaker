@@ -24,7 +24,6 @@ Full methodology, prompt templates, and repository conventions: [METHODOLOGY.md]
 
 | # | Finding | Split | Mainnet reach |
 |---|---|---|---|
-| [#19](items/019/) | at Gloas, `process_execution_payload` is REMOVED (per EIP-7732 ePBS) and replaced by `process_execution_payload_bid` + `process_parent_execution_payload` + `verify_execution_payload_envelope`; lighthouse alone has not implemented any of the three replacement helpers in `consensus/state_processing/src/` | lighthouse (1-vs-5) | mainnet-glamsterdam |
 | [#22](items/022/) | nimbus treats 0x03 (builder) credentials as compounding at Gloas+ via stale `has_compounding_withdrawal_credential` OR-fold — pre-Gloas 0x03 deposit forks effective_balance at Gloas activation | nimbus (1-vs-5) | mainnet-glamsterdam |
 | [#23](items/023/) | nimbus get_pending_balance_to_withdraw OR-folds builder_pending_withdrawals + builder_pending_payments at Gloas+ — rejects voluntary_exit / withdrawal_request / consolidation_request on validators whose index collides with an active builder index | nimbus (1-vs-5) | mainnet-glamsterdam |
 | [#28](items/028/) | meta-audit — nimbus stale PR #4513 → #4788 revert-window OR-folds (items #22 + #23) cause mainnet-glamsterdam forks at Gloas; lighthouse missing ePBS surface (items #14, #19, #22, #23, #24, #25, #26 cohort) prevents Gloas wiring | nimbus, lighthouse (2-vs-4) | mainnet-glamsterdam |
