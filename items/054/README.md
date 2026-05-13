@@ -4,12 +4,12 @@ impact: none
 last_update: 2026-05-13
 builds_on: [28, 29, 34, 37, 40, 44, 45, 46, 52, 53]
 eips: [EIP-7594, EIP-7732, EIP-7805]
-prysm_version: v7.1.3-rc.3-213-gd35d65625f
+prysm_version: v7.1.3-rc.3-209-g0f25a41868
 lighthouse_version: v8.1.2-185-g1a6863118
-teku_version: 26.4.0-72-gc05af0eaa0
+teku_version: 26.4.0-127-g70ad00cbaf
 nimbus_version: v26.5.0-8-g3802d9629
 lodestar_version: v1.42.0-69-g35940ffd61
-grandine_version: 2.0.4-18-geeb33a92
+grandine_version: 2.0.4-97-g15dd0225
 ---
 
 # 54: `DataColumnSidecar` SSZ container — Fulu 6-field + Gloas 5-field reshape (EIP-7732); Pattern HH depth baking; Pattern M cohort extends

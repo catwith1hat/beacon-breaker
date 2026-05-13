@@ -4,12 +4,12 @@ impact: none
 last_update: 2026-05-13
 builds_on: [28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47]
 eips: [EIP-7251, EIP-7549, EIP-7594, EIP-7732, EIP-7805, EIP-7892, EIP-7917, EIP-7044, EIP-8061]
-prysm_version: v7.1.3-rc.3-213-gd35d65625f
+prysm_version: v7.1.3-rc.3-209-g0f25a41868
 lighthouse_version: v8.1.2-185-g1a6863118
-teku_version: 26.4.0-72-gc05af0eaa0
+teku_version: 26.4.0-127-g70ad00cbaf
 nimbus_version: v26.5.0-8-g3802d9629
 lodestar_version: v1.42.0-69-g35940ffd61
-grandine_version: 2.0.4-18-geeb33a92
+grandine_version: 2.0.4-97-g15dd0225
 ---
 
 # 48: Cross-corpus forward-fragility pattern catalogue (Patterns A–CC across items #1–#47) — Glamsterdam refresh

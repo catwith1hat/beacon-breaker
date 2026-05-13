@@ -6,12 +6,12 @@ builds_on: [6, 7]
 eips: [EIP-7549, EIP-7251, EIP-8061]
 splits: [prysm, lighthouse, teku, nimbus, grandine]
 # main_md_summary: `slash_validator` → `initiate_validator_exit` propagates the EIP-8061 churn-helper divergence (same five lagging clients as items #3 H8 / #6 H8) into every slashed validator's `exit_epoch` / `withdrawable_epoch` at Gloas activation
-prysm_version: v7.1.3-rc.3-213-gd35d65625f
+prysm_version: v7.1.3-rc.3-209-g0f25a41868
 lighthouse_version: v8.1.2-185-g1a6863118
-teku_version: 26.4.0-72-gc05af0eaa0
+teku_version: 26.4.0-127-g70ad00cbaf
 nimbus_version: v26.5.0-8-g3802d9629
 lodestar_version: v1.42.0-69-g35940ffd61
-grandine_version: 2.0.4-18-geeb33a92
+grandine_version: 2.0.4-97-g15dd0225
 ---
 
 # 8: `process_attester_slashing` (EIP-7549 + EIP-7251)

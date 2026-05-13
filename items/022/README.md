@@ -6,12 +6,12 @@ builds_on: [1, 2, 11, 12, 18, 21]
 eips: [EIP-7251, EIP-7732]
 splits: [nimbus]
 # main_md_summary: nimbus treats 0x03 (builder) credentials as compounding at Gloas+ via stale `has_compounding_withdrawal_credential` OR-fold — pre-Gloas 0x03 deposit forks effective_balance at Gloas activation
-prysm_version: v7.1.3-rc.3-213-gd35d65625f
+prysm_version: v7.1.3-rc.3-209-g0f25a41868
 lighthouse_version: v8.1.2-185-g1a6863118
-teku_version: 26.4.0-72-gc05af0eaa0
+teku_version: 26.4.0-127-g70ad00cbaf
 nimbus_version: v26.5.0-8-g3802d9629
 lodestar_version: v1.42.0-69-g35940ffd61
-grandine_version: 2.0.4-18-geeb33a92
+grandine_version: 2.0.4-97-g15dd0225
 ---
 
 # 22: Compounding/credential subsystem helpers (predicates + `switch_to_compounding_validator`)
