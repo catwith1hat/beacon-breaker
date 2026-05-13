@@ -7,9 +7,9 @@ eips: [EIP-7251, EIP-7732]
 splits: [nimbus]
 # main_md_summary: nimbus get_pending_balance_to_withdraw OR-folds builder_pending_withdrawals + builder_pending_payments at Gloas+ — rejects voluntary_exit / withdrawal_request / consolidation_request on validators whose index collides with an active builder index
 prysm_version: v7.1.3-rc.3-213-gd35d65625f
-lighthouse_version: v8.1.3
+lighthouse_version: v8.1.2-185-g1a6863118
 teku_version: 26.4.0-72-gc05af0eaa0
-nimbus_version: v26.3.1
+nimbus_version: v26.5.0-8-g3802d9629
 lodestar_version: v1.42.0-69-g35940ffd61
 grandine_version: 2.0.4-18-geeb33a92
 ---

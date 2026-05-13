@@ -7,9 +7,9 @@ eips: [EIP-7685, EIP-7732]
 splits: [lighthouse, grandine]
 # main_md_summary: lighthouse and grandine have not implemented `engine_newPayloadV5` (Gloas) — both still on V4 only; the other four clients (prysm, teku, nimbus, lodestar) have the V5 plumbing wired
 prysm_version: v7.1.3-rc.3-213-gd35d65625f
-lighthouse_version: v8.1.3
+lighthouse_version: v8.1.2-185-g1a6863118
 teku_version: 26.4.0-72-gc05af0eaa0
-nimbus_version: v26.3.1
+nimbus_version: v26.5.0-8-g3802d9629
 lodestar_version: v1.42.0-69-g35940ffd61
 grandine_version: 2.0.4-18-geeb33a92
 ---

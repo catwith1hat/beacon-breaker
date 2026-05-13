@@ -7,9 +7,9 @@ eips: [EIP-7691, EIP-7685, EIP-7732]
 splits: [lighthouse]
 # main_md_summary: at Gloas, `process_execution_payload` is REMOVED (per EIP-7732 ePBS) and replaced by `process_execution_payload_bid` + `process_parent_execution_payload` + `verify_execution_payload_envelope`; lighthouse alone has not implemented any of the three replacement helpers in `consensus/state_processing/src/`
 prysm_version: v7.1.3-rc.3-213-gd35d65625f
-lighthouse_version: v8.1.3
+lighthouse_version: v8.1.2-185-g1a6863118
 teku_version: 26.4.0-72-gc05af0eaa0
-nimbus_version: v26.3.1
+nimbus_version: v26.5.0-8-g3802d9629
 lodestar_version: v1.42.0-69-g35940ffd61
 grandine_version: 2.0.4-18-geeb33a92
 ---
