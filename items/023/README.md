@@ -1,6 +1,6 @@
 ---
 status: source-code-reviewed
-impact: mainnet-everyone
+impact: mainnet-glamsterdam
 last_update: 2026-05-12
 builds_on: [2, 3, 6, 22]
 eips: [EIP-7251, EIP-7732]
@@ -95,7 +95,7 @@ Three recheck questions:
 
 ## Findings
 
-H1–H9 satisfied; **H10 is the active mainnet-everyone divergence.**
+H1–H9 satisfied; **H10 is the active mainnet-glamsterdam divergence.**
 
 ### prysm
 
@@ -358,7 +358,7 @@ The consensus-specs Gloas test corpus (`vendor/consensus-specs/tests/core/pyspec
 
 ## Mainnet reachability
 
-**impact: mainnet-everyone.** Triggered by normal post-Gloas operation; no attacker capital required.
+**impact: mainnet-glamsterdam.** Triggered by normal post-Gloas operation; no attacker capital required.
 
 **Mechanism (1-vs-5 split at Gloas+, splits=[nimbus]):**
 
@@ -417,11 +417,11 @@ Update the doc comment URL at line 1542 to drop the stale `#modified-get_pending
 
 **Status: source-code-reviewed.** Source review of all six clients against the updated checkouts (versions per front matter) confirms Pectra-surface invariants (H1–H7) hold across all six. H8 (Gloas-NEW `get_pending_balance_to_withdraw_for_builder`) holds for five clients; **lighthouse lacks the function** (only the validator-side accessor exists) — propagation of items #14 H9 / #19 H10 / #22 H10 lighthouse Gloas-readiness gap, separate from this item's nimbus divergence.
 
-**Glamsterdam-target finding (H10 — mainnet-everyone divergence).** Nimbus's `get_pending_balance_to_withdraw` at `vendor/nimbus/beacon_chain/spec/beaconstate.nim:1541-1559` is fork-gated to ALSO sum `state.builder_pending_withdrawals` and `state.builder_pending_payments` entries where `builder_index` numerically equals the queried `validator_index` at `consensusFork >= ConsensusFork.Gloas`. The current Gloas spec (v1.7.0-alpha.7-21-g0e70a492d) does NOT modify this function — commit `601829f1a` (PR #4788, 2026-01-05, "Make builders non-validating staked actors") REMOVED an earlier-draft `Modified get_pending_balance_to_withdraw` section when builders were redesigned as non-validating staked actors in a separate `state.builders` registry. Nimbus's stale code references the now-removed spec section by URL in the doc comment at line 1542.
+**Glamsterdam-target finding (H10 — mainnet-glamsterdam divergence).** Nimbus's `get_pending_balance_to_withdraw` at `vendor/nimbus/beacon_chain/spec/beaconstate.nim:1541-1559` is fork-gated to ALSO sum `state.builder_pending_withdrawals` and `state.builder_pending_payments` entries where `builder_index` numerically equals the queried `validator_index` at `consensusFork >= ConsensusFork.Gloas`. The current Gloas spec (v1.7.0-alpha.7-21-g0e70a492d) does NOT modify this function — commit `601829f1a` (PR #4788, 2026-01-05, "Make builders non-validating staked actors") REMOVED an earlier-draft `Modified get_pending_balance_to_withdraw` section when builders were redesigned as non-validating staked actors in a separate `state.builders` registry. Nimbus's stale code references the now-removed spec section by URL in the doc comment at line 1542.
 
 This is the **same stale-Gloas-spec failure mode as item #22** (`has_compounding_withdrawal_credential`): both modifications were added in PR #4513 (commit `1b7dedb4a`) for the EIP-7732 ePBS draft, then removed by PR #4788 (commit `601829f1a`) when the design switched to separate-registry builders. Nimbus carries the stale OR-fold from the intermediate spec window.
 
-The divergence is **mainnet-everyone-reachable on normal post-Gloas traffic** — no attacker capital required:
+The divergence is **mainnet-glamsterdam-reachable on normal post-Gloas traffic** — no attacker capital required:
 - `state.builder_pending_payments` continuously fills with `builder_index` entries during normal block production (~64 unsettled entries at any moment on mainnet preset).
 - `BuilderIndex` (raw, stored without the `BUILDER_INDEX_FLAG`) and `ValidatorIndex` share the `uint64 < 2^40` namespace. Both registries grow from 0. Numerical collisions are guaranteed for any low-index validator.
 - The accessor is called from THREE Gloas-active sites: voluntary exit (full-equality `== 0` gate), withdrawal_request (full-exit gate + partial excess-balance subtractor), consolidation_request (source `> 0` rejection).

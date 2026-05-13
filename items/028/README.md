@@ -1,11 +1,11 @@
 ---
 status: source-code-reviewed
-impact: mainnet-everyone
+impact: mainnet-glamsterdam
 last_update: 2026-05-12
 builds_on: [1, 3, 4, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]
 eips: [EIP-7251, EIP-7549, EIP-7732, EIP-7044, EIP-8061]
 splits: [nimbus, lighthouse]
-# main_md_summary: meta-audit — nimbus stale PR #4513 → #4788 revert-window OR-folds (items #22 + #23) cause mainnet-everyone forks at Gloas; lighthouse missing ePBS surface (items #14, #19, #22, #23, #24, #25, #26 cohort) prevents Gloas wiring
+# main_md_summary: meta-audit — nimbus stale PR #4513 → #4788 revert-window OR-folds (items #22 + #23) cause mainnet-glamsterdam forks at Gloas; lighthouse missing ePBS surface (items #14, #19, #22, #23, #24, #25, #26 cohort) prevents Gloas wiring
 prysm_version: v7.1.3-rc.3-213-gd35d65625f
 lighthouse_version: v8.1.3
 teku_version: 26.4.0-72-gc05af0eaa0
@@ -18,9 +18,9 @@ grandine_version: 2.0.4-18-geeb33a92
 
 ## Summary
 
-Meta-audit synthesizing Gloas-target findings across the recheck of items #1–#27 against the Glamsterdam fork (Gloas CL, Amsterdam EL). The recheck series — performed against the current consensus-specs `v1.7.0-alpha.7-21-g0e70a492d` and the updated client checkouts (versions per front matter) — converted earlier speculative "pre-emptive Gloas readiness" observations into **two confirmed mainnet-everyone divergences in nimbus** (items #22 H12 + #23 H10), one Gloas-ePBS readiness gap propagating across **six lighthouse symptoms** (items #14 H9, #19 H10, #22 H10, #23 H8, #24 H11, #25 H11, #26 H8), and a number of impact-none confirmations where the spec or per-client implementations converged.
+Meta-audit synthesizing Gloas-target findings across the recheck of items #1–#27 against the Glamsterdam fork (Gloas CL, Amsterdam EL). The recheck series — performed against the current consensus-specs `v1.7.0-alpha.7-21-g0e70a492d` and the updated client checkouts (versions per front matter) — converted earlier speculative "pre-emptive Gloas readiness" observations into **two confirmed mainnet-glamsterdam divergences in nimbus** (items #22 H12 + #23 H10), one Gloas-ePBS readiness gap propagating across **six lighthouse symptoms** (items #14 H9, #19 H10, #22 H10, #23 H8, #24 H11, #25 H11, #26 H8), and a number of impact-none confirmations where the spec or per-client implementations converged.
 
-**Confirmed mainnet-everyone divergences (splits = [nimbus, lighthouse]):**
+**Confirmed mainnet-glamsterdam divergences (splits = [nimbus, lighthouse]):**
 
 1. **Item #22 H12** — nimbus `has_compounding_withdrawal_credential` stale Gloas-aware OR-fold (`vendor/nimbus/beacon_chain/spec/beaconstate.nim:59-68`). Treats `0x03` (builder) credentials as compounding at `consensusFork >= ConsensusFork.Gloas`; current spec does NOT modify this predicate. Cost: ≥ 33 ETH locked permanently. Forks at Gloas activation.
 2. **Item #23 H10** — nimbus `get_pending_balance_to_withdraw` stale Gloas-aware OR-fold (`vendor/nimbus/beacon_chain/spec/beaconstate.nim:1541-1559`). Sums `state.builder_pending_withdrawals` + `state.builder_pending_payments` into the validator-side accessor. Continuously triggers on normal post-Gloas traffic via raw-builder-index ↔ validator-index numerical collisions. Cost: zero — structural on normal operation.
@@ -46,8 +46,8 @@ The Pectra audit corpus surfaced multiple pre-emptive Gloas-fork code paths in s
 
 ## Hypotheses
 
-- **H1.** *(Pattern A — `0x03` BUILDER withdrawal credential predicate)*. Spec status confirmed: `has_compounding_withdrawal_credential` is NOT modified at Gloas (PR #4788 removed earlier-draft modification). **Confirmed nimbus mainnet-everyone divergence (item #22 H12)**.
-- **H2.** *(Pattern B — builder pending-withdrawals accumulator)*. Spec status confirmed: `get_pending_balance_to_withdraw` is NOT modified at Gloas (PR #4788 removed earlier-draft modification). **Confirmed nimbus mainnet-everyone divergence (item #23 H10)**.
+- **H1.** *(Pattern A — `0x03` BUILDER withdrawal credential predicate)*. Spec status confirmed: `has_compounding_withdrawal_credential` is NOT modified at Gloas (PR #4788 removed earlier-draft modification). **Confirmed nimbus mainnet-glamsterdam divergence (item #22 H12)**.
+- **H2.** *(Pattern B — builder pending-withdrawals accumulator)*. Spec status confirmed: `get_pending_balance_to_withdraw` is NOT modified at Gloas (PR #4788 removed earlier-draft modification). **Confirmed nimbus mainnet-glamsterdam divergence (item #23 H10)**.
 - **H3.** *(Pattern C — `getActivationChurnLimit` / EIP-8061 churn rework)*. The Pectra-era item #4 audit identified a lodestar Gloas-conditional branch using `getActivationChurnLimit` (independent of `getActivationExitChurnLimit`). The current Gloas spec adopts EIP-8061 (`Modified compute_exit_epoch_and_update_churn`, `Modified get_consolidation_churn_limit`); a thorough recheck of items #4 / #16 against the current spec is OUT OF SCOPE for this meta-audit but should reaffirm.
 - **H4.** *(Pattern D — `CONSOLIDATION_CHURN_LIMIT_QUOTIENT` independent quotient)*. Same status as Pattern C — should reaffirm against EIP-8061.
 - **H5.** *(Pattern E — committee index `< 2` at Gloas)*. Spec status CONFIRMED: `vendor/consensus-specs/specs/gloas/beacon-chain.md:1686` — `assert data.index < 2` inside Gloas-Modified `process_attestation`. Pre-emptive prysm + 5-vs-1 cohort if other 5 don't update.
@@ -59,7 +59,7 @@ The Pectra audit corpus surfaced multiple pre-emptive Gloas-fork code paths in s
 - **H11.** *(Pattern K — Engine API V5)*. Not directly addressed in recheck items #21–#27 (engine API surface is item #15). Carried forward.
 - **H12.** *(Pattern L — EIP-7044 CAPELLA pin for voluntary exits)*. Carried forward as no-op — already correct across all 6 clients.
 - **H13.** *(NEW Pattern M — lighthouse Gloas-ePBS readiness cohort)*. Single broader gap: lighthouse lacks the EIP-7732 ePBS surface implementation. Six symptoms observed across recheck (items #14 H9, #19 H10, #22 H10, #23 H8, #24 H11, #25 H11, #26 H8). Single upstream fix closes all six.
-- **H14.** *(NEW Pattern N — "PR #4513 → PR #4788 revert-window" stale-spec failure mode)*. Two nimbus mainnet-everyone divergences (items #22 H12, #23 H10) share the SAME failure pattern: nimbus shipped pre-emptive code matching v1.6.0-beta.0 spec; PR #4788 (`601829f1a`, 2026-01-05) removed those `Modified` sections when builders were redesigned as non-validating staked actors; nimbus did not roll back. Hunt for other revert-window stale code is the highest-leverage follow-up.
+- **H14.** *(NEW Pattern N — "PR #4513 → PR #4788 revert-window" stale-spec failure mode)*. Two nimbus mainnet-glamsterdam divergences (items #22 H12, #23 H10) share the SAME failure pattern: nimbus shipped pre-emptive code matching v1.6.0-beta.0 spec; PR #4788 (`601829f1a`, 2026-01-05) removed those `Modified` sections when builders were redesigned as non-validating staked actors; nimbus did not roll back. Hunt for other revert-window stale code is the highest-leverage follow-up.
 
 ## Findings
 
@@ -112,7 +112,7 @@ H1 ✓. H2 ✓. H5 — needs item #7 Gloas check. H6 ✓. H7 ✓ (`ExecutionRequ
 
 ### nimbus
 
-**CONFIRMED mainnet-everyone divergences via Pattern N (PR #4513 → PR #4788 revert window).**
+**CONFIRMED mainnet-glamsterdam divergences via Pattern N (PR #4513 → PR #4788 revert window).**
 
 Two stale-spec OR-folds:
 
@@ -154,8 +154,8 @@ func get_pending_balance_to_withdraw*(
 Doc-comment URLs in both reference `#modified-has_compounding_withdrawal_credential` and `#modified-get_pending_balance_to_withdraw` — sections REMOVED by PR #4788 (`vendor/consensus-specs` commit `601829f1ae0d9e4312b041f36d4ab13c2397be2f`, 2026-01-05, "Make builders non-validating staked actors").
 
 Per-pattern status:
-- **Pattern A**: confirmed mainnet-everyone divergence (item #22 H12). Cost ≥ 33 ETH locked permanently.
-- **Pattern B**: confirmed mainnet-everyone divergence (item #23 H10). Cost zero — triggers on normal post-Gloas traffic.
+- **Pattern A**: confirmed mainnet-glamsterdam divergence (item #22 H12). Cost ≥ 33 ETH locked permanently.
+- **Pattern B**: confirmed mainnet-glamsterdam divergence (item #23 H10). Cost zero — triggers on normal post-Gloas traffic.
 - **Pattern F**: nimbus uses Pectra-inline reuse at Gloas via type-union `electra | fulu | gloas` (item #27 H11). Observable-equivalent.
 - **Pattern I**: separate function bodies for Electra/Fulu/Gloas in many state-mutation surfaces (carry forward).
 
@@ -193,8 +193,8 @@ Per-pattern status across clients (recheck-updated; ✓ = spec-conformant, ✗ =
 
 | Pattern | prysm | lighthouse | teku | nimbus | lodestar | grandine | Status |
 |---|---|---|---|---|---|---|---|
-| **A** (`0x03` BUILDER predicate fold-in) | ✓ | ✓ | ✓ | **✗ (item #22 H12)** | ✓ | ✓ | **CONFIRMED mainnet-everyone in nimbus** |
-| **B** (builder pending-withdrawals accumulator) | ✓ | ✓ (gap) | ✓ | **✗ (item #23 H10)** | ✓ | ✓ | **CONFIRMED mainnet-everyone in nimbus** |
+| **A** (`0x03` BUILDER predicate fold-in) | ✓ | ✓ | ✓ | **✗ (item #22 H12)** | ✓ | ✓ | **CONFIRMED mainnet-glamsterdam in nimbus** |
+| **B** (builder pending-withdrawals accumulator) | ✓ | ✓ (gap) | ✓ | **✗ (item #23 H10)** | ✓ | ✓ | **CONFIRMED mainnet-glamsterdam in nimbus** |
 | **C** (`getActivationChurnLimit` selection) | ⚠ | ⚠ | ⚠ | ⚠ | ⚠ | ⚠ | needs items #4/#16 recheck |
 | **D** (`CONSOLIDATION_CHURN_LIMIT_QUOTIENT`) | ⚠ | ⚠ | ⚠ | ⚠ | ⚠ | ⚠ | needs item #16 recheck |
 | **E** (committee index `< 2` at Gloas) | ✓ (pre-emptive) | ⚠ | ⚠ | ⚠ | ⚠ | ⚠ | spec confirmed; per-client needs item #7 recheck |
@@ -233,7 +233,7 @@ No Gloas-specific EF fixtures wired yet. All Gloas-target findings (Patterns A, 
 
 ## Mainnet reachability
 
-Two confirmed mainnet-everyone divergence vectors at Gloas activation:
+Two confirmed mainnet-glamsterdam divergence vectors at Gloas activation:
 
 **Vector 1 — nimbus Pattern A (item #22 H12)**: any pre-Gloas depositor submits a `DepositRequest` with `withdrawal_credentials[0] = 0x03` (Pectra `process_deposit_request` accepts any prefix) and a top-up to push balance > 33.25 ETH (UPWARD_HYSTERESIS_THRESHOLD). At the first `process_effective_balance_updates` post-Gloas, nimbus's stale `has_compounding_withdrawal_credential` returns true for `0x03` → `get_max_effective_balance` returns `MAX_EFFECTIVE_BALANCE_ELECTRA = 2048 ETH`; other 5 clients return `MIN_ACTIVATION_BALANCE = 32 ETH`. Validator's `effective_balance` diverges. State-root mismatch → chain split. Cost: ≥ 33 ETH locked permanently (no withdrawal path for `0x03` validators).
 
@@ -261,14 +261,14 @@ At Gloas activation, lighthouse either rejects Gloas blocks (the lighthouse beac
 
 **Status: source-code-reviewed.** The recheck series (items #1–#27) against current consensus-specs `v1.7.0-alpha.7-21-g0e70a492d` confirms:
 
-1. **Two mainnet-everyone divergences in nimbus** (Patterns A, B) caused by stale code shipped during the PR #4513 → PR #4788 spec-revert window (Pattern N). Both have single-line fixes.
+1. **Two mainnet-glamsterdam divergences in nimbus** (Patterns A, B) caused by stale code shipped during the PR #4513 → PR #4788 spec-revert window (Pattern N). Both have single-line fixes.
 2. **One Gloas-ePBS readiness gap in lighthouse** (Pattern M cohort across items #14 H9, #19 H10, #22 H10, #23 H8, #24 H11, #25 H11, #26 H8) — single broader implementation gap with six observed symptoms.
 3. **Pattern F (sync committee selection) converged** to observable-equivalent across all six clients (item #27 H10) — earlier "leader divergence" concern resolved as the spec stabilised.
 4. **Five clients (prysm, lighthouse, teku, lodestar, grandine) caught up significantly** since 2026-05-02. The "teku is the laggard" framing from the prior audit is OUTDATED — teku now has substantial Gloas surface (`BeaconStateAccessorsGloas`, `MiscHelpersGloas`, `PredicatesGloas`, `BeaconStateMutatorsGloas`, etc.).
 5. **Grandine remains the Gloas-readiness leader**: full `transition_functions/src/gloas/` module, explicit three-way dispatcher pattern, separate `_post_gloas` / `_post_electra` / `pre_electra` function variants.
 
 **Per-pattern bottom line:**
-- **Patterns A + B (Pattern N revert-window) — CONFIRMED mainnet-everyone divergences in nimbus.** Highest-priority pre-Gloas fix.
+- **Patterns A + B (Pattern N revert-window) — CONFIRMED mainnet-glamsterdam divergences in nimbus.** Highest-priority pre-Gloas fix.
 - **Pattern M cohort — lighthouse cannot remain on canonical Gloas chain without implementation.** Highest-priority pre-Gloas implementation work.
 - **Patterns C + D + E + K — needs item-level recheck against current spec** to convert speculative observations to confirmed/refuted.
 - **Pattern F — RESOLVED to observable-equivalent** (no action needed).

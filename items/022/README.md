@@ -1,6 +1,6 @@
 ---
 status: source-code-reviewed
-impact: mainnet-everyone
+impact: mainnet-glamsterdam
 last_update: 2026-05-12
 builds_on: [1, 2, 11, 12, 18, 21]
 eips: [EIP-7251, EIP-7732]
@@ -94,7 +94,7 @@ Two recheck questions:
 
 ## Findings
 
-H1–H11 satisfied; **H12 is the active mainnet-everyone divergence.**
+H1–H11 satisfied; **H12 is the active mainnet-glamsterdam divergence.**
 
 ### prysm
 
@@ -477,7 +477,7 @@ The Gloas state-transition test corpus (`vendor/consensus-specs/tests/core/pyspe
 
 ## Mainnet reachability
 
-**impact: mainnet-everyone.** Reachable by any pre-Gloas depositor at cost ≥ 33 ETH locked permanently.
+**impact: mainnet-glamsterdam.** Reachable by any pre-Gloas depositor at cost ≥ 33 ETH locked permanently.
 
 **Attack mechanism (1-vs-5 fork at Gloas activation, splits=[nimbus]):**
 
@@ -517,9 +517,9 @@ The Gloas state-transition test corpus (`vendor/consensus-specs/tests/core/pyspe
 
 **Status: source-code-reviewed.** Source review of all six clients against the updated checkouts (versions per front matter) confirms Pectra-surface invariants (H1–H9) hold across all six. H10 (Gloas-NEW `0x03` constants + `is_builder_withdrawal_credential` predicate) holds for five clients; **lighthouse lacks the predicate** (only the constant present) — propagation of items #14 H9 / #19 H10 lighthouse Gloas-readiness gap, separate from this item's nimbus divergence.
 
-**Glamsterdam-target finding (H12 — mainnet-everyone divergence).** Nimbus's `has_compounding_withdrawal_credential` at `vendor/nimbus/beacon_chain/spec/beaconstate.nim:59-68` is fork-gated to OR-fold `is_builder_withdrawal_credential` at `consensusFork >= ConsensusFork.Gloas`. The current Gloas spec (v1.7.0-alpha.7-21-g0e70a492d) does NOT modify this predicate — commit `601829f1a` (PR #4788, 2026-01-05, "Make builders non-validating staked actors") REMOVED an earlier-draft `Modified has_compounding_withdrawal_credential` section when builders were redesigned as non-validating staked actors living in a separate `state.builders` registry. Nimbus's stale Gloas-aware OR-fold cascades through `has_execution_withdrawal_credential` (`:1472-1476`) into `get_max_effective_balance` (`:71-77`), `is_partially_withdrawable_validator` / `is_fully_withdrawable_validator` (`:1480-1513`), and the effective-balance-update math (item #1).
+**Glamsterdam-target finding (H12 — mainnet-glamsterdam divergence).** Nimbus's `has_compounding_withdrawal_credential` at `vendor/nimbus/beacon_chain/spec/beaconstate.nim:59-68` is fork-gated to OR-fold `is_builder_withdrawal_credential` at `consensusFork >= ConsensusFork.Gloas`. The current Gloas spec (v1.7.0-alpha.7-21-g0e70a492d) does NOT modify this predicate — commit `601829f1a` (PR #4788, 2026-01-05, "Make builders non-validating staked actors") REMOVED an earlier-draft `Modified has_compounding_withdrawal_credential` section when builders were redesigned as non-validating staked actors living in a separate `state.builders` registry. Nimbus's stale Gloas-aware OR-fold cascades through `has_execution_withdrawal_credential` (`:1472-1476`) into `get_max_effective_balance` (`:71-77`), `is_partially_withdrawable_validator` / `is_fully_withdrawable_validator` (`:1480-1513`), and the effective-balance-update math (item #1).
 
-The divergence is **mainnet-everyone-reachable**: any pre-Gloas depositor can submit a 32 ETH deposit with `withdrawal_credentials[0] = 0x03` + a 1.5 ETH top-up to push balance > 33.25 ETH (clearing UPWARD_HYSTERESIS_THRESHOLD). At Gloas activation's first `process_effective_balance_updates`, nimbus's `effective_balance` for this validator diverges from the other 5 clients. State-root mismatch → chain split at Gloas activation epoch + 1. Splits = [nimbus]; 1-vs-5.
+The divergence is **mainnet-glamsterdam-reachable**: any pre-Gloas depositor can submit a 32 ETH deposit with `withdrawal_credentials[0] = 0x03` + a 1.5 ETH top-up to push balance > 33.25 ETH (clearing UPWARD_HYSTERESIS_THRESHOLD). At Gloas activation's first `process_effective_balance_updates`, nimbus's `effective_balance` for this validator diverges from the other 5 clients. State-root mismatch → chain split at Gloas activation epoch + 1. Splits = [nimbus]; 1-vs-5.
 
 **Attacker cost**: ≥ 33 ETH locked permanently (no withdrawal path for `0x03` validators at any current fork on any client). Cheap for a motivated fork-attack adversary.
 
