@@ -1,11 +1,11 @@
 ---
 status: source-code-reviewed
 impact: mainnet-glamsterdam
-last_update: 2026-05-12
+last_update: 2026-05-13
 builds_on: [1, 2]
 eips: [EIP-6110, EIP-8061]
-splits: [prysm, lighthouse, teku, nimbus, grandine]
-# main_md_summary: at Gloas activation, only lodestar fork-gates `process_pending_deposits` to `get_activation_churn_limit`; the other five still call `get_activation_exit_churn_limit` (Electra formula)
+splits: [prysm, lighthouse, teku, grandine]
+# main_md_summary: at Gloas activation, prysm/lighthouse/teku/grandine still call `get_activation_exit_churn_limit` inside `process_pending_deposits`; nimbus/lodestar fork-gate to the Gloas EIP-8061 `get_activation_churn_limit`. 4-vs-2 state-root split on the first Gloas-epoch transition whose drain hits the churn ceiling
 prysm_version: v7.1.3-rc.3-213-gd35d65625f
 lighthouse_version: v8.1.2-185-g1a6863118
 teku_version: 26.4.0-72-gc05af0eaa0
@@ -22,7 +22,7 @@ EIP-6110 replaces eth1-bridge polling with in-protocol pending deposits. Per-epo
 
 **Pectra surface (the function body itself):** all six clients implement the four short-circuits, three per-deposit branches, queue-postpone semantics, `GENESIS_FORK_VERSION` signature domain, and conditional churn accumulator identically. 43/43 EF `pending_deposits` epoch-processing fixtures pass on the four wired clients (prysm, lighthouse, lodestar, grandine); teku and nimbus pass these in internal CI but the local harness SKIPs them.
 
-**Gloas surface (new at the Glamsterdam target):** Gloas modifies `process_pending_deposits` (`vendor/consensus-specs/specs/gloas/beacon-chain.md:982`) — the EIP-8061 deposit-side rework — to compute `available_for_processing = deposit_balance_to_consume + get_activation_churn_limit(state)` instead of `+ get_activation_exit_churn_limit(state)`. The new `get_activation_churn_limit` (line 808-822) is balance-based with the Gloas-specific `CHURN_LIMIT_QUOTIENT_GLOAS` constant and capped at `MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT_GLOAS`. The function is **also** rescheduled out of `process_operations` to be invoked from `apply_parent_execution_payload` (EIP-7732 ePBS) along with the other request handlers, but the body itself is unchanged apart from the churn-helper swap. At the audit snapshot **only lodestar fork-gates the churn call** (`fork >= ForkSeq.gloas ? getActivationChurnLimit : getActivationExitChurnLimit`); prysm, lighthouse, teku, nimbus, and grandine continue to call the Electra `get_activation_exit_churn_limit` even on Gloas states. Third installment of the EIP-8061 5-vs-1 cohort split (sister to item #2's H6 on consolidations and item #3's H8 on exits).
+**Gloas surface (new at the Glamsterdam target):** Gloas modifies `process_pending_deposits` (`vendor/consensus-specs/specs/gloas/beacon-chain.md:982`) — the EIP-8061 deposit-side rework — to compute `available_for_processing = deposit_balance_to_consume + get_activation_churn_limit(state)` instead of `+ get_activation_exit_churn_limit(state)`. The new `get_activation_churn_limit` (line 808-822) is balance-based with the Gloas-specific `CHURN_LIMIT_QUOTIENT_GLOAS` constant and capped at `MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT_GLOAS`. The body itself is otherwise unchanged. After re-pinning lighthouse + nimbus to `unstable`, **nimbus joins lodestar in fork-gating the churn call**: `state_transition_epoch.nim:1222-1224` uses Nim's compile-time `when typeof(state).kind >= ConsensusFork.Gloas:` to dispatch to a new `get_activation_churn_limit*` overload at `beaconstate.nim:305-317` (Gloas EIP-8061 formula). **Prysm, lighthouse, teku, and grandine** continue to call the Electra `get_activation_exit_churn_limit` even on Gloas states. **Lighthouse landed the consolidation-side (item #2) and exit-side (item #3) EIP-8061 fixes on `unstable` but NOT the deposit-side**; `PendingDepositsContext::new` at `single_pass.rs:1083-1091` is unchanged. 4-vs-2 split — different cohort topology from items #2/#3 (3-vs-3) because lighthouse hasn't shipped the deposit-side helper.
 
 ## Question
 
@@ -108,7 +108,7 @@ The hypothesis: *all six clients implement the four short-circuits, three per-de
 
 ## Findings
 
-H1–H7 satisfied for the Pectra surface. **H8 fails for 5 of 6 clients at the Glamsterdam target** — only lodestar fork-gates the churn term inside `process_pending_deposits`. The other five all read `get_activation_exit_churn_limit` even when the runtime spec version is Gloas. Source-level divergence; no Gloas epoch-processing fixtures yet exist.
+H1–H7 satisfied for the Pectra surface. **H8 fails for 4 of 6 clients at the Glamsterdam target** — nimbus and lodestar fork-gate the churn term inside `process_pending_deposits`; prysm, lighthouse, teku, and grandine all read `get_activation_exit_churn_limit` even when the runtime spec version is Gloas. Source-level divergence; no Gloas epoch-processing fixtures yet exist.
 
 ### prysm
 
@@ -130,9 +130,9 @@ H1–H7 ✓. **H8 ✗** (Electra formula at Gloas).
 
 ### lighthouse
 
-`vendor/lighthouse/consensus/state_processing/src/per_epoch_processing/single_pass.rs:940-1063` — `PendingDepositsContext::new`. **Notable structural difference**: lighthouse defers the actual balance/validator mutations. It builds a `PendingDepositsContext` that records the indexed deposit operations (a `HashMap<usize, Vec<u64>>` for top-ups and a `Vec` for new validators), then applies them later in the validator-iteration loop. Same observable post-state, but the mutations are batched.
+`vendor/lighthouse/consensus/state_processing/src/per_epoch_processing/single_pass.rs:1083-1110` — `PendingDepositsContext::new` (re-pinned `unstable`). The structural pattern is unchanged: lighthouse defers the actual balance/validator mutations into a `PendingDepositsContext` that records indexed deposit operations (`HashMap` for top-ups, `Vec` for new validators), applied later in the validator-iteration loop.
 
-Break-condition order matches pyspec 1→4. `next_deposit_index` incremented after the inner conditionals. The churn term at lines 947-948:
+Break-condition order matches pyspec 1→4. The churn term at lines 1090-1091 is **NOT fork-gated** on `unstable`:
 
 ```rust
 let available_for_processing = state
@@ -140,13 +140,15 @@ let available_for_processing = state
     .safe_add(state.get_activation_exit_churn_limit(spec)?)?;
 ```
 
-No fork-gate. Lighthouse *does* have a `get_activation_churn_limit` (`vendor/lighthouse/consensus/types/src/state/beacon_state.rs:2036-2050`) but it's the **Deneb-era count-based formula** (`min(spec.max_per_epoch_activation_churn_limit, get_validator_churn_limit)`), not the Gloas balance-based formula with `CHURN_LIMIT_QUOTIENT_GLOAS`. It's never called from `process_pending_deposits`.
+Even though lighthouse `unstable` introduced fork-gating for the consolidation-side (`get_consolidation_churn_limit` at `beacon_state.rs:2802-2812`, item #2) and the exit-side (`compute_exit_epoch_and_update_churn` at `:2906-2910`, item #3), the deposit-side helper inside `PendingDepositsContext` was NOT updated. The Electra `get_activation_exit_churn_limit` accessor still drives `available_for_processing` regardless of fork.
 
-`is_valid_deposit_signature` (`vendor/lighthouse/consensus/state_processing/src/per_block_processing/signature_sets.rs:365-374`) uses `spec.get_deposit_domain()` (`vendor/lighthouse/consensus/types/src/chain_spec.rs:545-547`) which is `compute_domain(Domain::Deposit, self.genesis_fork_version, Hash256::zero())` — explicit `genesis_fork_version`. ✓
+Lighthouse *does* have a `get_activation_churn_limit` (`vendor/lighthouse/consensus/types/src/state/beacon_state.rs:2167-2181`) but it's the **Deneb-era count-based formula** (`min(spec.max_per_epoch_activation_churn_limit, get_validator_churn_limit)`) — count-based, not the Gloas balance-based formula with `CHURN_LIMIT_QUOTIENT_GLOAS`. The doc-comment even says "number of validators who can enter per epoch". A separate `let activation_churn_limit = state.get_activation_churn_limit(spec)?;` reads it at `single_pass.rs:173`, but only for the activation-queue path, not for `PendingDepositsContext`.
 
-`add_validator_to_registry` (`vendor/lighthouse/consensus/types/src/state/beacon_state.rs:1922-1965`) computes effective_balance via `Validator::from_deposit(..., amount, ...)` which computes `min(amount - amount % EBI, max_eb)` consistently with item #1.
+`is_valid_deposit_signature` continues to use `spec.get_deposit_domain()` → `compute_domain(Domain::Deposit, self.genesis_fork_version, ...)`. ✓
 
-H1–H7 ✓. **H8 ✗** (no Gloas fork-gate; existing `get_activation_churn_limit` is the Deneb count-based formula, not the Gloas balance-based one).
+`add_validator_to_registry` continues to compute effective_balance via `Validator::from_deposit(..., amount, ...)` consistent with item #1. ✓
+
+H1–H7 ✓. **H8 ✗** — still no Gloas fork-gate on the deposit-side churn. Lighthouse landed EIP-8061 for items #2 and #3 on `unstable` but not for this item; the footgun about the count-based `get_activation_churn_limit` remains.
 
 ### teku
 
@@ -173,27 +175,42 @@ H1–H7 ✓. **H8 ✗** (Electra formula at Gloas; Gloas epoch processor doesn't
 
 ### nimbus
 
-`vendor/nimbus/beacon_chain/spec/state_transition_epoch.nim:1207-1298` — `process_pending_deposits*`. Predicate sequence matches pyspec 1→4. Queue mutation at line ~1290:
+`vendor/nimbus/beacon_chain/spec/state_transition_epoch.nim:1213-1298` — `process_pending_deposits*` (re-pinned `unstable`). Predicate sequence matches pyspec 1→4. Queue mutation idiom unchanged (`asSeq[next_deposit_index..^1] & deposits_to_postpone`).
+
+Churn term at lines 1218-1224 — **now fork-gated** via Nim's compile-time `when`:
 
 ```nim
-state.pending_deposits = HashList[PendingDeposit, Limit PENDING_DEPOSITS_LIMIT].init(
-    state.pending_deposits.asSeq[next_deposit_index..^1] & deposits_to_postpone)
+let
+  next_epoch = get_current_epoch(state) + 1
+  available_for_processing = state.deposit_balance_to_consume +
+    (when typeof(state).kind >= ConsensusFork.Gloas:
+      get_activation_churn_limit(cfg, state, cache)
+    else:
+      get_activation_exit_churn_limit(cfg, state, cache))
 ```
 
-Churn term at lines 1213-1214:
+Signature now also accepts `heze.BeaconState`. The new Gloas/Heze `get_activation_churn_limit*` overload at `vendor/nimbus/beacon_chain/spec/beaconstate.nim:305-317` implements the EIP-8061 formula precisely:
 
 ```nim
-available_for_processing = state.deposit_balance_to_consume +
-  get_activation_exit_churn_limit(cfg, state, cache)
+# https://github.com/ethereum/consensus-specs/blob/v1.7.0-alpha.7/specs/gloas/beacon-chain.md#new-get_activation_churn_limit
+func get_activation_churn_limit*(
+    cfg: RuntimeConfig,
+    state: gloas.BeaconState | heze.BeaconState,
+    cache: var StateCache): Gwei =
+  var churn = max(
+    cfg.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.Gwei,
+    get_total_active_balance(state, cache) div cfg.CHURN_LIMIT_QUOTIENT_GLOAS
+  )
+  churn = churn - churn mod EFFECTIVE_BALANCE_INCREMENT.Gwei
+  min(cfg.MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT_GLOAS.Gwei, churn)
 ```
 
-No fork-gate. `get_activation_exit_churn_limit` is the Electra formula irrespective of the runtime fork.
+The `MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA` floor, `CHURN_LIMIT_QUOTIENT_GLOAS` divisor, and `MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT_GLOAS` cap all match the spec. Sister overload `get_exit_churn_limit*` at `:319+` confirmed for item #3.
 
-`apply_pending_deposit` (lines 1185-1204) takes a precomputed `validator_index: Opt[ValidatorIndex]`. New-validator branch calls `verify_deposit_signature(cfg.GENESIS_FORK_VERSION, deposit_data)` — explicit genesis fork version arg. ✓
+`apply_pending_deposit` still calls `verify_deposit_signature(cfg.GENESIS_FORK_VERSION, deposit_data)`. ✓
+`add_validator_to_registry` still takes `amount`. ✓
 
-`add_validator_to_registry` (`vendor/nimbus/beacon_chain/spec/beaconstate.nim:125-145`) appends `get_validator_from_deposit(state, pubkey, creds, amount)` and `state.balances.add(amount)`. Returns `Result[void, cstring]` for "too many validators". ✓
-
-H1–H7 ✓. **H8 ✗** (Electra formula at Gloas).
+H1–H7 ✓. **H8 ✓** — nimbus now joins lodestar in fork-gating the deposit-side churn helper to EIP-8061.
 
 ### lodestar
 
@@ -267,9 +284,9 @@ H1–H7 ✓. **H8 ✗** (Electra formula at Gloas).
 | Client | Main fn | `available_for_processing` churn term | Gloas fork-gate (H8) | Sig domain version | `add_validator_to_registry` |
 |---|---|---|---|---|---|
 | prysm | `core/electra/deposits.go:257-370` | `helpers.ActivationExitChurnLimit(activeBalance)` (line 278) | ✗ | `nil → GENESIS` (default in `ComputeDomain`) | `:472-497` (sets balance=amount) |
-| lighthouse | `per_epoch_processing/single_pass.rs:940-1063` (`PendingDepositsContext::new`) | `state.get_activation_exit_churn_limit(spec)?` (line 948) | ✗ | explicit `genesis_fork_version` | `state/beacon_state.rs:1922-1965` (`from_deposit(amount)`) |
+| lighthouse | `per_epoch_processing/single_pass.rs:1083-1110` (`PendingDepositsContext::new`) | `state.get_activation_exit_churn_limit(spec)?` (line 1091) — **not fork-gated** despite items #2/#3 landing EIP-8061 fixes on `unstable` | ✗ | explicit `genesis_fork_version` | `state/beacon_state.rs` (`from_deposit(amount)`) |
 | teku | `EpochProcessorElectra.java:214-299` | `stateAccessorsElectra.getActivationExitChurnLimit(stateElectra)` (line 221) | ✗ | explicit `genesisForkVersion` | `BeaconStateMutators.java:230-240` |
-| nimbus | `state_transition_epoch.nim:1207-1298` | `get_activation_exit_churn_limit(cfg, state, cache)` (line 1214) | ✗ | explicit `cfg.GENESIS_FORK_VERSION` | `beaconstate.nim:125-145` |
+| nimbus | `state_transition_epoch.nim:1213-1298` | `when typeof(state).kind >= ConsensusFork.Gloas: get_activation_churn_limit ... else: get_activation_exit_churn_limit` at `:1218-1224` — **fork-gated**; Gloas overload at `beaconstate.nim:305-317` | **✓** | explicit `cfg.GENESIS_FORK_VERSION` | `beaconstate.nim:125-145` |
 | lodestar | `epoch/processPendingDeposits.ts:19-108` | `fork >= ForkSeq.gloas ? getActivationChurnLimit : getActivationExitChurnLimit` (line 22-23) — **fork-gated** | **✓** | explicit `config.GENESIS_FORK_VERSION` | `block/processDeposit.ts:90-122` |
 | grandine | `electra/epoch_processing.rs:235-317` | `get_activation_exit_churn_limit(config, state)` (line 242) | ✗ | `compute_domain(... None ...)` → GENESIS | `block_processing.rs:add_validator_to_registry` |
 
@@ -353,7 +370,7 @@ No Gloas epoch-processing fixtures exist yet in the EF set. H8 is currently sour
 
 **Reachable on canonical traffic at Glamsterdam activation, on every epoch boundary where `process_pending_deposits` hits the churn limit.** No special role required — the divergence materialises as the protocol drains the global `state.pending_deposits` queue. The trigger condition is mainnet-routine: at steady state with ~30M ETH active, the per-epoch deposit churn limit governs how fast new-validator deposits clear; if the queue is large enough that draining is throttled (which it routinely is during deposit-heavy periods like post-fork onboarding), the churn-ceiling computation matters every epoch.
 
-**Trigger.** The first Gloas-epoch `process_epoch` (run on the first Gloas slot's epoch transition) calls `process_pending_deposits`. The function reads `available_for_processing = deposit_balance_to_consume + churn_limit`. Lodestar computes `churn_limit = get_activation_churn_limit(state) = min(MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT_GLOAS, max(MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA, total_active_balance // CHURN_LIMIT_QUOTIENT_GLOAS) - mod EBI)`. The other five clients compute `churn_limit = get_activation_exit_churn_limit(state) = min(MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT, get_balance_churn_limit(state))`. With ~30M ETH staked and the published `CHURN_LIMIT_QUOTIENT_GLOAS = 32768` (lodestar's mainnet config), the two formulas yield different numeric churn ceilings.
+**Trigger.** The first Gloas-epoch `process_epoch` (run on the first Gloas slot's epoch transition) calls `process_pending_deposits`. The function reads `available_for_processing = deposit_balance_to_consume + churn_limit`. **nimbus + lodestar** compute `churn_limit = get_activation_churn_limit(state) = min(MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT_GLOAS, max(MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA, total_active_balance // CHURN_LIMIT_QUOTIENT_GLOAS) - mod EBI)`. **prysm, lighthouse, teku, grandine** compute `churn_limit = get_activation_exit_churn_limit(state) = min(MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT, get_balance_churn_limit(state))`. With ~30M ETH staked and the published `CHURN_LIMIT_QUOTIENT_GLOAS = 32768`, the two formulas yield different numeric churn ceilings.
 
 **Severity.** State-root divergence on every Gloas-epoch transition where the drain consumes meaningful churn. Either or both of two mechanisms fires:
 
@@ -362,19 +379,23 @@ No Gloas epoch-processing fixtures exist yet in the EF set. H8 is currently sour
 
 Either way, the post-epoch `state_root` diverges.
 
-**Mitigation window.** Source-only at audit time; not yet covered by an EF fixture. Closing requires either (a) the five Electra-formula clients to ship EIP-8061 before Glamsterdam fork-cut (deposit-side), or (b) the spec to revert. Without one or the other, mainnet at Glamsterdam activation splits into a 5-client cohort (Electra formula) and 1-client cohort (lodestar, Gloas formula). The 5-client cohort is the larger and will become the canonical chain unless coordinated re-alignment happens first; lodestar would be the divergent client until re-aligned. Sister items: item #2 (consolidation-churn, `mainnet-glamsterdam` 5-vs-1) and item #3 (exit-churn, `mainnet-glamsterdam` 5-vs-1) — same five vs same one. All three are different facets of EIP-8061's three-way churn split.
+**Mitigation window.** Source-only at audit time; not yet covered by an EF fixture. Closing requires either (a) the four Electra-formula clients (prysm, lighthouse, teku, grandine) to ship EIP-8061 deposit-side before Glamsterdam fork-cut, or (b) the spec to revert. Without one or the other, mainnet at Glamsterdam activation splits 4-vs-2.
+
+**Asymmetric cohort vs items #2/#3.** Items #2 and #3 are 3-vs-3 on consolidation-churn and exit-churn (lighthouse + nimbus + lodestar implement; prysm + teku + grandine lag). This item is 4-vs-2 on the deposit-side helper — **lighthouse landed the EIP-8061 fixes for consolidations and exits on `unstable` but NOT for deposits**. Closing this gap in lighthouse is the simplest single-client fix and would bring this item's cohort topology into alignment with the sister items.
+
+Sister items: item #2 (consolidation-churn, `mainnet-glamsterdam` 3-vs-3) and item #3 (exit-churn, `mainnet-glamsterdam` 3-vs-3). All three are different facets of EIP-8061's three-way churn split.
 
 ## Conclusion
 
 **Status: source-code-reviewed.** Source review of all six clients against the updated checkouts (versions per front matter) confirms the Pectra-surface hypotheses (H1–H7) remain satisfied: aligned implementations of the four-break-condition outer loop, the three-way per-deposit branch, the postpone-to-back queue mutation, the conditional `deposit_balance_to_consume` reset, and the `GENESIS_FORK_VERSION`-domain signature verification. All 43 EF `pending_deposits` fixtures still pass uniformly on prysm, lighthouse, lodestar, grandine; teku and nimbus pass internally. Notable per-client style differences are unchanged from the prior audit (lighthouse defers mutations via `PendingDepositsContext`; lodestar chunks reads at 100; grandine clones the queue for borrow safety; nimbus uses `asSeq[i..^1] & seq2`; lighthouse uses the legacy `epoch_processing_pending_balance_deposits` test-fn name).
 
-**Glamsterdam-target finding (new):** H8 fails for 5 of 6 clients. Gloas (EIP-8061) modifies `process_pending_deposits` to call `get_activation_churn_limit` rather than `get_activation_exit_churn_limit`. Only lodestar fork-gates the churn term; prysm, lighthouse, teku, nimbus, and grandine all call the Electra accessor unconditionally even on Gloas states. Lighthouse has an unrelated `get_activation_churn_limit` function on `BeaconState`, but it's the **Deneb-era count-based formula** (validator-count-derived), not the Gloas balance-based formula with `CHURN_LIMIT_QUOTIENT_GLOAS` — and even that legacy function is never called from `PendingDepositsContext::new`. The divergence materialises as different `state.pending_deposits` queue contents and/or different `state.deposit_balance_to_consume` on the first Gloas-epoch transition where the drain hits the churn ceiling.
+**Glamsterdam-target finding (refreshed after re-pin):** H8 now fails for 4 of 6 clients. Gloas (EIP-8061) modifies `process_pending_deposits` to call `get_activation_churn_limit` rather than `get_activation_exit_churn_limit`. **Nimbus + lodestar** fork-gate the churn term: nimbus via Nim's compile-time `when typeof(state).kind >= ConsensusFork.Gloas` at `state_transition_epoch.nim:1218-1224` (dispatching to a new Gloas/Heze overload at `beaconstate.nim:305-317`); lodestar via `fork >= ForkSeq.gloas` at `processPendingDeposits.ts:22-23`. **Prysm, lighthouse, teku, and grandine** all call the Electra accessor unconditionally. Lighthouse has an unrelated `get_activation_churn_limit` function on `BeaconState` at `beacon_state.rs:2167-2181`, but it's still the **Deneb-era count-based formula** (validator-count-derived) and is never called from `PendingDepositsContext::new`.
 
-This is the **third installment of the EIP-8061 5-vs-1 cohort split** observed in items #2 (consolidation-churn) and #3 (exit-churn). Same five lagging clients; same one ahead. The audit pattern is consistent enough now that a Track-wide EIP-8061 readiness sweep is the highest-leverage next step.
+**Asymmetric finding vs items #2/#3.** This item is 4-vs-2 while items #2 and #3 (consolidation-churn and exit-churn) are 3-vs-3 — the only difference being lighthouse. Lighthouse landed the EIP-8061 fixes on `unstable` for consolidations (`beacon_state.rs:2802-2812`, item #2) and exits (`:2906-2910`, item #3) but NOT for deposits. The deposit-side `PendingDepositsContext::new` at `single_pass.rs:1083-1091` still reads `get_activation_exit_churn_limit` without fork-gating. Single follow-up PR would close this gap.
 
 Recommendations to the harness and the audit:
 - Generate the **T2.5 Gloas activation-churn formula fixture**; numerically pins the H8 divergence before Glamsterdam activation. Sister to item #2's T2.5 and item #3's T2.6.
-- File / coordinate upstream fork-gating of `process_pending_deposits`'s churn helper to EIP-8061 in prysm, lighthouse, teku, nimbus, grandine. Same five-client list as items #2 and #3 — a single coordinated PR per client could land all three churn-helper changes together.
+- File / coordinate upstream fork-gating of `process_pending_deposits`'s churn helper to EIP-8061 in prysm, lighthouse, teku, grandine. Lighthouse is the highest-priority single-PR fix — it brings the deposit-side into alignment with the consolidation + exit work already on `unstable`.
 - Generate the **T1.1 placeholder-signature top-up fixture** as a dedicated epoch_processing fixture — closes the cross-cut with item #2.
 - Standalone audit `add_validator_to_registry` — used by both this item and `apply_deposit` (legacy path). One Pectra-modified function with two callers; worth its own coverage.
 - Standalone audit `process_deposit_request` — the producer side of the queue this item drains. Now part of Gloas's `apply_parent_execution_payload` (rescheduled by EIP-7732); the start-index initialization is the interesting bit.
