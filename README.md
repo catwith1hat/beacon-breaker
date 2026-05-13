@@ -24,7 +24,6 @@ Full methodology, prompt templates, and repository conventions: [METHODOLOGY.md]
 
 | # | Finding | Split | Mainnet reach |
 |---|---|---|---|
-| [#8](items/008/) | `slash_validator` → `initiate_validator_exit` propagates the EIP-8061 churn-helper divergence (same five lagging clients as items #3 H8 / #6 H8) into every slashed validator's `exit_epoch` / `withdrawable_epoch` at Gloas activation | prysm, lighthouse, teku, nimbus, grandine (5-vs-1) | mainnet-glamsterdam |
 | [#9](items/009/) | lighthouse lacks the Gloas EIP-7732 `BuilderPendingPayment` clearing in `process_proposer_slashing`; the same five clients also propagate the EIP-8061 churn divergence via `slash_validator` (sister to items #6 H8 / #8 H9) | prysm, lighthouse, teku, nimbus, grandine (5-vs-1) | mainnet-glamsterdam |
 | [#12](items/012/) | lighthouse has not implemented the Gloas EIP-7732 builder-withdrawal phases in `process_withdrawals` — neither `get_builder_withdrawals` (drain `state.builder_pending_withdrawals`) nor `get_builders_sweep_withdrawals` (cyclic sweep over `state.builders`) is wired into `per_block_processing/` | lighthouse (1-vs-5) | mainnet-glamsterdam |
 | [#13](items/013/) | lighthouse has not implemented the Gloas EIP-7732 `process_operations` restructure — still calls the three request dispatchers (gated only by `electra_enabled()` which fires at Gloas too) and lacks the new `process_payload_attestation` dispatcher | lighthouse (1-vs-5) | mainnet-glamsterdam |
