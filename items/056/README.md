@@ -1,246 +1,325 @@
-# Item 56 — Fulu fork choice modifications: `is_data_available` (PeerDAS-modified) + `on_block` (signature change) — FIRST TRACK D AUDIT
+---
+status: source-code-reviewed
+impact: none
+last_update: 2026-05-13
+builds_on: [28, 34, 38, 39, 43, 44, 46, 51, 54, 55]
+eips: [EIP-7594, EIP-7732]
+prysm_version: v7.1.3-rc.3-213-gd35d65625f
+lighthouse_version: v8.1.3
+teku_version: 26.4.0-72-gc05af0eaa0
+nimbus_version: v26.3.1
+lodestar_version: v1.42.0-69-g35940ffd61
+grandine_version: 2.0.4-18-geeb33a92
+---
 
-**Status:** no-divergence on observable behavior; **6 distinct dispatch architectures + NEW Pattern II candidate (fork choice DA architecture divergence)** — audited 2026-05-04. **Twenty-sixth Fulu-NEW item, eighteenth PeerDAS audit, FIRST FORK CHOICE (Track D) audit**. Consensus-critical — different fork choice = different head selection.
-
-**Spec definition** (`fulu/fork-choice.md`):
-
-**Modified `is_data_available`** (Fulu):
-```python
-def is_data_available(beacon_block_root: Root) -> bool:
-    # `retrieve_column_sidecars` is implementation and context dependent, replacing
-    # `retrieve_blobs_and_proofs`. For the given block root, it returns all column
-    # sidecars to sample, or raises an exception if they are not available.
-    column_sidecars = retrieve_column_sidecars(beacon_block_root)
-    return all(
-        verify_data_column_sidecar(column_sidecar)
-        and verify_data_column_sidecar_kzg_proofs(column_sidecar)
-        for column_sidecar in column_sidecars
-    )
-```
-
-**Modified `on_block`** (Fulu):
-> The only modification is that `is_data_available` does not take `blob_kzg_commitments` as input.
-
-Pre-Fulu (Deneb):
-```python
-def is_data_available(slot, beacon_block_root, blob_kzg_commitments) -> bool:
-    blobs, proofs = retrieve_blobs_and_proofs(beacon_block_root)
-    return verify_blob_kzg_proof_batch(blobs, blob_kzg_commitments, proofs)
-```
-
-**Major findings**:
-1. **All 6 clients implement Fulu DA semantic** (5+ months of cross-client mainnet operation confirms)
-2. **6 distinct dispatch architectures** for fork choice DA verification — most diverse architecture finding so far
-3. **NEW Pattern II candidate for item #28 catalogue**: Fork choice DA verification architecture divergence
-4. **Cross-cuts item #34 (verification path)** — same `verify_data_column_sidecar` + `verify_data_column_sidecar_kzg_proofs` used in gossip + fork choice
-5. **Block queueing diversity** — 6 distinct strategies for "block arrived but data not yet available"
-6. **First Track D audit** — opens a previously unaudited surface
-
-## Scope
-
-In: `is_data_available` Fulu implementation per-client; `on_block` Fulu signature change handling; multi-fork-definition pattern (Pattern I/J/R/II family); block queueing for unavailable data; integration with item #34 verification path; custody-aware vs sampling-aware verification; cross-cut to item #46 (RPC retrieval), #55 (retention period).
-
-Out: Fulu fork choice tie-breaking rules (Phase0-heritage); proposer boost (Capella-heritage); fork choice score calculation; LMD GHOST algorithm details; Reed-Solomon recovery integration (item #39 covered); detailed gossip validation (item #34 covered).
-
-## Hypotheses
-
-| # | Hypothesis | Verdict | Rationale |
-|---|---|---|---|
-| H1 | All 6 clients implement Fulu fork choice DA check | ✅ all 6 | 5+ months of mainnet operation |
-| H2 | All 6 use `verify_data_column_sidecar` + `verify_data_column_sidecar_kzg_proofs` (item #34) | ✅ all 6 (architecture differs but verification path same) | Spec mandate |
-| H3 | All 6 dispatch on fork (pre-Fulu blob check vs Fulu column check) | ✅ all 6 | Necessary for fork transition |
-| H4 | All 6 implement block queueing for unavailable data | ✅ all 6 (6 distinct strategies) | Spec MAY clause |
-| H5 | All 6 use `is_data_available` literal function name | ❌ only prysm + lighthouse + teku name it that way; nimbus uses quarantine pool API; lodestar uses DAType enum; grandine uses EIP-7594 module | Architecture divergence |
-| H6 | Multi-fork-definition pattern (Pattern I/J/R) applies to fork choice | ✅ teku Pattern J (separate `AvailabilityChecker` classes); nimbus 3-quarantine pattern (separate per-fork pools); lodestar Pattern R (DAType union); others type-based | NEW Pattern II candidate |
-| H7 | Cross-cut to item #34 verification path | ✅ all 6 | Same verify_* functions |
-| H8 | Custody-aware verification (CUSTODY_REQUIREMENT = 4 columns) | ⚠️ all 6 use SAMPLES_PER_SLOT (= 8) sampling per spec; some clients use higher custody count | Cross-cut item #38 |
-| H9 | Block queueing strategy | ⚠️ 6 distinct strategies — synchronous blocking, LRU cache, async future, quarantine pool, union-type, operation pool | Pattern II divergence |
-| H10 | Live mainnet validation: 5+ months without observed fork choice divergence | ✅ all 6 | Production validation |
-
-## Per-client cross-reference
-
-| Client | Function/architecture | File:line | Fork dispatch | Block queueing |
-|---|---|---|---|---|
-| **prysm** | `areDataColumnsAvailable` (Fulu) vs `areBlobsAvailable` (Deneb) | `process_block.go:887-918` (`if blockVersion >= version.Fulu`) | Binary version check | **Synchronous blocking wait** on notifier channels (lines 954-1002); custody-aware via `peerdas.Info()` |
-| **lighthouse** | `DataAvailabilityChecker<T>` wrapper with type-based dispatch | `data_availability_checker.rs:1-100+` | Type-based via `BlobSidecar` (Deneb) vs `DataColumnSidecar` (Fulu+) types | **LRU cache** (`PendingComponents`, max 32); `verify_kzg_for_data_column_list` integration |
-| **teku** | **Pattern J — separate `AvailabilityChecker` classes per fork**: `BlobSidecarsAvailabilityChecker` (Deneb) + `DataColumnSidecarAvailabilityChecker` (Fulu) | `BlobSidecarsAvailabilityChecker.java:36+` + `DataColumnSidecarAvailabilityChecker.java:26+` | Class instantiation via `BlobSidecarManagerImpl.java:66` + `DasSamplerManager.java:37` | **Async `SafeFuture`** (`initiateDataAvailabilityCheck`); status enum NOT_REQUIRED_BEFORE_FULU/_OLD_EPOCH/_NO_BLOBS |
-| **nimbus** | **3-QUARANTINE PATTERN**: `blobQuarantine` (Deneb) + `dataColumnQuarantine` (Fulu) + `gloasColumnQuarantine` (Gloas) — 3 separate quarantines per fork | `nimbus_beacon_node.nim:570/611/811`; `consensus_object_pools/blob_quarantine.nim` | Quarantine pool dispatch via `popSidecars(forkyBlck.root, forkyBlck)` (`:662`) | **Quarantine pool with `custodyMap`** — block waits for column sidecars to populate quarantine; pruned at finalization |
-| **lodestar** | **Pattern R — `DAType` union type dispatch**: `PreData` / `Blobs` (Deneb) / `Columns` (Fulu) / `NoData`; union type `DAData = null \| deneb.BlobSidecars \| fulu.DataColumnSidecar[]` | `verifyBlocksDataAvailability.ts:14-45` + `blockInput/types.ts:5-12` | Runtime DAType enum discrimination | **`SeenBlockInput` LRU cache** (`seenGossipBlockInput.ts:100+`); max `(MAX_LOOK_AHEAD_EPOCHS + 1) * SLOTS_PER_EPOCH`; pruned on finalization + range sync completion |
-| **grandine** | **EIP-7594 module integration**: `eip_7594/src/lib.rs` — heavy PeerDAS native integration with custody group computation + cell KZG proof batch verification | `eip_7594/src/lib.rs:1-100+` (Fulu + Gloas variants) | Type-based via `FuluDataColumnSidecar` vs `GloasDataColumnSidecar` | **`BlobReconstructionPool`** (`operation_pools/blob_reconstruction_pool/tasks.rs`) — async recovery for missing data |
-
-## Notable per-client findings
-
-### NEW Pattern II candidate — Fork choice DA architecture divergence (most diverse so far)
-
-**6 distinct dispatch architectures** for the same spec semantic:
-
-1. **prysm** — Single function `process_block.go:898 if blockVersion >= version.Fulu` with binary version check. Synchronous blocking wait via channels. Most procedural.
-
-2. **lighthouse** — Type-based dispatch via `BlobSidecar` vs `DataColumnSidecar` enum. Single `DataAvailabilityChecker<T>` wrapper. Type system enforces fork dispatch.
-
-3. **teku** — **Pattern J** — separate `AvailabilityChecker<T>` classes per fork (`BlobSidecarsAvailabilityChecker` + `DataColumnSidecarAvailabilityChecker`). Most enterprise-Java OOP. Each fork has its own class with own status enum.
-
-4. **nimbus** — **3-QUARANTINE PATTERN** — separate quarantine pools per fork (`blobQuarantine` + `dataColumnQuarantine` + `gloasColumnQuarantine`). The quarantine IS the DA check — block waits in quarantine until columns arrive. Most data-structure-driven.
-
-5. **lodestar** — **Pattern R** — `DAType` enum union type dispatch with runtime type discrimination + `DAData` union type for sidecar storage. Most TypeScript-idiomatic.
-
-6. **grandine** — Module-based integration via `eip_7594/src/lib.rs` with custody group computation + cell KZG proof batch verification. Native PeerDAS focus. Most module-isolated.
-
-**Same forward-fragility class as Pattern I/J/R** (multi-fork-definition family). At Heze + Gloas, each client must extend its dispatch pattern. Different patterns have different extension complexity:
-- prysm binary check: easy to add `if blockVersion >= version.Heze` (linear)
-- teku class-per-fork: needs new `AvailabilityChecker` class per fork (linear but verbose)
-- nimbus 3-quarantine pattern: each fork needs a NEW quarantine type (linear; gloasColumnQuarantine already exists)
-- lodestar DAType enum: needs new variant per fork (linear)
-
-### Nimbus 3-quarantine architecture (MOST FORK-AWARE)
-
-Nimbus has **already implemented Gloas column quarantine** (`gloasColumnQuarantine` at `nimbus_beacon_node.nim:611`) — pre-Gloas readiness. This is the FOURTH distinct quarantine (blobQuarantine for Deneb/Electra + dataColumnQuarantine for Fulu + gloasColumnQuarantine for Gloas). Nimbus is most prepared for Gloas at the fork choice DA layer.
-
-Cross-cut to **item #28 Gloas readiness scoreboard**: nimbus is the leader (was previously: nimbus > grandine > lighthouse > prysm > lodestar > teku). This audit confirms nimbus's Gloas readiness on the DA layer.
-
-### Cross-cut to item #34 verification path
-
-All 6 clients use the SAME `verify_data_column_sidecar` + `verify_data_column_sidecar_kzg_proofs` functions for fork choice DA AND gossip validation. This is consistent with the spec's spirit — the same verification primitives apply at multiple layers.
-
-**Pattern P risk** (item #34): grandine's hardcoded gindex 11 affects BOTH gossip-time inclusion proof verification AND fork-choice-time DA verification. **Pattern P is more pervasive than item #34 alone documented** — extends to fork choice layer.
-
-### Custody-aware vs sampling-aware divergence
-
-| Client | Approach |
-|---|---|
-| prysm | **Sampling-aware** via `peerdas.Info(nodeID, samplingSize)` — checks SAMPLES_PER_SLOT = 8 sampled columns |
-| lighthouse | **Custody-aware** — verifies columns within node's custody set (CUSTODY_REQUIREMENT or higher per node config) |
-| teku | **Sampling-aware** via `DataAvailabilitySampler.checkSamplingEligibility()` returns sampled column indices |
-| nimbus | **Custody-aware** via `custodyMap` in quarantine pool |
-| lodestar | **Sampling-aware** via `CustodyConfig` driving DataColumnSidecar validation |
-| grandine | **Custody-aware** via explicit custody group computation in EIP-7594 module |
-
-**3 vs 3 split**: 3 sampling-aware (prysm, teku, lodestar); 3 custody-aware (lighthouse, nimbus, grandine).
-
-**Important nuance**: spec says "all column sidecars to sample" — meaning the SAMPLING SUBSET (SAMPLES_PER_SLOT = 8 columns by default), NOT the full custody set (CUSTODY_REQUIREMENT = 4 minimum, but most nodes custody more). The sampling-aware approach is more spec-faithful; custody-aware is more conservative (verifies more than required → safer but slower).
-
-**Cross-client divergence**: a sampling-aware client MAY accept a block where only 8 sampled columns are present; a custody-aware client REQUIRES all custodied columns (which could be 8+) to be present. **Forward-fragility**: at high blob loads, custody-aware nodes MAY reject blocks that sampling-aware nodes accept → fork divergence.
-
-**Pattern II refinement**: the architecture choice (sampling vs custody) directly affects spec compliance and forward-fragility. Same pattern as Pattern E/F/M (Gloas A-tier divergences from item #28).
-
-### Block queueing strategy (6 distinct)
-
-Spec says "this payload MAY be queued and subsequently considered when blob data becomes available". Each client implements differently:
-
-1. **prysm — Synchronous blocking wait** (`process_block.go:954-1002`): goroutine waits on notifier channels until data arrives or timeout. Simplest; blocks the import flow.
-2. **lighthouse — LRU cache** (`PendingComponents`, max 32): non-blocking; blocks held in cache; processed when data arrives. Bounded memory.
-3. **teku — Async SafeFuture**: non-blocking; future resolved when data available. JVM-idiomatic.
-4. **nimbus — Quarantine pool with custodyMap**: data-structure-driven; columns added to pool as they arrive; block "popped" from quarantine when complete.
-5. **lodestar — SeenBlockInput LRU**: similar to lighthouse but with `(MAX_LOOK_AHEAD_EPOCHS + 1) * SLOTS_PER_EPOCH` cap; pruned on finalization + range sync completion.
-6. **grandine — BlobReconstructionPool**: operation pool with async recovery for missing data; integrates Reed-Solomon recovery (item #39).
-
-**Cross-client divergence on edge cases**:
-- What if data arrives 5 minutes after block? prysm times out; others may still process.
-- What if block + data arrive simultaneously? lighthouse/lodestar may bypass cache; others process via cache.
-- What if cache fills? lighthouse/lodestar evict oldest; nimbus/grandine TBD.
-
-**Pattern T-style spec-undefined edge case**: timeout values, eviction policies, recovery integration all client-specific.
-
-### Live mainnet validation
-
-5+ months of cross-client Fulu fork choice operation without observed divergence. All 6 clients accept the same canonical chain. Sampling-vs-custody divergence has not manifested because mainnet blob loads are well below worst-case (max 21 blobs per block at BPO #2, well within sampling capacity).
-
-**Forward-fragility at higher blob loads**: at hypothetical 100+ blobs per block, sampling-aware vs custody-aware divergence could manifest. Currently no observable divergence.
-
-### `on_block` signature change handling
-
-All 6 correctly drop `blob_kzg_commitments` parameter from `is_data_available` call at Fulu. Pre-Fulu fork dispatch passes 3 args; Fulu dispatch passes 1 arg (block_root only).
-
-**Architecture divergence**:
-- prysm: same function, version-gated argument list
-- lighthouse: separate type variants (BlobSidecar passes commitments; DataColumnSidecar doesn't)
-- teku: separate AvailabilityChecker classes (different signatures per class)
-- nimbus: separate quarantine types (different APIs per quarantine)
-- lodestar: DAType enum dispatches to different code paths
-- grandine: type-based dispatch via DataColumnSidecar variants
-
-All 6 produce identical observable behavior (block accepted when all sampled/custodied columns verified).
-
-## Cross-cut chain
-
-This audit OPENS Track D (fork choice) and cross-cuts:
-- **Item #34** (DataColumnSidecar verification): same `verify_data_column_sidecar` + `verify_data_column_sidecar_kzg_proofs` used for fork choice DA — Pattern P risk extends to fork choice layer
-- **Item #38** (validator custody): determines columns to verify (custody-aware path)
-- **Item #39** (Reed-Solomon math): grandine's BlobReconstructionPool integrates recovery
-- **Item #46** (DataColumnSidecarsByRange/Root v1): RPC retrieval for missing columns
-- **Item #51** (gossip subscription): columns received via gossip populate quarantine pool
-- **Item #54** (DataColumnSidecar SSZ): container being verified at fork choice
-- **Item #55** (retention period): defines window for which DA must be checked
-- **Item #28 NEW Pattern II candidate**: Fork choice DA architecture divergence — 6 distinct architectures + sampling-vs-custody A-tier risk
-- **Item #28 Pattern J extension**: teku separate AvailabilityChecker classes per fork; nimbus separate quarantines per fork; new variant of Pattern J at fork choice layer
-- **Item #28 Gloas readiness refinement**: nimbus's `gloasColumnQuarantine` confirms nimbus is leader on Gloas DA layer
-- **Item #48** (catalogue refresh): adds Pattern II + sampling-vs-custody finding
-
-## Adjacent untouched Fulu-active
-
-- Fork choice tie-breaking rules per-client (Phase0-heritage)
-- Proposer boost handling at Fulu (Capella-heritage)
-- LMD GHOST algorithm cross-client implementation
-- Fork choice score calculation cross-client
-- Reorg-on-late-block behavior at Fulu
-- Block import flow per-client (cross-cut to this audit)
-- Equivocation slashing detection during fork choice
-- Justified-finalized checkpoint advancement
-- Pre-Fulu transition fork choice handling (block at slot N has Deneb format, slot N+1 has Fulu format)
-- Cross-fork DA continuity at FULU_FORK_EPOCH boundary
-- DA timeout values per-client (spec-undefined)
-- DA cache eviction policies per-client
-- Equivocation handling during block queueing
-- Fork choice integration with gossip layer (cross-cut item #51)
-
-## Future research items
-
-1. **NEW Pattern II for item #28 catalogue**: Fork choice DA verification architecture divergence — 6 distinct architectures; sampling-vs-custody divergence is A-tier forward-fragility risk at high blob loads.
-2. **Pattern J extension for item #28 catalogue**: teku separate AvailabilityChecker classes + nimbus separate quarantines per fork. Multi-fork-definition family extends to fork choice layer.
-3. **Sampling-vs-custody cross-client interop test**: simulate block with only 8 sampled columns present; verify sampling-aware clients (prysm, teku, lodestar) accept; custody-aware clients (lighthouse, nimbus, grandine) reject.
-4. **Block queueing timeout audit**: per-client timeout values + behavior on timeout. Spec-undefined edge case (Pattern T-style).
-5. **DA cache eviction policy audit**: per-client cache size limits + eviction strategy.
-6. **Reorg-on-late-data behavior**: what happens when block accepted with N columns, then more columns arrive later? Per-client behavior may differ.
-7. **Cross-fork transition DA continuity audit (Track D + Fulu boundary)**: at FULU_FORK_EPOCH (slot 13164544), block N is Deneb format (blob check); block N+1 is Fulu format (column check). Per-client transition handling.
-8. **Equivocation handling during block queueing**: if equivocating block arrives while DA pending, per-client behavior may differ.
-9. **Pre-emptive Gloas DA layer audit**: nimbus has gloasColumnQuarantine; other 5 client status TBD. Cross-cut to item #28 Gloas readiness scoreboard.
-10. **Track D opening — fork choice tie-breaking, proposer boost, LMD GHOST cross-client audits**: this is the FIRST Track D audit; many more pending.
-11. **Pattern II refinement for catalogue**: catalogue all 6 distinct architectures + their forward-fragility profiles at Heze + Gloas + future forks.
-12. **DA verification + Reed-Solomon recovery integration**: grandine's BlobReconstructionPool integrates recovery into DA check. Other 5 may have separate recovery paths.
-13. **Live network DA timeout statistics**: instrument all 6 clients to log DA timeout events; estimate cross-client divergence frequency.
+# 56: Fulu + Gloas fork choice modifications — `is_data_available` (PeerDAS-modified at Fulu, again modified at Gloas) + `on_block` (DA delayed to `on_execution_payload_envelope` at Gloas) — Pattern II fork-choice DA architecture divergence
 
 ## Summary
 
-EIP-7594 PeerDAS Fulu fork choice modifications: `is_data_available` rewritten to use column sidecars instead of blobs; `on_block` drops `blob_kzg_commitments` parameter. Track D (fork choice) is OPENED with this audit — first of many fork choice cross-client audits.
+EIP-7594 PeerDAS modifies the Fulu fork-choice DA primitives. The Glamsterdam target further modifies them under EIP-7732 PBS.
 
-**All 6 clients implement Fulu DA semantic** with **6 distinct dispatch architectures**:
+**Fulu** (`vendor/consensus-specs/specs/fulu/fork-choice.md`): `is_data_available` rewritten to consume column sidecars instead of blobs; `on_block` signature drops `blob_kzg_commitments`.
+
+**Gloas** (`vendor/consensus-specs/specs/gloas/fork-choice.md:838-940`, new spec content) — TWO additional modifications:
+
+1. **Modified `on_block`** (`:838-900`): adds `is_payload_verified(store, block.parent_root)` assertion when parent is "full"; **delays the DA check** — no longer calls `is_data_available` at all; the DA check moves to the new `on_execution_payload_envelope` handler.
+2. **Modified `is_data_available`** (`:902-920`): replaces `retrieve_column_sidecars` with `retrieve_column_sidecars_and_kzg_commitments` (returns a tuple); both `verify_data_column_sidecar` and `verify_data_column_sidecar_kzg_proofs` now take `kzg_commitments` as an additional parameter (because the Gloas `DataColumnSidecar` removes the `kzg_commitments` field per item #54 — commitments now live in the `signed_execution_payload_bid`).
+3. **NEW `on_execution_payload_envelope`** handler (`:922-940`) called when a `SignedExecutionPayloadEnvelope` is received; calls `is_data_available(envelope.beacon_block_root)`.
+
+**Fulu surface (carried forward from 2026-05-04 audit; cap value):** all 6 clients implement Fulu DA semantic. 5+ months of mainnet cross-client fork-choice operation without observed divergence on the canonical chain.
+
+**Pattern II carry-forward (item #28 catalogue candidate)**: fork-choice DA verification architecture divergence — **6 distinct dispatch architectures** for the same spec semantic:
 
 | Client | Architecture | Block queueing |
 |---|---|---|
-| **prysm** | Binary version check + `areDataColumnsAvailable` | Synchronous blocking wait |
-| **lighthouse** | Type-based via `BlobSidecar`/`DataColumnSidecar` enum | LRU cache (`PendingComponents`, 32) |
-| **teku** | **Pattern J** — separate `AvailabilityChecker` classes per fork | Async `SafeFuture` |
-| **nimbus** | **3-QUARANTINE PATTERN** — `blobQuarantine` + `dataColumnQuarantine` + `gloasColumnQuarantine` | Quarantine pool with `custodyMap` |
-| **lodestar** | **Pattern R** — `DAType` enum union type dispatch | `SeenBlockInput` LRU |
-| **grandine** | EIP-7594 module integration with custody groups | `BlobReconstructionPool` |
+| **prysm** | Single function `isDataAvailable` (`vendor/prysm/beacon-chain/blockchain/process_block.go:887-918`) with `if blockVersion >= version.Fulu` → `areDataColumnsAvailable`; plus dedicated Gloas envelope path at `receive_execution_payload_envelope.go:88` | Synchronous blocking wait on notifier channels |
+| **lighthouse** | Type-based dispatch via `BlobSidecar` (Deneb) vs `DataColumnSidecar` (Fulu+) wrapped by `DataAvailabilityChecker<T>` | LRU `PendingComponents` cache (max 32) |
+| **teku** | Pattern J — separate `AvailabilityChecker` classes per fork (`BlobSidecarsAvailabilityChecker` + `DataColumnSidecarAvailabilityChecker`); `ForkChoice.java:238 onExecutionPayloadEnvelope` Gloas handler | Async `SafeFuture` |
+| **nimbus** | **3-quarantine pattern**: `blobQuarantine` (Deneb) + `ColumnQuarantine` (Fulu) + `GloasColumnQuarantine` (Gloas); `eth2_processor.nim:326 processExecutionPayloadEnvelope` Gloas handler | Quarantine pool with custody-aware accumulator |
+| **lodestar** | Pattern R — `DAType` enum union dispatch (`PreData` / `Blobs` / `Columns` / `NoData`); `validation/executionPayloadEnvelope.ts` Gloas validator | `SeenBlockInput` LRU cache |
+| **grandine** | Module-isolated `eip_7594/src/lib.rs` with custody-group computation + cell KZG batch verify | `BlobReconstructionPool` operation pool (Reed-Solomon recovery integration) |
 
-**NEW Pattern II candidate for item #28 catalogue**: Fork choice DA verification architecture divergence — most diverse architecture finding so far. Same forward-fragility class as Pattern I/J/R (multi-fork-definition family).
+Most diverse architecture finding in the audit corpus. Same forward-fragility class as Pattern I/J/R (multi-fork-definition family).
 
-**A-tier forward-fragility — sampling-vs-custody divergence**:
-- **Sampling-aware** (prysm, teku, lodestar): verify SAMPLES_PER_SLOT = 8 sampled columns
-- **Custody-aware** (lighthouse, nimbus, grandine): verify all custodied columns
-- At high blob loads (hypothetical 100+ blobs per block), sampling-aware MAY accept blocks that custody-aware reject → potential fork divergence
+**Pattern M cohort extends to fork-choice DA layer (NEW finding this recheck)**: the {lighthouse, grandine} Gloas-ePBS readiness cohort established by items #43 (Engine API V5/V6/FCU4 missing) + #44 (PartialDataColumnSidecar absent) + #46 (envelope RPCs missing) now also lacks the Gloas-NEW `on_execution_payload_envelope` fork-choice handler.
 
-**Nimbus pre-Gloas leader**: `gloasColumnQuarantine` already implemented (`nimbus_beacon_node.nim:611`); confirms item #28 Gloas readiness scoreboard ranking (nimbus > grandine > lighthouse > prysm > lodestar > teku).
+- **prysm**: ✅ `vendor/prysm/beacon-chain/blockchain/receive_execution_payload_envelope.go:88 if err := s.areDataColumnsAvailable(ctx, root, envelope.Slot()); err != nil { ... }` — explicit Gloas DA path on envelope receipt; metrics at `metrics.go:241-251`.
+- **teku**: ✅ `vendor/teku/ethereum/statetransition/src/main/java/tech/pegasys/teku/statetransition/forkchoice/ForkChoice.java:238 /** on_execution_payload_envelope */ public SafeFuture<ExecutionPayloadImportResult> onExecutionPayloadEnvelope(...)` + `:556 private SafeFuture<ExecutionPayloadImportResult> onExecutionPayloadEnvelope(...)`; `ForkChoiceUtilGloas.java:143-145 isPayloadVerified(store, root)`.
+- **nimbus**: ✅ `vendor/nimbus/beacon_chain/gossip_processing/eth2_processor.nim:326 proc processExecutionPayloadEnvelope*(...)` + `block_processor.nim:1019-1031 gloasColumnQuarantine.popSidecars(blck.root)` integration with the GloasColumnQuarantine pool at `block_processor.nim:32, 104, 131, 149`.
+- **lodestar**: ✅ envelope validation at `vendor/lodestar/packages/beacon-node/src/chain/validation/executionPayloadEnvelope.ts`; envelope retrieval at `chain.ts:863-905 getSerializedExecutionPayloadEnvelope` / `getExecutionPayloadEnvelope`.
+- **lighthouse**: ❌ **NO `SignedExecutionPayloadEnvelope` references in `vendor/lighthouse/beacon_node/beacon_chain/src/`** — `grep` returns zero matches. Lighthouse has gossip-topic plumbing in `lighthouse_network/src/types/pubsub.rs` (item #46 finding) but no fork-choice layer integration. **No Gloas DA on envelope receipt.**
+- **grandine**: ❌ **NO `SignedExecutionPayloadEnvelope` references in `vendor/grandine/fork_choice_control/` or `vendor/grandine/fork_choice_store/`** — `grep` returns zero matches. No Gloas envelope handler at the fork-choice layer.
 
-**Cross-cut to item #34 Pattern P**: grandine's hardcoded gindex 11 (item #34) affects BOTH gossip-time AND fork-choice-time DA verification. Pattern P is more pervasive than item #34 alone documented.
+**Pattern P cross-cut (carry-forward from item #34 grandine hardcoded gindex 11)**: applies to BOTH Fulu gossip-time AND Fulu fork-choice-time DA verification because the same `verify_data_column_sidecar` + `verify_data_column_sidecar_kzg_proofs` primitives are reused. Pattern P is more pervasive than item #34 alone documented — extends to fork-choice layer at Fulu. **At Gloas, however, the inclusion-proof path becomes dead** (item #54 removes the inclusion-proof field from the sidecar), so Pattern P dissolves at Gloas activation.
 
-**Block queueing diversity**: 6 distinct strategies (synchronous blocking, LRU cache, async future, quarantine pool, union-type dispatch, operation pool). Pattern T-style spec-undefined edge cases (timeout values, eviction policies, recovery integration) all client-specific.
+**Sampling-vs-custody divergence** (carry-forward): 3-vs-3 split — sampling-aware (prysm, teku, lodestar) verify the sampling subset (SAMPLES_PER_SLOT = 8); custody-aware (lighthouse, nimbus, grandine) verify all custodied columns (CUSTODY_REQUIREMENT = 4 minimum). On current mainnet (max 21 blobs per block at BPO #2) the divergence has not manifested. **Forward-fragility at higher blob loads** (hypothetical 100+ blobs per block): sampling-aware MAY accept blocks that custody-aware reject → fork divergence vector.
 
-**Live mainnet validation**: 5+ months of cross-client Fulu fork choice operation without observed divergence. All 6 accept same canonical chain. Sampling-vs-custody divergence not manifested because mainnet blob loads (max 21 per block at BPO #2) are within sampling capacity.
+**Block queueing strategy diversity**: 6 distinct (synchronous blocking wait; LRU `PendingComponents`; async `SafeFuture`; quarantine pool; `SeenBlockInput` LRU; `BlobReconstructionPool` operation pool). Pattern T-family spec-undefined edge cases on timeouts and eviction policies.
 
-**With this audit, Track D (fork choice) is OPENED**. Many more fork choice cross-client audits pending: tie-breaking rules, proposer boost, LMD GHOST, score calculation, reorg-on-late-block, etc.
+**Live mainnet validation**: 5+ months of cross-client Fulu fork-choice operation without observed divergence. All 6 accept the same canonical chain; sampling-vs-custody divergence has not manifested under current mainnet blob loads.
 
-**PeerDAS audit corpus now spans 18 items**: #33 → #34 → #35 → #37 → #38 → #39 → #40 → #41 → #42 → #44 → #45 → #46 → #47 → #49 → #53 → #54 → #55 → **#56**.
+**Impact: none** — Fulu surface operates byte-equivalently in practice; Gloas modifications (modified `is_data_available`, modified `on_block`, new `on_execution_payload_envelope` handler) are not mainnet-reachable today (`GLOAS_FORK_EPOCH = FAR_FUTURE_EPOCH`); lighthouse + grandine envelope-handler gaps are forward-fragility tracking only. Thirty-seventh `impact: none` result in the recheck series.
 
-**Total Fulu-NEW items: 26 (#30–#56)**. Item #28 catalogue **Patterns A–II (35 patterns)** with NEW Pattern II (Fork choice DA architecture divergence) + Pattern J extension to fork choice layer + Pattern P extension to fork choice layer + Gloas readiness scoreboard refinement.
+## Question
+
+Pyspec defines Fulu fork-choice DA at `vendor/consensus-specs/specs/fulu/fork-choice.md` and the Gloas modifications at `vendor/consensus-specs/specs/gloas/fork-choice.md:838-940` (modified `on_block`, modified `is_data_available`, new `on_execution_payload_envelope`).
+
+Four recheck questions:
+
+1. **Fulu DA semantic** — does the 6-distinct-architecture Pattern II split persist? Have any clients converged on a single dispatch pattern since the 2026-05-04 audit?
+2. **Sampling-vs-custody** — does the 3-vs-3 split persist? Has any client switched mode?
+3. **Glamsterdam target — Gloas modifications** — which clients have implemented `on_execution_payload_envelope` for the delayed DA check + modified `is_data_available` signature with `kzg_commitments` passed separately?
+4. **Pattern M cohort extension** — does the {lighthouse, grandine} Gloas-ePBS gap extend to the fork-choice DA layer?
+
+## Hypotheses
+
+- **H1.** All 6 clients implement Fulu fork-choice DA check (carry-forward — validated by 5+ months of mainnet operation).
+- **H2.** Pattern II (6 distinct dispatch architectures) persists.
+- **H3.** Sampling-vs-custody 3-vs-3 split persists (prysm + teku + lodestar sampling; lighthouse + nimbus + grandine custody).
+- **H4.** Block queueing strategy diversity (6 distinct) persists.
+- **H5.** Cross-cut to item #34 verification path: same `verify_data_column_sidecar` + `verify_data_column_sidecar_kzg_proofs` reused.
+- **H6.** Pattern P (grandine hardcoded gindex 11) applies to Fulu fork-choice DA verification.
+- **H7.** *(Glamsterdam target — modified `is_data_available` signature)* spec at `gloas/fork-choice.md:902-920` replaces `retrieve_column_sidecars` with `retrieve_column_sidecars_and_kzg_commitments`; passes `kzg_commitments` to `verify_data_column_sidecar(column_sidecar, kzg_commitments)` and `verify_data_column_sidecar_kzg_proofs(column_sidecar, kzg_commitments)`.
+- **H8.** *(Glamsterdam target — modified `on_block`)* spec at `gloas/fork-choice.md:838-900` delays DA check; `on_block` no longer calls `is_data_available`. DA check moves to `on_execution_payload_envelope`.
+- **H9.** *(Glamsterdam target — new `on_execution_payload_envelope` handler)* spec at `:922-940` defines the new handler. Implementations: prysm + teku + nimbus + lodestar; lighthouse + grandine missing (Pattern M cohort extension).
+- **H10.** *(Glamsterdam target — Pattern P dissolves at Gloas)* the inclusion-proof path becomes dead at Gloas (item #54 cross-cut — sidecar removes inclusion-proof field).
+- **H11.** Nimbus pre-Gloas leader: `GloasColumnQuarantine` already implemented for Gloas.
+
+## Findings
+
+H1 ✓. H2 ✓ (6 architectures persist). H3 ✓ (3-vs-3 split persists). H4 ✓ (6 queueing strategies persist). H5 ✓. H6 ✓ (Pattern P cross-cut). H7 ✓ (spec signature change). H8 ✓ (spec on_block change). **H9 ⚠ — confirmed split**: 4 clients have envelope handler; lighthouse + grandine missing (Pattern M cohort extends). H10 ✓ (Pattern P dissolves at Gloas). H11 ✓ (nimbus has `GloasColumnQuarantine` plus `processExecutionPayloadEnvelope`).
+
+### prysm
+
+Fulu DA dispatch (`vendor/prysm/beacon-chain/blockchain/process_block.go:882-918`):
+
+```go
+// isDataAvailable blocks until all sidecars committed to in the block are available, ...
+func (s *Service) isDataAvailable(
+    ctx context.Context,
+    root [fieldparams.RootLength]byte,
+    block interfaces.ReadOnlyBeaconBlock,
+) error {
+    ...
+    if blockVersion >= version.Fulu {
+        return s.areDataColumnsAvailable(ctx, root, block.Slot())
+    }
+    ...
+    return s.areBlobsAvailable(ctx, root, block)
+```
+
+Binary version check at `:910` (sampling-aware via `peerdas.Info(nodeID, samplingSize)`). Call sites at `process_block.go:455` (block import path) and `receive_execution_payload_envelope.go:88` (Gloas envelope handler):
+
+```go
+// receive_execution_payload_envelope.go:88
+if err := s.areDataColumnsAvailable(ctx, root, envelope.Slot()); err != nil {
+```
+
+Metrics at `vendor/prysm/beacon-chain/blockchain/metrics.go:241-251` — `beacon_execution_payload_envelope_valid_total`, `beacon_execution_payload_envelope_invalid_total`, `beacon_execution_payload_envelope_processing_duration_seconds`. **prysm has the Gloas envelope handler wired**.
+
+Pattern II architecture: binary version check + synchronous blocking wait. Sampling-aware.
+
+H1, H2, H3 (sampling), H4 (synchronous blocking), H7 (Gloas envelope handler present), H9 ✓.
+
+### lighthouse
+
+Fulu DA via `DataAvailabilityChecker<T>` wrapper (`vendor/lighthouse/beacon_node/beacon_chain/src/data_availability_checker.rs:1-100+`):
+
+- Type-based dispatch via `BlobSidecar<E>` (Deneb/Electra) vs `DataColumnSidecar<E>` (Fulu+).
+- `PendingComponents` LRU cache (max 32) for block-queueing.
+- Custody-aware: verifies columns within the node's custody set.
+- `verify_kzg_for_data_column_list` integration with item #34 verification path.
+
+Pattern II architecture: type-based dispatch + LRU cache. Custody-aware.
+
+**Pattern M cohort symptom — Gloas envelope handler missing**: `grep -rn "SignedExecutionPayloadEnvelope" vendor/lighthouse/beacon_node/beacon_chain/src/` returns 0 matches. Lighthouse has gossip topic plumbing in `lighthouse_network/src/types/pubsub.rs:19,48,368` (per item #46) but no fork-choice layer integration. At Gloas activation, lighthouse would have no `on_execution_payload_envelope` handler to call `is_data_available` from — the spec-prescribed DA path would not execute.
+
+H1, H2, H3 (custody), H4 (LRU cache), H5, H7 spec ✓; **H9 ⚠ — envelope handler missing**.
+
+### teku
+
+Fulu DA via separate `AvailabilityChecker` classes per fork (`vendor/teku/ethereum/spec/.../BlobSidecarsAvailabilityChecker.java` + `DataColumnSidecarAvailabilityChecker.java`). Pattern J — class-per-fork OOP pattern.
+
+Sampling-aware via `DataAvailabilitySampler.checkSamplingEligibility()` returning sampled column indices.
+
+Block queueing: async `SafeFuture` with NOT_REQUIRED_BEFORE_FULU / _OLD_EPOCH / _NO_BLOBS status enum.
+
+Gloas envelope handler (`vendor/teku/ethereum/statetransition/src/main/java/tech/pegasys/teku/statetransition/forkchoice/ForkChoice.java:238-246, 556`):
+
+```java
+/** on_execution_payload_envelope */
+public SafeFuture<ExecutionPayloadImportResult> onExecutionPayloadEnvelope(
+    final SignedExecutionPayloadEnvelope signedEnvelope, ...) {
+  return ...
+      .thenCompose(maybeBlockAndState ->
+          onExecutionPayloadEnvelope(signedEnvelope, maybeBlockAndState, executionLayer));
+...
+private SafeFuture<ExecutionPayloadImportResult> onExecutionPayloadEnvelope(...)
+```
+
+Gloas `isPayloadVerified` predicate (`vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/logic/versions/gloas/util/ForkChoiceUtilGloas.java:133, 143-145`):
+
+```java
+return isPayloadVerified(store, block.getRoot()) ? 1 : 0;
+...
+/**
+ * locally delivered and verified via ``on_execution_payload_envelope``.
+ */
+public boolean isPayloadVerified(final ReadOnlyStore store, final Bytes32 root) {
+```
+
+Teku EPBS status doc at `vendor/teku/docs/EPBS_STATUS.md:103` describes `is_payload_verified` / `_timely` / `_data_available` predicates as "Implemented in `ForkChoiceModelGloas` against PTC vote tracker thresholds". Teku has comprehensive Gloas DA wiring.
+
+H1, H2, H3 (sampling), H4 (async future), H5, H7, H8, H9 ✓ (envelope handler present).
+
+### nimbus
+
+3-quarantine pattern at the fork-choice DA layer (`vendor/nimbus/beacon_chain/gossip_processing/block_processor.nim:32, 104, 131, 149`):
+
+```nim
+BlobQuarantine, ColumnQuarantine, GloasColumnQuarantine, popSidecars, put
+...
+gloasColumnQuarantine*: ref GloasColumnQuarantine
+...
+gloasColumnQuarantine: ref GloasColumnQuarantine,
+...
+gloasColumnQuarantine: gloasColumnQuarantine,
+```
+
+3 distinct quarantine types — one per fork generation that touches DA. The quarantine pool IS the DA check: blocks wait in quarantine until columns arrive; when complete, the block is "popped" from quarantine.
+
+`block_processor.nim:1019-1031` Gloas-specific quarantine resolution:
+
+```nim
+let sidecarsOpt =
+  if bid.message.blob_kzg_commitments.len() == 0:
+    Opt.some(default(gloas.DataColumnSidecars))
+  else:
+    self.gloasColumnQuarantine[].popSidecars(blck.root)
+if sidecarsOpt.isNone():
+  # As sidecars are missing, put envelope back to quarantine.
+  self.consensusManager.quarantine[].addSidecarless(blck)
+  self.envelopeQuarantine[].addOrphan(envelope)
+  return
+sidecarsOpt
+```
+
+Gloas envelope handler (`vendor/nimbus/beacon_chain/gossip_processing/eth2_processor.nim:326`):
+
+```nim
+proc processExecutionPayloadEnvelope*(
+```
+
+Sister sites at `nimbus_beacon_node.nim:2390` and `validators/message_router.nim:711`.
+
+Pattern II architecture: 3-quarantine pool + Gloas envelope handler. Custody-aware via `custodyMap` in quarantine pool. **Most fork-aware client** — Gloas DA already integrated at the quarantine + envelope-handler level.
+
+Cross-cut to item #28 Gloas readiness scoreboard: nimbus is the leader on the Gloas DA layer (pre-Gloas implementation of `GloasColumnQuarantine` + `processExecutionPayloadEnvelope`).
+
+H1, H2, H3 (custody), H4 (quarantine pool), H5, H7, H8, H9 ✓, H11 ✓.
+
+### lodestar
+
+Fulu DA via `DAType` enum union dispatch (`vendor/lodestar/packages/beacon-node/src/chain/blockInput/types.ts:5-12`; `vendor/lodestar/packages/beacon-node/src/chain/blocks/verifyBlocksDataAvailability.ts:14-45`):
+
+- `DAType.PreData` / `DAType.Blobs` (Deneb) / `DAType.Columns` (Fulu) / `DAType.NoData`.
+- Union `DAData = null | deneb.BlobSidecars | fulu.DataColumnSidecar[]`.
+
+Block queueing via `SeenBlockInput` LRU cache (`vendor/lodestar/packages/beacon-node/src/chain/seenGossipBlockInput.ts:100+`): max `(MAX_LOOK_AHEAD_EPOCHS + 1) * SLOTS_PER_EPOCH`; pruned on finalization + range sync completion.
+
+Sampling-aware via `CustodyConfig` driving DataColumnSidecar validation.
+
+Gloas envelope validation (`vendor/lodestar/packages/beacon-node/src/chain/validation/executionPayloadEnvelope.ts`) + envelope retrieval (`vendor/lodestar/packages/beacon-node/src/chain/chain.ts:863-905`):
+
+```typescript
+async getSerializedExecutionPayloadEnvelope(blockSlot: Slot, blockRootHex: string): Promise<Uint8Array | null> {
+  ...
+  return ssz.gloas.SignedExecutionPayloadEnvelope.serialize(envelope);
+}
+...
+async getExecutionPayloadEnvelope(...): Promise<gloas.SignedExecutionPayloadEnvelope | null> {
+  ...
+}
+```
+
+Plus errors at `vendor/lodestar/packages/beacon-node/src/chain/errors/executionPayloadEnvelope.ts`. Lodestar has envelope plumbing at the chain layer; the validator at `validation/executionPayloadEnvelope.ts` is the on-receive handler.
+
+H1, H2, H3 (sampling), H4 (LRU cache), H5, H7, H8, H9 ✓ (envelope validation present).
+
+### grandine
+
+Fulu DA via EIP-7594 module integration (`vendor/grandine/eip_7594/src/lib.rs:1-100+`):
+
+- Native PeerDAS module with custody-group computation + cell KZG proof batch verification.
+- Type-based dispatch via `FuluDataColumnSidecar` vs `GloasDataColumnSidecar` (from item #54 — separate SSZ structs at Fulu + Gloas).
+- Custody-aware (explicit custody-group computation).
+
+Block queueing via `BlobReconstructionPool` (`vendor/grandine/operation_pools/blob_reconstruction_pool/tasks.rs`) — operation pool integrating Reed-Solomon recovery for missing data (item #39 cross-cut).
+
+**Pattern M cohort symptom — Gloas envelope handler missing**: `grep -rn "SignedExecutionPayloadEnvelope\|ExecutionPayloadEnvelope" vendor/grandine/fork_choice_control/ vendor/grandine/fork_choice_store/` returns 0 matches. No fork-choice integration for the Gloas envelope; no `on_execution_payload_envelope` handler. At Gloas activation, grandine would have no path to invoke `is_data_available` from envelope receipt — Gloas DA semantic would not execute.
+
+**Pattern P (item #34) + V (item #40) cross-cut**: grandine's hardcoded gindex 11 + manual inclusion-proof construction apply to BOTH gossip-time AND fork-choice-time DA verification at Fulu. At Gloas, the inclusion-proof path becomes dead (item #54 sidecar removes the field) so Patterns P + V dissolve at Gloas — but Fulu remains live throughout the transition window.
+
+H1, H2, H3 (custody), H4 (operation pool), H5, H6 (Pattern P/V cross-cut), H7 spec ✓; **H9 ⚠ — envelope handler missing**.
+
+## Cross-reference table
+
+| Client | H2 Fulu dispatch idiom | H3 sampling/custody | H4 block queueing | H6 Pattern P cross-cut | H9 Gloas `on_execution_payload_envelope` handler | Pattern M cohort symptom |
+|---|---|---|---|---|---|---|
+| **prysm** | binary version check + `areDataColumnsAvailable` (`process_block.go:887-918`) | sampling | synchronous blocking wait | n/a | ✅ `receive_execution_payload_envelope.go:88` + metrics at `metrics.go:241-251` | no |
+| **lighthouse** | type-based `BlobSidecar`/`DataColumnSidecar` enum via `DataAvailabilityChecker<T>` | custody | LRU `PendingComponents` (max 32) | n/a | ❌ no `SignedExecutionPayloadEnvelope` refs in `beacon_node/beacon_chain/src/` | **YES** — Gloas envelope handler missing |
+| **teku** | Pattern J — separate `AvailabilityChecker` classes (`BlobSidecarsAvailabilityChecker` + `DataColumnSidecarAvailabilityChecker`) | sampling | async `SafeFuture` | n/a | ✅ `ForkChoice.java:238 onExecutionPayloadEnvelope` + `ForkChoiceUtilGloas.java:143-145 isPayloadVerified` + `EPBS_STATUS.md:103` documentation | no |
+| **nimbus** | 3-quarantine pattern (`BlobQuarantine` + `ColumnQuarantine` + `GloasColumnQuarantine` at `block_processor.nim:32`); leader on Gloas DA | custody | quarantine pool with `custodyMap`; `gloasColumnQuarantine.popSidecars` at `block_processor.nim:1023` | n/a | ✅ `eth2_processor.nim:326 processExecutionPayloadEnvelope` + sister sites at `nimbus_beacon_node.nim:2390`, `validators/message_router.nim:711` | no |
+| **lodestar** | Pattern R — `DAType` enum union dispatch (`PreData`/`Blobs`/`Columns`/`NoData`) | sampling | `SeenBlockInput` LRU `(MAX_LOOK_AHEAD_EPOCHS+1)*SLOTS_PER_EPOCH` | n/a | ✅ `chain/validation/executionPayloadEnvelope.ts` + `chain.ts:863-905 getExecutionPayloadEnvelope` | no |
+| **grandine** | EIP-7594 module integration with custody groups (`eip_7594/src/lib.rs`) | custody | `BlobReconstructionPool` operation pool with Reed-Solomon recovery | ✅ Pattern P (item #34 gindex 11) + Pattern V (item #40 manual proof) apply to Fulu fork-choice DA; both dissolve at Gloas | ❌ no envelope refs in `fork_choice_control/` or `fork_choice_store/` | **YES** — Gloas envelope handler missing |
+
+**Pattern II cohort**: 6 distinct architectures, unchanged. **Sampling/custody cohort**: 3-vs-3 (sampling: prysm + teku + lodestar; custody: lighthouse + nimbus + grandine). **Pattern M cohort symptoms**: {lighthouse, grandine} now also lack the Gloas `on_execution_payload_envelope` fork-choice handler — fourth audit segment confirming the cohort (after items #43 + #44 + #46).
+
+## Empirical tests
+
+- ✅ **Live mainnet operation since 2025-12-03 (5+ months)**: all 6 clients accept the same canonical chain; cross-client Fulu fork-choice operation without observed divergence. Sampling-vs-custody divergence has not manifested under current mainnet blob loads (max 21 per block at BPO #2, well within sampling capacity). **Verifies H1, H10 at production scale.**
+- ✅ **Per-client Pattern II verification (this recheck)**: 6 distinct architectures confirmed via file:line citations above. Unchanged from 2026-05-04 audit.
+- ✅ **Per-client Gloas envelope-handler verification (this recheck)**: 4 clients have the handler (prysm `receive_execution_payload_envelope.go:88`; teku `ForkChoice.java:238`; nimbus `eth2_processor.nim:326`; lodestar `validation/executionPayloadEnvelope.ts`). 2 clients lack it (lighthouse + grandine — Pattern M cohort extends to fork-choice DA layer).
+- ✅ **Gloas spec change verification**: `vendor/consensus-specs/specs/gloas/fork-choice.md:838-940` defines modified `on_block` (delays DA check) + modified `is_data_available` (passes kzg_commitments separately) + new `on_execution_payload_envelope` handler.
+- ⏭ **Lighthouse Gloas `on_execution_payload_envelope` implementation PR** — file PR adding the Gloas-NEW handler. Pattern M cohort symptom; same client + same fork as items #43/#44/#46.
+- ⏭ **Grandine Gloas `on_execution_payload_envelope` implementation PR** — file PR adding the handler. Pattern M cohort symptom.
+- ⏭ **Sampling-vs-custody fixture at high blob load**: simulate block with only 8 sampled columns present; verify sampling-aware (prysm + teku + lodestar) accept; custody-aware (lighthouse + nimbus + grandine) reject (assuming custody count > 8). Tests A-tier forward-fragility vector.
+- ⏭ **Block queueing timeout audit**: per-client timeout values + behaviour on timeout. Spec-undefined edge case (Pattern T family).
+- ⏭ **Cross-fork transition DA continuity at FULU_FORK_EPOCH = 411392** (already past mainnet): verify all 6 transition cleanly from blob-DA to column-DA. Same for hypothetical GLOAS_FORK_EPOCH (currently FAR_FUTURE_EPOCH).
+- ⏭ **Pattern P + V at Heze**: at the next BeaconBlockBody schema change (Heze per item #29), grandine's hardcoded gindex 11 + manual proof construction apply to BOTH gossip + fork-choice DA verification at Fulu — double-failure mode for grandine. Pre-emptive Heze fix priority.
+
+## Conclusion
+
+The Fulu fork-choice DA primitives (`is_data_available`, `on_block`) are implemented across all 6 clients with **6 distinct dispatch architectures (Pattern II)** and a **3-vs-3 sampling-vs-custody split**. 5+ months of live mainnet cross-client fork-choice operation validates that all 6 accept the same canonical chain on current blob loads.
+
+The Glamsterdam target introduces three Gloas modifications at `vendor/consensus-specs/specs/gloas/fork-choice.md:838-940`:
+
+1. **Modified `on_block`** — adds `is_payload_verified` parent-payload assertion and **delays the DA check** by no longer calling `is_data_available` from `on_block`.
+2. **Modified `is_data_available`** — replaces `retrieve_column_sidecars` with `retrieve_column_sidecars_and_kzg_commitments` (returns commitments as a separate tuple component because item #54 removes `kzg_commitments` from the Gloas sidecar); passes `kzg_commitments` as an additional parameter to both `verify_data_column_sidecar` and `verify_data_column_sidecar_kzg_proofs`.
+3. **New `on_execution_payload_envelope`** handler — invokes `is_data_available(envelope.beacon_block_root)` on envelope receipt.
+
+**Per-client Gloas envelope-handler implementation status**:
+
+- ✅ **prysm**: `receive_execution_payload_envelope.go:88 areDataColumnsAvailable(ctx, root, envelope.Slot())` + metrics.
+- ✅ **teku**: `ForkChoice.java:238 onExecutionPayloadEnvelope` + `ForkChoiceUtilGloas.java:143-145 isPayloadVerified` + `EPBS_STATUS.md` design documentation.
+- ✅ **nimbus**: `eth2_processor.nim:326 processExecutionPayloadEnvelope` + 3-quarantine pattern with `GloasColumnQuarantine` integration at `block_processor.nim:1019-1031`. **Leader on Gloas DA wiring**.
+- ✅ **lodestar**: `chain/validation/executionPayloadEnvelope.ts` validator + `chain.ts:863-905` envelope retrieval helpers.
+- ❌ **lighthouse**: no `SignedExecutionPayloadEnvelope` references in `beacon_node/beacon_chain/src/`. Gossip-topic plumbing exists in `lighthouse_network/src/types/pubsub.rs` (per item #46) but no fork-choice integration.
+- ❌ **grandine**: no envelope references in `fork_choice_control/` or `fork_choice_store/`. No fork-choice handler.
+
+**Pattern M lighthouse + grandine Gloas-ePBS readiness cohort extends with this fourth audit segment.** The cohort has now been confirmed by items #43 (Engine API V5/V6/FCU4 missing) + #44 (PartialDataColumnSidecar Gloas reshape absent) + #46 (envelope RPCs missing) + **#56 (fork-choice envelope handler missing)**. Same two clients, same fork. At Gloas activation, the lighthouse + grandine fork-choice paths would not execute the spec-prescribed `is_data_available` call from envelope receipt.
+
+**Pattern P + V cross-cut (carry-forward from items #34 + #40)**: grandine's hardcoded gindex 11 + manual inclusion-proof construction apply to BOTH Fulu gossip-time AND Fulu fork-choice-time DA verification because the same `verify_data_column_sidecar` + `verify_data_column_sidecar_kzg_proofs` primitives are reused. Pattern P is more pervasive than item #34 alone documented. At Gloas, the inclusion-proof path becomes dead (item #54 sidecar removes the field) so Patterns P + V dissolve — but Fulu remains live throughout the Gloas transition window.
+
+**Sampling-vs-custody A-tier forward-fragility (carry-forward)**: 3-vs-3 split unchanged. Under current mainnet blob loads (max 21 per block at BPO #2) the divergence has not manifested because the sampling subset of 8 covers all 21 blobs. At hypothetical 100+ blobs per block, sampling-aware clients MAY accept blocks that custody-aware clients reject — fork-divergence risk.
+
+**Impact: none** — Fulu surface operates without divergence on current mainnet (sampling-vs-custody has not manifested); Gloas modifications not mainnet-reachable today (`GLOAS_FORK_EPOCH = FAR_FUTURE_EPOCH`); lighthouse + grandine envelope-handler gaps are forward-fragility tracking only. Thirty-seventh `impact: none` result in the recheck series.
+
+Forward-research priorities:
+
+1. **Lighthouse Gloas envelope handler PR** — implement `on_execution_payload_envelope` in `beacon_node/beacon_chain/src/`. Pattern M cohort symptom; consolidate with the prior #43/#44/#46 gaps in a Gloas-ePBS readiness sprint.
+2. **Grandine Gloas envelope handler PR** — implement at the fork-choice layer in `fork_choice_control/` or `fork_choice_store/`. Pattern M cohort symptom.
+3. **Sampling-vs-custody fixture** — test at high blob load (synthesise scenario with 100+ blob commitments). A-tier forward-fragility candidate.
+4. **Block queueing timeout audit** — per-client behaviour on DA timeout; spec-undefined edge case (Pattern T family).
+5. **Pattern P + V Heze pre-emptive fix** — grandine's hardcoded gindex 11 + manual proof construction apply to Fulu fork-choice DA verification. At Heze if BeaconBlockBody schema changes, double-failure mode (item #34 + #40 + this audit).
+6. **Track D opening continuation** — many more fork-choice cross-client audits pending: tie-breaking rules, proposer boost, LMD GHOST, score calculation, reorg-on-late-block, equivocation handling during block queueing.
