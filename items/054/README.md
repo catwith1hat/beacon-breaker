@@ -1,77 +1,263 @@
-# Item 54 — `DataColumnSidecar` SSZ container detail audit (Fulu-NEW; foundational PeerDAS container; cross-cuts items #34/#37/#44/#46/#53)
+---
+status: source-code-reviewed
+impact: none
+last_update: 2026-05-13
+builds_on: [28, 29, 34, 37, 40, 44, 45, 46, 52, 53]
+eips: [EIP-7594, EIP-7732, EIP-7805]
+prysm_version: v7.1.3-rc.3-213-gd35d65625f
+lighthouse_version: v8.1.3
+teku_version: 26.4.0-72-gc05af0eaa0
+nimbus_version: v26.3.1
+lodestar_version: v1.42.0-69-g35940ffd61
+grandine_version: 2.0.4-18-geeb33a92
+---
 
-**Status:** no-divergence-pending-fixture-run on SSZ wire format; **systematic lodestar camelCase + nimbus/grandine compile-time-baked depth + Heze forward-fragility on inclusion proof depth** — audited 2026-05-04. **Twenty-fourth Fulu-NEW item, sixteenth PeerDAS audit, SECOND FULU-NEW SSZ-CONTAINER detail audit**. Sister to item #53 (DataColumnsByRootIdentifier). The FOUNDATIONAL PeerDAS container.
+# 54: `DataColumnSidecar` SSZ container — Fulu 6-field + Gloas 5-field reshape (EIP-7732); Pattern HH depth baking; Pattern M cohort extends
 
-**Spec definition** (`fulu/das-core.md` "DataColumnSidecar" section):
+## Summary
+
+Foundational PeerDAS container. The Fulu shape (`vendor/consensus-specs/specs/fulu/das-core.md`) has 6 fields:
+
 ```python
 class DataColumnSidecar(Container):
-    index: ColumnIndex                                                # uint64
-    column: List[Cell, MAX_BLOB_COMMITMENTS_PER_BLOCK]                  # 4096 max
-    kzg_commitments: List[KZGCommitment, MAX_BLOB_COMMITMENTS_PER_BLOCK]  # 4096 max, 48 bytes each
-    kzg_proofs: List[KZGProof, MAX_BLOB_COMMITMENTS_PER_BLOCK]            # 4096 max, 48 bytes each
+    index: ColumnIndex
+    column: List[Cell, MAX_BLOB_COMMITMENTS_PER_BLOCK]
+    kzg_commitments: List[KZGCommitment, MAX_BLOB_COMMITMENTS_PER_BLOCK]
+    kzg_proofs: List[KZGProof, MAX_BLOB_COMMITMENTS_PER_BLOCK]
     signed_block_header: SignedBeaconBlockHeader
-    kzg_commitments_inclusion_proof: Vector[Bytes32, KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH]  # 4 elements
+    kzg_commitments_inclusion_proof: Vector[Bytes32, KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH]  # depth = 4 mainnet
 ```
 
-6-field SSZ container. KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH = 4 (mainnet Fulu).
+At Gloas the container is **MODIFIED** per `vendor/consensus-specs/specs/gloas/p2p-interface.md:57-81` (EIP-7732):
 
-**Major findings**:
-1. **All 6 SSZ-encode identically** — semantic compliance + spec-compliant top-level container naming.
-2. **Lodestar systematic camelCase** for 4 multi-word fields (`kzgCommitments`, `kzgProofs`, `signedBlockHeader`, `kzgCommitmentsInclusionProof`) vs spec snake_case — handled via `jsonCase: "eth2"` config; extends item #53 finding.
-3. **NEW Pattern HH scope expansion**: KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH is COMPILE-TIME BAKED in nimbus + grandine; runtime/generic in other 4. Same Pattern HH family as item #52 (MAX_REQUEST_BLOCKS_DENEB nimbus baking).
-4. **Heze forward-fragility**: nimbus comment at `fulu_preset.nim:15` reveals depth = `floorlog2(get_generalized_index(BeaconBlockBody, 'blob_kzg_commitments')) (= 4)` — at Heze (per item #29 finding), BeaconBlockBody schema may add new fields → depth changes → ALL 6 clients must update (Pattern P + V cross-cut).
-5. **Per-client depth-sourcing diversity** — 6 distinct strategies for the same 4-element vector size.
+```python
+class DataColumnSidecar(Container):
+    index: ColumnIndex
+    column: List[Cell, MAX_BLOB_COMMITMENTS_PER_BLOCK]
+    # [Modified in Gloas:EIP7732]
+    # Removed `kzg_commitments`
+    kzg_proofs: List[KZGProof, MAX_BLOB_COMMITMENTS_PER_BLOCK]
+    # [Modified in Gloas:EIP7732]
+    # Removed `signed_block_header`
+    # [Modified in Gloas:EIP7732]
+    # Removed `kzg_commitments_inclusion_proof`
+    # [New in Gloas:EIP7732]
+    slot: Slot
+    # [New in Gloas:EIP7732]
+    beacon_block_root: Root
+```
 
-## Scope
+5 fields at Gloas — `kzg_commitments`, `signed_block_header`, and `kzg_commitments_inclusion_proof` are all REMOVED; `slot` and `beacon_block_root` are added. The KZG commitments authority moves to `block.body.signed_execution_payload_bid.message.blob_kzg_commitments`.
 
-In: `DataColumnSidecar` SSZ container per-client implementation; per-field naming + types; `kzg_commitments_inclusion_proof` Vector cap source; container generic/preset parameterization; List vs Vector typing; comparison to item #53 (DataColumnsByRootIdentifier); JSON serialization conventions; cross-cut to Pattern P + V (item #34 grandine hardcoded gindex 11) at Heze fragility.
+**Fulu surface (carried forward from 2026-05-04 audit):** all 6 clients SSZ-encode the 6-field Fulu container byte-identically. 5+ months of mainnet cross-client `DataColumnSidecar` gossip + RPC interop validates wire-format compatibility.
 
-Out: `DataColumnSidecar` validation logic (item #34 covered); `DataColumnSidecar` gossip mesh subscription (item #37 covered); KZG cell proofs verification (item #34 covered); MatrixEntry SSZ container (Fulu-NEW related; future audit candidate); BlobIdentifier baseline cross-client (item #50 implicit + future audit candidate).
+**Gloas surface (Glamsterdam target) — per-client variant implementation status**:
+
+- **prysm** (`vendor/prysm/proto/prysm/v1alpha1/gloas.proto:464-479`): separate `DataColumnSidecarGloas` proto message. **5 fields** per spec — `index, column, kzg_proofs, slot, beacon_block_root`. Spec-compliant. Proto field numbers go 1,2,4,5,6 (gap at 3 traces removed `kzg_commitments`).
+- **teku** (`vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/datastructures/blobs/versions/gloas/DataColumnSidecarGloas.java:30-94`): `Container5<DataColumnSidecarGloas, SszUInt64, DataColumn, SszList<SszKZGProof>, SszUInt64, SszBytes32>`. **5 fields** per spec. Schema returns `Optional.empty()` for `getMaybeKzgCommitments` (`:72`) and `getMaybeSignedBlockHeader` (`:91-93`), explicitly documenting removal.
+- **nimbus** (`vendor/nimbus/beacon_chain/spec/datatypes/gloas.nim:53-68`): `DataColumnSidecar* = object` with explicit `# Removed kzg_commitments`, `# Removed signed_block_header`, `# Removed kzg_commitments_inclusion_proof` annotation comments tracking the spec EIP-7732 modifications. **5 fields** per spec.
+- **lodestar** (`vendor/lodestar/packages/types/src/gloas/sszTypes.ts:301-313`): `ContainerType {index, column, kzgProofs, slot, beaconBlockRoot}` with inline comments documenting the removed fields. **5 fields** per spec (camelCase per lodestar convention).
+- **grandine** (`vendor/grandine/types/src/gloas/containers.rs:97-105`): `pub struct DataColumnSidecar<P: Preset> {index, column, kzg_proofs, slot, beacon_block_root}`. **5 fields** per spec.
+- **lighthouse** (`vendor/lighthouse/consensus/types/src/data/data_column_sidecar.rs:79-96`): superstruct with `variants(Fulu, Gloas)` BUT **`kzg_commitments` is in the common base struct** (line 85 with no `#[superstruct(only(Fulu))]` annotation). The Gloas variant therefore carries 6 fields `(index, column, kzg_commitments, kzg_proofs, slot, beacon_block_root)`. Confirmed at `:207-220 DataColumnSidecarGloas::min_size()` which constructs the struct with `kzg_commitments: VariableList::new(vec![KzgCommitment::empty_for_testing()])`. **DIVERGES FROM SPEC** — retains the field that EIP-7732 removes.
+
+**Pattern M Gloas-ePBS readiness cohort extends with another lighthouse symptom**: at Gloas activation, lighthouse would produce 6-field DataColumnSidecar SSZ bytes while the other 5 produce 5-field bytes. **Cross-client SSZ wire incompatibility at Gloas activation.** Lighthouse's Gloas DataColumnSidecar tree-hash root would also diverge from the spec's expected value — `ssz_static` spec-test fixtures would catch this.
+
+**Pattern HH (compile-time-baked constants, item #52 carry-forward)**: `KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH` (depth = 4 mainnet) is baked compile-time in 2 clients:
+
+- **nimbus** (`vendor/nimbus/beacon_chain/spec/presets/mainnet/fulu_preset.nim:16 KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH*: uint64 = 4`; gnosis + minimal presets identical).
+- **grandine** (`vendor/grandine/types/src/preset.rs:382 type KzgCommitmentsInclusionProofDepth = U4`) — type-level associated type via typenum.
+
+Other 4 derive from runtime config (prysm protobuf annotation; lighthouse generic `E::KzgCommitmentsInclusionProofDepth` trait; teku `SpecConfigFulu.getKzgCommitmentsInclusionProofDepth()`; lodestar import from `@lodestar/params`).
+
+**At Gloas this constant becomes dead** — the Gloas sidecar omits `kzg_commitments_inclusion_proof`. Pattern HH applies only to the Fulu surface (since the Fulu container persists in code until callers stop using it; Gloas-modified container uses the new shape). This makes Pattern HH on this constant a Fulu-only concern.
+
+**Pattern HH cross-cut with Pattern P + V (grandine hardcoded gindex 11, items #34 + #40)**: at Fulu, grandine's hardcoded gindex 11 + nimbus + grandine compile-time-baked depth 4 are forward-fragile if a future spec change (e.g. Heze per item #29) modifies BeaconBlockBody schema in a way that shifts the `blob_kzg_commitments` gindex. At Gloas the entire inclusion-proof verification path is dead, so this concern disappears at Gloas — but the Fulu code path remains live during the Gloas transition.
+
+**Pattern AA scope expansion (item #53 carry-forward)**: lodestar camelCase applies at both Fulu and Gloas variants (`kzgCommitments`, `kzgProofs`, `signedBlockHeader`, `kzgCommitmentsInclusionProof` at Fulu; `kzgProofs`, `beaconBlockRoot` at Gloas) — mapped to spec snake_case via `jsonCase: "eth2"`. Teku uses fork-named class names consistently (`DataColumnSidecarFulu`, `DataColumnSidecarGloas`) — Pattern AA fork-naming consistency.
+
+**Impact: none** — Fulu surface byte-identical across all 6 (validated by 5+ months of mainnet); Gloas reshape is not mainnet-reachable (`GLOAS_FORK_EPOCH = FAR_FUTURE_EPOCH`). The lighthouse Gloas variant divergence is forward-fragility tracking only, not present-tense divergence. Thirty-fifth `impact: none` result in the recheck series.
+
+## Question
+
+Pyspec defines the Fulu container at `vendor/consensus-specs/specs/fulu/das-core.md` and the Gloas modification at `vendor/consensus-specs/specs/gloas/p2p-interface.md:57-81` (EIP-7732 — removes `kzg_commitments`, `signed_block_header`, `kzg_commitments_inclusion_proof`; adds `slot`, `beacon_block_root`).
+
+Three recheck questions:
+
+1. **Fulu surface stability** — do all 6 clients still SSZ-encode the 6-field Fulu container byte-identically? Has any client introduced a regression since the 2026-05-04 audit?
+2. **Glamsterdam target — Gloas variant implementation** — which clients implement the spec-compliant 5-field Gloas variant? Which clients retain pre-EIP-7732 fields?
+3. **Pattern HH + AA scope** — does compile-time depth baking persist in nimbus + grandine? Does Pattern AA fork-naming consistency hold for teku?
 
 ## Hypotheses
 
-| # | Hypothesis | Verdict | Rationale |
-|---|---|---|---|
-| H1 | All 6 clients have a `DataColumnSidecar` container | ✅ all 6 | Spec-defined |
-| H2 | All 6 implement 6-field structure with semantic equivalence | ✅ all 6 | Spec-defined |
-| H3 | All 6 SSZ-encode identically | ✅ all 6 | SSZ field-order+type-based |
-| H4 | All 6 use spec-compliant top-level container name `DataColumnSidecar` | ✅ all 6 | Top-level name match |
-| H5 | All 6 use field name `index` for field 0 | ✅ all 6 | Single-word, no casing concern |
-| H6 | All 6 use field name `column` for field 1 | ✅ all 6 | Single-word, no casing concern |
-| H7 | All 6 use spec snake_case for multi-word fields | ❌ 5 of 6 (prysm, lighthouse, teku, nimbus, grandine); **lodestar uses camelCase** | Pattern AA scope expansion — extension of item #53 |
-| H8 | List vs Vector typing correctly distinguished | ✅ all 6 | All 6 use List for fields 1/2/3, Vector for field 5 |
-| H9 | KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH source unified | ❌ 6 distinct sources | Pattern HH scope expansion |
-| H10 | KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH compile-time-baked in any client | ✅ nimbus (preset constant) + grandine (type-level `U4` associated type) | NEW Pattern HH scope expansion |
-| H11 | Forward-fragility at Heze if BeaconBlockBody schema changes | ⚠️ ALL 6 fragile — depth derived from BeaconBlockBody gindex; nimbus + grandine hardest to update (compile-time bake) | Pattern P + V cross-cut |
-| H12 | Internal SSZ container name (e.g., teku constructor arg) matches class name | ✅ teku uses `"DataColumnSidecarFulu"` (Schema:61) — fork-named consistent with item #45 Pattern AA | Pattern AA fork-naming consistency |
+- **H1.** Fulu DataColumnSidecar is a 6-field container across all 6 clients.
+- **H2.** All 6 SSZ-encode the Fulu container byte-identically.
+- **H3.** Pattern HH (compile-time-baked `KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH`) persists in nimbus + grandine.
+- **H4.** Pattern AA (lodestar camelCase) applies systematically at Fulu and Gloas variants.
+- **H5.** Pattern AA fork-naming (teku `DataColumnSidecarFulu`, `DataColumnSidecarGloas`) consistent.
+- **H6.** *(Glamsterdam target — Gloas modification)* spec removes `kzg_commitments`, `signed_block_header`, `kzg_commitments_inclusion_proof` and adds `slot`, `beacon_block_root`. Net: 5 fields.
+- **H7.** *(Glamsterdam target — implementation)* prysm, teku, nimbus, lodestar, grandine implement spec-compliant 5-field Gloas variant.
+- **H8.** *(Glamsterdam target — lighthouse outlier)* lighthouse Gloas variant retains `kzg_commitments` (6 fields). Pattern M cohort symptom.
+- **H9.** Live mainnet validation: 5+ months without Fulu format-divergence.
+- **H10.** Pattern HH constant becomes dead at Gloas (no inclusion proof in Gloas sidecar).
+- **H11.** Pattern P + V (grandine gindex 11) applies only to Fulu code path; dead at Gloas.
 
-## Per-client cross-reference
+## Findings
 
-| Client | File:line | Class/Type | Depth source | JSON casing |
-|---|---|---|---|---|
-| **prysm** | `proto/prysm/v1alpha1/data_columns.proto:28-46` (protobuf-generated SSZ) | `message DataColumnSidecar` | `(ethereum.eth.ext.ssz_size) = "kzg_commitments_inclusion_proof_depth.size,32"` (config-driven via protobuf annotation) | snake_case (protobuf default) |
-| **lighthouse** | `consensus/types/src/data/data_column_sidecar.rs:79-96` | `pub struct DataColumnSidecar<E: EthSpec>` (`#[superstruct]` Fulu+Gloas variants) | `E::KzgCommitmentsInclusionProofDepth` (compile-time generic via trait) | snake_case (serde default) |
-| **teku** | `ethereum/spec/src/main/java/tech/pegasys/teku/spec/datastructures/blobs/versions/fulu/DataColumnSidecarFulu.java:31-39` | `class DataColumnSidecarFulu extends Container6<...>` (interface `DataColumnSidecar`) | `SpecConfigFulu.getKzgCommitmentsInclusionProofDepth().intValue()` (runtime SpecConfigFulu) | snake_case (FIELD_* constants) |
-| **nimbus** | `beacon_chain/spec/datatypes/fulu.nim:86-93` | `DataColumnSidecar* = object` | `KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH*: uint64 = 4` (`fulu_preset.nim:16`) — **compile-time PRESET CONSTANT** | snake_case (Nim convention) |
-| **lodestar** | `packages/types/src/fulu/sszTypes.ts:56-66` | `ContainerType {typeName: "DataColumnSidecar", jsonCase: "eth2"}` | `KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH` imported from `@lodestar/params` | **CAMELCASE** in TypeScript (4 multi-word fields); JSON renders snake_case via `jsonCase: "eth2"` |
-| **grandine** | `types/src/fulu/containers.rs:171-179` | `pub struct DataColumnSidecar<P: Preset>` | `P::KzgCommitmentsInclusionProofDepth = U4` (`preset.rs:382`) — **type-level associated TYPE** (typenum-style) | snake_case (serde default) |
+H1 ✓. H2 ✓. H3 ✓ (nimbus + grandine). H4 ✓. H5 ✓ (teku fork-named). H6 ✓ (spec). H7 ✓ (5-of-6 spec-compliant Gloas variants). **H8 ⚠ — confirmed**: lighthouse Gloas variant retains `kzg_commitments`. H9 ✓. H10 ✓ (Gloas container has no inclusion proof). H11 ✓ (dead at Gloas; Fulu code path remains live during transition).
 
-### Field-by-field cross-client comparison
+### prysm
 
-| Spec field | Type (spec) | prysm | lighthouse | teku | nimbus | lodestar | grandine |
-|---|---|---|---|---|---|---|---|
-| `index` | `ColumnIndex` (uint64) | `index` | `index: ColumnIndex` | `FIELD_INDEX="index"` | `index*: ColumnIndex` | `index` | `pub index: ColumnIndex` |
-| `column` | `List[Cell, 4096]` | `column` | `column: DataColumn<E>` | `FIELD_BLOB="column"` | `column*: DataColumn` | `column` | `pub column: ContiguousList<Cell<P>, P::MaxBlobCommitmentsPerBlock>` |
-| `kzg_commitments` | `List[KZGCommitment, 4096]` | `kzg_commitments` | `kzg_commitments: KzgCommitments<E>` | `FIELD_KZG_COMMITMENTS="kzg_commitments"` | `kzg_commitments*: KzgCommitments` | **`kzgCommitments`** | `pub kzg_commitments: ContiguousList<KzgCommitment, P::MaxBlobCommitmentsPerBlock>` |
-| `kzg_proofs` | `List[KZGProof, 4096]` | `kzg_proofs` | `kzg_proofs: VariableList<KzgProof, ...>` | `FIELD_KZG_PROOFS="kzg_proofs"` | `kzg_proofs*: deneb.KzgProofs` | **`kzgProofs`** | `pub kzg_proofs: ContiguousList<KzgProof, P::MaxBlobCommitmentsPerBlock>` |
-| `signed_block_header` | `SignedBeaconBlockHeader` | `signed_block_header` | `signed_block_header: SignedBeaconBlockHeader` | `FIELD_SIGNED_BLOCK_HEADER="signed_block_header"` | `signed_block_header*: SignedBeaconBlockHeader` | **`signedBlockHeader`** | `pub signed_block_header: SignedBeaconBlockHeader` |
-| `kzg_commitments_inclusion_proof` | `Vector[Bytes32, 4]` | `kzg_commitments_inclusion_proof` | `kzg_commitments_inclusion_proof: FixedVector<Hash256, E::KzgCommitmentsInclusionProofDepth>` | `FIELD_KZG_COMMITMENTS_INCLUSION_PROOF="kzg_commitments_inclusion_proof"` | `kzg_commitments_inclusion_proof*: array[KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH, Eth2Digest]` | **`kzgCommitmentsInclusionProof`** | `pub kzg_commitments_inclusion_proof: BlobCommitmentsInclusionProof<P>` |
+Fulu container (`vendor/prysm/proto/prysm/v1alpha1/data_columns.proto:28-46`):
 
-## Notable per-client findings
+```protobuf
+message DataColumnSidecar {
+  uint64 index = 1;
+  repeated bytes column = 2 [ ... ];
+  repeated bytes kzg_commitments = 3 [ ... ];
+  repeated bytes kzg_proofs = 4 [ ... ];
+  SignedBeaconBlockHeader signed_block_header = 5;
+  repeated bytes kzg_commitments_inclusion_proof = 6
+      [ (ethereum.eth.ext.ssz_size) =
+            "kzg_commitments_inclusion_proof_depth.size,32" ];
+}
+```
 
-### Lodestar systematic camelCase (extension of item #53)
+Gloas variant (`vendor/prysm/proto/prysm/v1alpha1/gloas.proto:453-479`):
 
-Lodestar `sszTypes.ts:56-66`:
+```protobuf
+// DataColumnSidecarGloas represents a data column sidecar in the Gloas fork.
+// Note: signed_block_header and kzg_commitments_inclusion_proof fields have
+// been removed in Gloas.
+message DataColumnSidecarGloas {
+  uint64 index = 1;
+  repeated bytes column = 2 [ ... ];
+  repeated bytes kzg_proofs = 4 [ ... ];
+  uint64 slot = 5 [ ... ];
+  bytes beacon_block_root = 6 [ (ethereum.eth.ext.ssz_size) = "32" ];
+}
+```
+
+Field number gap at 3 traces removed `kzg_commitments`. **Spec-compliant 5-field Gloas variant.**
+
+Consumer wiring at `vendor/prysm/consensus-types/blocks/rodatacolumn.go:21 gloas *ethpb.DataColumnSidecarGloas` + `:47 NewRODataColumnGloas(dc *ethpb.DataColumnSidecarGloas)`.
+
+Pattern HH category: protobuf-annotation-driven for the depth constant (not compile-time-baked). Pattern AA: spec-aligned snake_case naming.
+
+### lighthouse
+
+Superstruct (`vendor/lighthouse/consensus/types/src/data/data_column_sidecar.rs:42-96`):
+
+```rust
+#[superstruct(
+    variants(Fulu, Gloas),
+    ...
+)]
+pub struct DataColumnSidecar<E: EthSpec> {
+    #[serde(with = "serde_utils::quoted_u64")]
+    pub index: ColumnIndex,
+    #[serde(with = "ssz_types::serde_utils::list_of_hex_fixed_vec")]
+    pub column: DataColumn<E>,
+    /// All the KZG commitments and proofs associated with the block, used for verifying sample cells.
+    pub kzg_commitments: KzgCommitments<E>,
+    pub kzg_proofs: VariableList<KzgProof, E::MaxBlobCommitmentsPerBlock>,
+    #[superstruct(only(Fulu))]
+    pub signed_block_header: SignedBeaconBlockHeader,
+    #[superstruct(only(Fulu))]
+    pub kzg_commitments_inclusion_proof: FixedVector<Hash256, E::KzgCommitmentsInclusionProofDepth>,
+    #[superstruct(only(Gloas), partial_getter(rename = "slot_gloas"))]
+    pub slot: Slot,
+    #[superstruct(only(Gloas))]
+    pub beacon_block_root: Hash256,
+}
+```
+
+`kzg_commitments` (line 85) is in the common base — no `#[superstruct(only(Fulu))]` annotation. **The Gloas variant therefore retains `kzg_commitments`.** Confirmed at `:207-220 DataColumnSidecarGloas::min_size()` which constructs the struct with `kzg_commitments: VariableList::new(vec![KzgCommitment::empty_for_testing()])` — the field is explicitly populated for the Gloas variant in code.
+
+**Lighthouse Gloas variant fields**: `(index, column, kzg_commitments, kzg_proofs, slot, beacon_block_root)` — **6 fields**. Spec Gloas: 5 fields (no `kzg_commitments`). **SSZ wire format diverges from spec.**
+
+**Pattern M cohort extends**: lighthouse's pre-existing Gloas-ePBS readiness gaps (items #43 Engine API V5/V6/FCU4 + #44 PartialDataColumnSidecar missing + #46 envelope RPCs missing) now compound with a **container-schema divergence at Gloas activation**. Pre-emptive fix: change line 85 to `#[superstruct(only(Fulu))] pub kzg_commitments: KzgCommitments<E>` (or move to a new `(only(Fulu))` block) to match spec.
+
+Pattern HH category: generic `E::KzgCommitmentsInclusionProofDepth` (compile-time via trait bound) — not baked-in-binary in the Pattern HH sense, but still trait-bound at compile time.
+
+### teku
+
+Fulu container (`vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/datastructures/blobs/versions/fulu/DataColumnSidecarFulu.java`): `Container6<...>` — 6 fields per spec.
+
+Gloas container (`vendor/teku/ethereum/spec/src/main/java/tech/pegasys/teku/spec/datastructures/blobs/versions/gloas/DataColumnSidecarGloas.java:30-94`):
+
+```java
+public class DataColumnSidecarGloas
+    extends Container5<
+        DataColumnSidecarGloas, SszUInt64, DataColumn, SszList<SszKZGProof>, SszUInt64, SszBytes32>
+    implements DataColumnSidecar {
+
+  ...
+
+  @Override
+  public Optional<SszList<SszKZGCommitment>> getMaybeKzgCommitments() {
+    return Optional.empty();
+  }
+
+  ...
+
+  @Override
+  public Optional<SignedBeaconBlockHeader> getMaybeSignedBlockHeader() {
+    return Optional.empty();
+  }
+}
+```
+
+`Container5<...>` — **5 fields** per spec (`index, column, kzgProofs, slot, beaconBlockRoot`). Explicit `Optional.empty()` returns from `getMaybeKzgCommitments` (`:72`) and `getMaybeSignedBlockHeader` (`:91-93`) document the removal at the API level. Spec-compliant.
+
+Pattern AA: teku consistent fork-naming (`DataColumnSidecarFulu` + `DataColumnSidecarGloas`).
+
+Pattern HH category: runtime `SpecConfigFulu.getKzgCommitmentsInclusionProofDepth()` — most config-flexible.
+
+### nimbus
+
+Fulu container (`vendor/nimbus/beacon_chain/spec/datatypes/fulu.nim:86-93`):
+
+```nim
+DataColumnSidecar* = object
+    index*: ColumnIndex
+    column*: DataColumn
+    kzg_commitments*: KzgCommitments
+    kzg_proofs*: deneb.KzgProofs
+    signed_block_header*: SignedBeaconBlockHeader
+    kzg_commitments_inclusion_proof*:
+      array[KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH, Eth2Digest]
+```
+
+6 fields. `array[N, T]` maps to SSZ Vector; `N = KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH = 4` from preset constant.
+
+Gloas container (`vendor/nimbus/beacon_chain/spec/datatypes/gloas.nim:53-68`):
+
+```nim
+# https://github.com/ethereum/consensus-specs/blob/v1.7.0-alpha.2/specs/gloas/p2p-interface.md#modified-datacolumnsidecar
+DataColumnSidecar* = object
+    index*: ColumnIndex
+    column*: DataColumn
+    # [Modified in Gloas:EIP7732]
+    # Removed `kzg_commitments`
+    kzg_proofs*: deneb.KzgProofs
+    # [Modified in Gloas:EIP7732]
+    # Removed `signed_block_header`
+    # [Modified in Gloas:EIP7732]
+    # Removed `kzg_commitments_inclusion_proof`
+    # [New in Gloas:EIP7732]
+    slot*: Slot
+    # [New in Gloas:EIP7732]
+    beacon_block_root*: Eth2Digest
+```
+
+**5 fields** per spec. Annotation comments mirror the spec's EIP-7732 modification markers — most documented of the 6 client Gloas variants.
+
+Pattern HH category: ✅ compile-time-baked depth at preset (`fulu_preset.nim:16`, `gnosis/fulu_preset.nim:16`, `minimal/fulu_preset.nim:16`).
+
+### lodestar
+
+Fulu container (`vendor/lodestar/packages/types/src/fulu/sszTypes.ts:56-66`):
+
 ```typescript
 export const DataColumnSidecar = new ContainerType(
   {
@@ -86,199 +272,112 @@ export const DataColumnSidecar = new ContainerType(
 );
 ```
 
-**4 of 6 multi-word fields use camelCase** in TypeScript source code. Spec uses snake_case. JSON serialization renders snake_case via `jsonCase: "eth2"` config — wire-format spec-compliant.
+6 fields. Pattern AA camelCase for the 4 multi-word fields; spec snake_case via `jsonCase: "eth2"`.
 
-This is the SAME systematic camelCase pattern as item #53 (lodestar `blockRoot`). **Lodestar applies camelCase consistently across ALL SSZ containers** — this is a project-wide convention, not a container-specific decision. Documented at item #53; extended to field-level granularity here.
+Gloas container (`vendor/lodestar/packages/types/src/gloas/sszTypes.ts:301-313`):
 
-**SSZ wire impact**: NONE. SSZ is field-order+type based.
-**JSON wire impact**: NONE. `jsonCase: "eth2"` renders snake_case.
-**Source-code-readability impact**: TypeScript developers see camelCase; spec readers see snake_case. Convention friction.
-
-### NEW Pattern HH scope expansion — `KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH` baking
-
-Item #52 documented Pattern HH as nimbus's COMPILE-TIME CONSTANT for `MAX_REQUEST_BLOCKS_DENEB`. This audit extends Pattern HH to `KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH`.
-
-**Per-client depth-sourcing diversity** (6 distinct strategies):
-
-1. **prysm** — protobuf annotation `(ethereum.eth.ext.ssz_size) = "kzg_commitments_inclusion_proof_depth.size,32"` resolves at SSZ-codec generation time via spec config lookup. Config-driven.
-
-2. **lighthouse** — generic `E::KzgCommitmentsInclusionProofDepth` trait associated type. Compile-time via EthSpec trait bound. Each preset (Mainnet, Minimal, Gnosis) defines this differently.
-
-3. **teku** — runtime `SpecConfigFulu.getKzgCommitmentsInclusionProofDepth().intValue()` passed to `SszBytes32VectorSchema.create()`. Most config-flexible.
-
-4. **nimbus** — preset module constant `KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH*: uint64 = 4` at `fulu_preset.nim:16`. **PATTERN HH** — compile-time baked in preset module. Cannot be overridden at runtime.
-
-5. **lodestar** — imported constant `KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH` from `@lodestar/params`. Resolves at module-load time. Effectively constant for a given build.
-
-6. **grandine** — type-level associated type `P::KzgCommitmentsInclusionProofDepth = U4` (`preset.rs:382`). **PATTERN HH-style** — compile-time baked via type system (typenum/generic-array convention). Most rigid type-level encoding.
-
-**Pattern HH scope expansion**: from MAX_REQUEST_BLOCKS_DENEB (item #52) to KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH (this audit). Now applies to **2 constants** in nimbus and **1 constant** in grandine. Forward-fragility class: spec changes require recompilation.
-
-### Heze forward-fragility — Pattern P + V cross-cut
-
-Nimbus comment at `fulu_preset.nim:15`:
-```nim
-# floorlog2(get_generalized_index(BeaconBlockBody, 'blob_kzg_commitments')) (= 4)
-KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH*: uint64 = 4
+```typescript
+export const DataColumnSidecar = new ContainerType(
+  {
+    index: fuluSsz.DataColumnSidecar.fields.index,
+    column: fuluSsz.DataColumnSidecar.fields.column,
+    // kzgCommitments: denebSsz.BlobKzgCommitments, // Removed in GLOAS:EIP7732
+    kzgProofs: fuluSsz.DataColumnSidecar.fields.kzgProofs,
+    // signedBlockHeader: phase0Ssz.SignedBeaconBlockHeader, // Removed in GLOAS:EIP7732
+    // kzgCommitmentsInclusionProof: KzgCommitmentsInclusionProof, // Removed in GLOAS:EIP7732
+    slot: Slot, // New in GLOAS:EIP7732
+    beaconBlockRoot: Root, // New in GLOAS:EIP7732
+  },
+  {typeName: "DataColumnSidecar", jsonCase: "eth2"}
+);
 ```
 
-The `4` value is **DERIVED** from `floorlog2(get_generalized_index(BeaconBlockBody, 'blob_kzg_commitments'))`. At Fulu, `get_generalized_index = 12` (or somewhere giving floorlog2 = 4 → tree depth 4 from root for the inclusion path).
+**5 fields** per spec. Inline `// Removed in GLOAS:EIP7732` and `// New in GLOAS:EIP7732` comments document the modifications. Most explicitly documented Gloas variant.
 
-**At Heze, BeaconBlockBody schema may add new fields** (per item #29 finding teku has full Heze implementation — `HezeStateUpgrade.java` confirms BeaconBlockBody Heze modifications). If new fields shift the gindex of `blob_kzg_commitments`, the `floorlog2` of that gindex changes → `KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH` MUST change.
+Pattern HH category: imported constant from `@lodestar/params`.
 
-**Cross-cut with item #34 Pattern P** (grandine hardcoded `index_at_commitment_depth = 11`): grandine has hardcoded gindex 11 for inclusion proof verification at Heze. **This audit reveals**: nimbus + grandine ALSO bake the DEPTH at compile-time. So Pattern P + V at Heze is **MORE PERVASIVE than item #34 alone**:
+### grandine
 
-- **Pattern P** (item #34): grandine hardcoded gindex 11 (inclusion proof position)
-- **Pattern V** (item #40): grandine hardcoded gindex 11 (proposer-side construction)
-- **Pattern HH-extended** (this audit): nimbus + grandine compile-time-baked DEPTH (= 4 mainnet)
+Fulu container (`vendor/grandine/types/src/fulu/containers.rs:171-179`): `pub struct DataColumnSidecar<P: Preset>` — 6 fields per spec, preset-parameterised via `P::MaxBlobCommitmentsPerBlock` and `P::KzgCommitmentsInclusionProofDepth`.
 
-**Triple-fragility at Heze for grandine + double-fragility for nimbus** — at Heze BeaconBlockBody schema change, grandine must update gindex 11 AND depth 4; nimbus must update depth 4. Other 4 clients (prysm, lighthouse, teku, lodestar) auto-derive from BeaconBlockBody schema definition.
+Gloas container (`vendor/grandine/types/src/gloas/containers.rs:95-105`):
 
-**A-tier divergence vector at Heze for grandine + nimbus**.
-
-### Teku schema name `DataColumnSidecarFulu` (Pattern AA fork-naming consistency)
-
-Teku `Schema.java:61` (per Explore findings) uses `"DataColumnSidecarFulu"` as SSZ container name. Class is `DataColumnSidecarFulu extends Container6<...>`.
-
-**CONSISTENT with Pattern AA finding from items #45 + #47**: teku consistently fork-names containers (`MetadataMessageFulu`, `StatusMessageFulu`, `DataColumnSidecarFulu`). This is teku's **systematic fork-naming convention** — opposite of item #53 where teku had INTERNAL inconsistency on `DataColumnsByRootIdentifier`/`"DataColumnIdentifier"`.
-
-**Teku Pattern AA scoreboard** (across audited containers):
-- Item #45 (MetaData): teku `MetadataMessageFulu` — fork-named ✅
-- Item #47 (Status): teku `StatusMessageFulu` — fork-named ✅
-- Item #53 (DataColumnsByRootIdentifier): teku `DataColumnsByRootIdentifierSchema` class but `"DataColumnIdentifier"` SSZ name — **INCONSISTENT** ❌
-- Item #54 (DataColumnSidecar): teku `DataColumnSidecarFulu` — fork-named ✅
-
-Item #53's inconsistency stands out. Likely a leftover from earlier draft spec (Fulu container was originally `DataColumnIdentifier` per nimbus's vestigial type at `fulu.nim:104`).
-
-### Nimbus uses `array[N, T]` for the inclusion proof vector
-
-Nimbus `fulu.nim:92-93`:
-```nim
-kzg_commitments_inclusion_proof*:
-  array[KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH, Eth2Digest]
-```
-
-Uses Nim's `array[N, T]` (fixed-size array) which maps to SSZ Vector. Correct typing. **N is the compile-time constant**, baking the depth at type level.
-
-Other Rust clients use `FixedVector<Hash256, ...>` (lighthouse) and `ContiguousVector<H256, ...>` (grandine) generic containers. Same SSZ semantics.
-
-### Lighthouse superstruct cross-fork
-
-Lighthouse `data_column_sidecar.rs:79-96`:
 ```rust
-#[superstruct(
-    variants(Fulu, Gloas),
-    ...
-)]
-pub struct DataColumnSidecar<E: EthSpec> {
-    ...
+#[derive(Clone, PartialEq, Eq, Default, Deserialize, Serialize, Ssz)]
+#[serde(bound = "", deny_unknown_fields)]
+pub struct DataColumnSidecar<P: Preset> {
+    #[serde(with = "serde_utils::string_or_native")]
+    pub index: ColumnIndex,
+    pub column: ContiguousList<Cell<P>, P::MaxBlobCommitmentsPerBlock>,
+    pub kzg_proofs: ContiguousList<KzgProof, P::MaxBlobCommitmentsPerBlock>,
+    #[serde(with = "serde_utils::string_or_native")]
+    pub slot: Slot,
+    pub beacon_block_root: H256,
 }
 ```
 
-`#[superstruct]` macro generates **TWO variants** of DataColumnSidecar: Fulu and Gloas. Suggests Gloas may modify the container.
+**5 fields** per spec. Container_impls at `vendor/grandine/types/src/gloas/container_impls.rs:58-70` provides `impl<P: Preset> DataColumnSidecar<P>` and `Debug` impl with `f.debug_struct("DataColumnSidecar")`. Spec_tests at `vendor/grandine/types/src/gloas/spec_tests.rs:169-171` reference `"consensus-spec-tests/tests/mainnet/gloas/ssz_static/DataColumnSidecar/*/*"` fixtures.
 
-Cross-cut to spec: at Gloas, `DataColumnSidecar` may have different fields (possibly removing `signed_block_header` if PBS removes that from BeaconBlock). Pre-emptive Gloas-readiness.
+Pattern HH category: ✅ compile-time-baked depth via type-level associated type (`vendor/grandine/types/src/preset.rs:382 type KzgCommitmentsInclusionProofDepth = U4`).
 
-### Grandine type-level `U4` for depth
+## Cross-reference table
 
-Grandine `preset.rs:382`:
-```rust
-type KzgCommitmentsInclusionProofDepth = U4;
-```
+| Client | Fulu container | Gloas container | Gloas field count | Spec-compliant Gloas? | Pattern HH (depth) | Pattern AA |
+|---|---|---|---|---|---|---|
+| **prysm** | `data_columns.proto:28-46 message DataColumnSidecar` (6 fields) | `gloas.proto:464-479 DataColumnSidecarGloas` (proto field gap at 3 for removed kzg_commitments) | **5** ✅ | ✅ | protobuf annotation | spec-aligned snake_case |
+| **lighthouse** | superstruct base `data_column_sidecar.rs:79-96 pub struct DataColumnSidecar<E: EthSpec>` (6 fields) | `DataColumnSidecarGloas` superstruct variant; **`kzg_commitments` retained in common base at `:85`** (no `#[superstruct(only(Fulu))]`); confirmed by `:207-220 min_size()` constructing with kzg_commitments | **6** ❌ (extra `kzg_commitments`) | ❌ **DIVERGES FROM SPEC** | generic `E::KzgCommitmentsInclusionProofDepth` trait | spec-aligned snake_case |
+| **teku** | `versions/fulu/DataColumnSidecarFulu.java` (`Container6<...>`) | `versions/gloas/DataColumnSidecarGloas.java:30-94 extends Container5<DataColumnSidecarGloas, SszUInt64, DataColumn, SszList<SszKZGProof>, SszUInt64, SszBytes32>`; `getMaybeKzgCommitments() -> Optional.empty()` (`:72`); `getMaybeSignedBlockHeader() -> Optional.empty()` (`:91-93`) | **5** ✅ | ✅ | runtime `SpecConfigFulu.getKzgCommitmentsInclusionProofDepth()` | fork-named (`DataColumnSidecarFulu`, `DataColumnSidecarGloas`) — consistent |
+| **nimbus** | `fulu.nim:86-93 DataColumnSidecar* = object` (6 fields, array-typed inclusion proof) | `gloas.nim:53-68 DataColumnSidecar* = object` with explicit `# Removed kzg_commitments`, `# Removed signed_block_header`, `# Removed kzg_commitments_inclusion_proof`, `# [New in Gloas:EIP7732]` annotations | **5** ✅ | ✅ (most documented) | ✅ **compile-time preset constant** `fulu_preset.nim:16 KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH*: uint64 = 4` (mainnet/gnosis/minimal) | spec-aligned snake_case |
+| **lodestar** | `fulu/sszTypes.ts:56-66 DataColumnSidecar` (6 fields, camelCase) | `gloas/sszTypes.ts:301-313 DataColumnSidecar` (5 fields) with `// Removed in GLOAS:EIP7732` and `// New in GLOAS:EIP7732` inline comments | **5** ✅ | ✅ | imported constant `@lodestar/params` | camelCase in source; spec snake_case via `jsonCase: "eth2"` |
+| **grandine** | `fulu/containers.rs:171-179 pub struct DataColumnSidecar<P: Preset>` (6 fields) | `gloas/containers.rs:95-105 pub struct DataColumnSidecar<P: Preset>` (5 fields per spec); container_impls at `gloas/container_impls.rs:58-70`; spec_tests fixture path at `gloas/spec_tests.rs:169-171` | **5** ✅ | ✅ | ✅ **type-level associated type** `preset.rs:382 type KzgCommitmentsInclusionProofDepth = U4` | spec-aligned snake_case |
 
-`U4` is from typenum/generic-array — a TYPE-LEVEL representation of the integer 4. Compile-time-evaluated. Same Pattern HH spirit as nimbus's preset constant.
+**Pattern M cohort symptoms** (lighthouse only on this surface; grandine + nimbus are not Gloas-divergent here): lighthouse 6-field Gloas container instead of spec's 5. **Cross-client SSZ wire incompatibility at Gloas activation.** Other 5 clients spec-compliant.
 
-**Most rigid encoding** of all 6 — the depth is encoded in the TYPE SYSTEM, not just a runtime constant.
+**Pattern HH cohort (KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH baking)**: 2 of 6 — nimbus (preset constant) + grandine (type-level `U4`). Applies only to Fulu code path since Gloas container removes the inclusion proof.
 
-### List vs Vector typing across all 6
+**Pattern AA fork-naming consistency (teku scoreboard, carried forward)**: items #45 + #47 + #54 = 3 consistent (`MetadataMessageFulu`, `StatusMessageFulu`, `DataColumnSidecarFulu`/`Gloas`); item #53 = 1 inconsistent (`"DataColumnIdentifier"` SSZ container name vs Java class `DataColumnsByRootIdentifier`).
 
-All 6 correctly distinguish:
-- `column`, `kzg_commitments`, `kzg_proofs` — `List[*, MAX_BLOB_COMMITMENTS_PER_BLOCK]` (variable, max 4096)
-- `kzg_commitments_inclusion_proof` — `Vector[Bytes32, KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH]` (fixed, 4)
+## Empirical tests
 
-No client misclassifies a Vector as a List or vice versa. Spec-compliant typing.
+- ✅ **Live mainnet operation since 2025-12-03 (5+ months)**: cross-client `DataColumnSidecar` gossip + RPC interop validated. No Fulu format-divergence observed. **Verifies H1, H2, H9 at production scale.**
+- ✅ **Gloas variant verification (this recheck)**: 5 of 6 clients implement spec-compliant 5-field Gloas variant; **lighthouse retains `kzg_commitments` (6 fields)** at `data_column_sidecar.rs:85` — confirmed via the absence of `#[superstruct(only(Fulu))]` annotation on the field. Pattern M cohort symptom for lighthouse.
+- ✅ **Pattern HH verification**: nimbus `KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH*: uint64 = 4` confirmed across mainnet/gnosis/minimal presets at `presets/{mainnet,gnosis,minimal}/fulu_preset.nim:16`. Grandine `type KzgCommitmentsInclusionProofDepth = U4` confirmed at `preset.rs:382`.
+- ⏭ **Lighthouse Gloas variant fix PR**: file PR adding `#[superstruct(only(Fulu))]` annotation to `data_column_sidecar.rs:85 pub kzg_commitments: KzgCommitments<E>` (or moving it to a new `(only(Fulu))` block). Aligns lighthouse with the other 5. Closes the Pattern M cohort symptom for Gloas container.
+- ⏭ **ssz_static spec-test verification**: lighthouse should run `consensus-spec-tests/tests/mainnet/gloas/ssz_static/DataColumnSidecar/*` fixtures. With the current 6-field Gloas variant, tree-hash roots will diverge from spec — CI should fail. Verify whether the spec-test harness already catches this (most likely yes, but lighthouse CI may not exercise Gloas ssz_static fixtures yet).
+- ⏭ **Cross-client SSZ-encoding fixture at Gloas activation**: simulated Gloas-activation scenario; have lighthouse encode a `DataColumnSidecarGloas` and try to deserialize on prysm/teku/nimbus/lodestar/grandine. With lighthouse's current 6-field variant, the other 5 would reject the message (extra field). Confirms the Gloas-activation interop failure mode.
+- ⏭ **Pattern HH catalogue audit**: extend the {`MAX_REQUEST_BLOCKS_DENEB` (nimbus, item #52), `KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH` (nimbus + grandine, item #54)} list. Which other compile-time-baked constants exist per-client?
+- ⏭ **Cross-cut: lighthouse Gloas-ePBS readiness scorecard**: combine the symptoms from item #43 (Engine API V5/V6/FCU4 missing) + #44 (PartialDataColumnSidecar missing) + #46 (envelope RPCs missing) + #51 (gossip topic outlier — teku, not lighthouse; lighthouse is fine on that surface) + this item's DataColumnSidecar Gloas divergence. Item #48 catalogue refresh should reflect.
 
-### Live mainnet validation
+## Conclusion
 
-5+ months of cross-client DataColumnSidecar gossip + RPC interop without observed format-divergence. SSZ wire format is stable across all 6.
+The Fulu `DataColumnSidecar` SSZ container (6 fields: `index, column, kzg_commitments, kzg_proofs, signed_block_header, kzg_commitments_inclusion_proof`) is implemented byte-identically across all 6 clients. 5+ months of mainnet cross-client gossip + RPC interop validates wire-format compatibility.
 
-## Cross-cut chain
+At the Glamsterdam target, `vendor/consensus-specs/specs/gloas/p2p-interface.md:57-81` MODIFIES the container per EIP-7732 — removes `kzg_commitments`, `signed_block_header`, and `kzg_commitments_inclusion_proof`; adds `slot` and `beacon_block_root`. Net: 5 fields. The KZG commitments authority moves to `block.body.signed_execution_payload_bid.message.blob_kzg_commitments`.
 
-This audit closes the foundational PeerDAS container detail layer:
-- **Item #34** (DataColumnSidecar verification): consumes this container; covered Pattern P (grandine hardcoded gindex 11 for INCLUSION PROOF VERIFICATION)
-- **Item #37** (DataColumnSidecar subnet computation): consumes container index field
-- **Item #40** (proposer-side DataColumnSidecar construction): produces container; covered Pattern V (grandine hardcoded gindex 11 for INCLUSION PROOF GENERATION)
-- **Item #44** (PartialDataColumnSidecar): related Fulu-NEW container; only nimbus implements
-- **Item #46** (DataColumnSidecarsByRange/Root v1 RPC): wraps DataColumnSidecar in response
-- **Item #53** (DataColumnsByRootIdentifier): sister Fulu-NEW container audit
-- **Item #29** (Heze surprise): teku has full BeaconBlockBody Heze modifications → KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH may change at Heze
-- **Item #28 NEW Pattern HH scope expansion**: from MAX_REQUEST_BLOCKS_DENEB (item #52) to KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH (this audit). 2 constants in nimbus + 1 in grandine compile-time-baked.
-- **Item #28 Pattern P + V cross-cut**: Heze fragility now spans **3 hardcodings** for grandine (gindex 11 verify + gindex 11 produce + depth 4) and **1 hardcoding** for nimbus (depth 4). Triple-fragility for grandine.
-- **Item #28 Pattern AA fork-naming consistency**: teku scoreboard 3 of 4 consistent (`MetadataMessageFulu`, `StatusMessageFulu`, `DataColumnSidecarFulu`); 1 of 4 inconsistent (item #53 `"DataColumnIdentifier"`).
-- **Item #48** (catalogue refresh): adds Pattern HH expansion + Pattern P+V Heze fragility expansion
+**Per-client Gloas variant implementation status**:
 
-## Adjacent untouched Fulu-active
+- ✅ **prysm** (`gloas.proto:464-479`): 5-field `DataColumnSidecarGloas` proto message with field-number gap at 3 (removed `kzg_commitments`).
+- ❌ **lighthouse** (`data_column_sidecar.rs:79-96, 207-220`): superstruct retains `kzg_commitments` in the common base struct at `:85` — no `#[superstruct(only(Fulu))]` annotation. The Gloas variant therefore carries 6 fields. **DIVERGES FROM SPEC.** Confirmed by `DataColumnSidecarGloas::min_size()` explicitly constructing the struct with `kzg_commitments`. At Gloas activation this produces SSZ wire bytes incompatible with the other 5 clients.
+- ✅ **teku** (`DataColumnSidecarGloas.java:30-94`): `Container5<...>` 5-field variant; `getMaybeKzgCommitments() -> Optional.empty()` and `getMaybeSignedBlockHeader() -> Optional.empty()` explicit empty-Optional returns document the removal.
+- ✅ **nimbus** (`gloas.nim:53-68`): 5-field container with explicit `# Removed kzg_commitments`, `# Removed signed_block_header`, `# Removed kzg_commitments_inclusion_proof`, `# [New in Gloas:EIP7732]` annotation comments — most documented variant.
+- ✅ **lodestar** (`gloas/sszTypes.ts:301-313`): 5-field ContainerType with inline `// Removed in GLOAS:EIP7732` and `// New in GLOAS:EIP7732` comments documenting the modifications.
+- ✅ **grandine** (`gloas/containers.rs:95-105`): 5-field struct with spec-test fixture path explicitly referencing `consensus-spec-tests/tests/mainnet/gloas/ssz_static/DataColumnSidecar/*` at `gloas/spec_tests.rs:169-171`.
 
-- `MatrixEntry` SSZ container (Fulu-NEW per spec; future audit candidate)
-- `Cell` type cross-client (Bytes per cell, derived from FIELD_ELEMENTS_PER_CELL)
-- `KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH` cross-network audit (mainnet=4 confirmed; sepolia/holesky/gnosis/hoodi TBD)
-- `MAX_BLOB_COMMITMENTS_PER_BLOCK = 4096` (Deneb-heritage) cross-client baseline
-- BlobIdentifier (Deneb-heritage) cross-client baseline (item #50 implicit)
-- DataColumnSidecar Gloas-modified schema (lighthouse superstruct hints at Gloas variant; pre-emptive Gloas audit)
-- Per-client KZG cell proofs library implementation (c-kzg-4844 vs rust-kzg variants)
-- SignedBeaconBlockHeader nested container Fulu-modified vs Phase0-heritage
-- ExecutionPayloadEnvelope (Gloas-NEW) — pre-emptive audit candidate
-- Per-client SSZ container compile-time-vs-runtime baking inventory (Pattern HH spec-wide)
+**Pattern M lighthouse Gloas-ePBS readiness cohort extends with another symptom**: lighthouse's pre-existing gaps (item #43 Engine API V5/V6/FCU4 + item #44 PartialDataColumnSidecar absent + item #46 envelope RPCs absent) now compound with this container-schema divergence at Gloas activation. Pre-emptive fix is trivial: add `#[superstruct(only(Fulu))]` to `data_column_sidecar.rs:85`.
 
-## Future research items
+**Pattern HH (compile-time-baked constants)** persists in nimbus (`fulu_preset.nim:16 KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH*: uint64 = 4` across mainnet/gnosis/minimal presets) and grandine (`preset.rs:382 type KzgCommitmentsInclusionProofDepth = U4` type-level). Applies only to the Fulu code path since the Gloas container removes the inclusion proof entirely. Pattern HH on this constant becomes dead at Gloas.
 
-1. **Pattern HH scope expansion for item #28 catalogue**: covers nimbus's preset constants (MAX_REQUEST_BLOCKS_DENEB at item #52 + KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH at this audit) + grandine's type-level `U4` associated type. Same forward-fragility class.
-2. **Pattern P + V Heze fragility expansion**: triple-fragility for grandine (gindex 11 verify + produce + depth 4) and double-fragility for nimbus (depth 4) at Heze. Highest-priority pre-emptive Heze fix.
-3. **Lighthouse Gloas DataColumnSidecar variant audit**: superstruct hints at Gloas-modified container. What changes at Gloas? Pre-emptive Gloas audit.
-4. **MatrixEntry SSZ container audit (item #55+ candidate)**: Fulu-NEW related container; per-client schema may diverge.
-5. **`MAX_BLOB_COMMITMENTS_PER_BLOCK = 4096` cross-client baseline (item #56 candidate)**: Deneb-heritage; same Pattern DD/HH analysis.
-6. **`Cell` type cross-client comparison**: derived from FIELD_ELEMENTS_PER_CELL × BYTES_PER_FIELD_ELEMENT = 64 × 32 = 2048 bytes. Per-client typing may differ.
-7. **Cross-network `KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH` audit**: mainnet=4 confirmed; sepolia/holesky/gnosis/hoodi TBD.
-8. **Per-client KZG cell proofs library audit**: c-kzg-4844 vs rust-kzg families; performance + correctness; Pattern AA-style divergence in library choice.
-9. **BlobIdentifier (Deneb-heritage) cross-client baseline audit**: parallel to item #53; understand Pattern AA evolution from Deneb to Fulu.
-10. **Per-client SSZ container compile-time-vs-runtime baking inventory**: spec-wide audit of which constants are compile-time-baked across each client. Generalize Pattern HH.
-11. **Heze forward-fragility test**: simulate Heze fork with new BeaconBlockBody field; verify `KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH` updates; verify grandine + nimbus both require recompile; verify auto-derived clients (prysm, lighthouse, teku, lodestar) update via spec-config bump.
-12. **Lodestar systematic camelCase audit**: catalogue all Fulu-NEW containers and verify camelCase consistency. Confirm convention vs ad-hoc.
-13. **Teku Pattern AA fork-naming scoreboard maintenance**: 3 of 4 consistent so far. Audit all Fulu-NEW containers in teku and verify fork-naming convention.
+**Pattern AA fork-naming consistency** (teku scoreboard): items #45 + #47 + #54 = 3 consistent (`MetadataMessageFulu`, `StatusMessageFulu`, `DataColumnSidecarFulu`/`Gloas`); item #53 = 1 inconsistent (`"DataColumnIdentifier"` SSZ container metadata).
 
-## Summary
+**Pattern AA camelCase** (lodestar): persists at both Fulu and Gloas variants (`kzgCommitments`, `kzgProofs`, `signedBlockHeader`, `kzgCommitmentsInclusionProof` at Fulu; `kzgProofs`, `beaconBlockRoot` at Gloas) — mapped to spec snake_case via `jsonCase: "eth2"`.
 
-EIP-7594 PeerDAS foundational `DataColumnSidecar` SSZ container (`fulu/das-core.md`): 6-field container `(index, column, kzg_commitments, kzg_proofs, signed_block_header, kzg_commitments_inclusion_proof)`. Used in DataColumnSidecar gossip + RPC + validator-side construction (items #34/#37/#40/#46).
+**Impact: none** — Fulu surface byte-identical across all 6 (validated by 5+ months of mainnet); Gloas reshape is not mainnet-reachable today (`GLOAS_FORK_EPOCH = FAR_FUTURE_EPOCH`). lighthouse's Gloas variant divergence is forward-fragility tracking only. Thirty-fifth `impact: none` result in the recheck series.
 
-**SSZ wire format identical across all 6 clients** (SSZ field-order+type-based encoding). Live mainnet validates 5+ months of cross-client interop without observed format-divergence.
+Forward-research priorities:
 
-**All 6 use spec-compliant top-level container name** `DataColumnSidecar` (or `DataColumnSidecarFulu` for teku — Pattern AA fork-naming consistent).
-
-**Lodestar systematic camelCase** for 4 multi-word fields (`kzgCommitments`, `kzgProofs`, `signedBlockHeader`, `kzgCommitmentsInclusionProof`) — extension of item #53 finding. Wire spec-compliant via `jsonCase: "eth2"`. Project-wide TypeScript convention.
-
-**NEW Pattern HH scope expansion**: KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH source diversity:
-- nimbus: COMPILE-TIME PRESET CONSTANT (`fulu_preset.nim:16`)
-- grandine: TYPE-LEVEL associated type `U4` (`preset.rs:382`) — most rigid encoding
-- prysm: protobuf annotation
-- lighthouse: generic trait `E::KzgCommitmentsInclusionProofDepth`
-- teku: runtime `SpecConfigFulu.getKzgCommitmentsInclusionProofDepth()`
-- lodestar: imported constant from `@lodestar/params`
-
-**Pattern HH now applies to 2 constants in nimbus** (MAX_REQUEST_BLOCKS_DENEB from item #52 + KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH from this audit) **and 1 in grandine** (this audit's depth).
-
-**Heze forward-fragility — Pattern P + V cross-cut**:
-- nimbus comment at `fulu_preset.nim:15` reveals depth = `floorlog2(get_generalized_index(BeaconBlockBody, 'blob_kzg_commitments')) (= 4)`
-- At Heze (per item #29), BeaconBlockBody schema may add new fields → gindex shifts → depth changes
-- **TRIPLE-FRAGILITY for grandine at Heze**: hardcoded gindex 11 verify (Pattern P, item #34) + hardcoded gindex 11 produce (Pattern V, item #40) + compile-time-baked depth 4 (this audit)
-- **DOUBLE-FRAGILITY for nimbus at Heze**: compile-time-baked depth 4 (this audit) — though nimbus correctly uses dynamic gindex via `get_generalized_index` calls
-- **A-tier Heze divergence vector** for grandine; B-tier for nimbus
-
-**Teku Pattern AA fork-naming scoreboard**: 3 of 4 consistent (items #45 + #47 + #54); 1 of 4 inconsistent (item #53). `DataColumnSidecarFulu` matches teku's systematic fork-naming convention.
-
-**Lighthouse Gloas variant**: `#[superstruct(variants(Fulu, Gloas))]` at `data_column_sidecar.rs:79-96` hints at DataColumnSidecar Gloas-modified schema. Pre-emptive Gloas audit candidate.
-
-**With this audit, the foundational PeerDAS container detail layer is closed**. SSZ container detail audits now span items #45 (MetaData v3) + #47 (Status v2) + #53 (DataColumnsByRootIdentifier) + **#54 (DataColumnSidecar)** = 4 Fulu-NEW container audits.
-
-**Total Fulu-NEW items: 24 (#30–#54)**. Item #28 catalogue **Patterns A–HH (34 patterns)** + Pattern HH scope expansion (KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH) + Pattern P+V Heze triple-fragility expansion (grandine).
-
-**PeerDAS audit corpus now spans 16 items**: #33 → #34 → #35 → #37 → #38 → #39 → #40 → #41 → #42 → #44 → #45 → #46 → #47 → #49 → #53 → **#54**.
+1. **Lighthouse Gloas DataColumnSidecar fix PR** — add `#[superstruct(only(Fulu))]` to `data_column_sidecar.rs:85 pub kzg_commitments: KzgCommitments<E>`. Aligns with the other 5 clients and closes the Gloas-activation interop failure mode.
+2. **Lighthouse ssz_static spec-test verification** — confirm whether lighthouse CI exercises Gloas ssz_static fixtures. If yes, the 6-field variant should fail tree-hash root comparison; if no, the divergence remains silent until enabled.
+3. **Item #48 catalogue refresh** — lighthouse Gloas-ePBS readiness cohort grows with this symptom. Now spans Engine API + Partial column + envelope RPCs + DataColumnSidecar container.
+4. **Pattern HH catalogue audit** — extend from `MAX_REQUEST_BLOCKS_DENEB` (item #52) and `KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH` (this audit) to a spec-wide compile-time-baked-constant inventory per client.
+5. **MatrixEntry SSZ container audit** — Fulu-NEW related container; pre-emptive item #55+ candidate.
+6. **`MAX_BLOB_COMMITMENTS_PER_BLOCK = 4096` cross-client baseline** — Deneb-heritage constant; same Pattern DD/HH analysis.
