@@ -84,3 +84,4 @@ All items in this audit, sorted by number. For only the items that produced a co
 | [#78](items/078/) | `verify_execution_payload_envelope` + `on_execution_payload_envelope` — prysm lags spec PR #5152, missing `parent_beacon_block_root` field | source-code-reviewed |
 | [#79](items/079/) | Modified `get_ancestor` callers — Gloas return-type breaking change + nimbus's Gloas fork-choice gap | source-code-reviewed |
 | [#80](items/080/) | `get_attestation_score` / `is_supporting_vote` — same-slot vote handling — prysm/lodestar/grandine route to FULL/EMPTY buckets where spec requires PENDING-only | source-code-reviewed |
+| [#81](items/081/) | `get_weight` Gloas modification — previous-slot FULL/EMPTY zeroing — prysm/grandine use raw weights instead of tiebreaker | source-code-reviewed |
