@@ -21,6 +21,12 @@ Every item in the audit (whether or not it produced a divergence): [ITEM_TOC.md]
 | # | Finding | Split | Mainnet reach |
 |---|---|---|---|
 | [#41](items/041/) | nimbus encodes the ENR `cgc` field as SSZ uint8 (1 byte always); the spec and the other 5 clients use variable-length BE with leading-zero stripping (`cgc=0` → empty bytes) — wire-format divergence on cgc=0 and silent overflow at cgc≥256 | nimbus (1-vs-5) | D — synthetic state |
+| [#57](items/057/) | TBD — drafting `process_builder_pending_payments` Gloas-new epoch helper audit; closes the ePBS bid → attestation → settle → withdraw lifecycle on the settlement side | — | Unknown |
+| [#58](items/058/) | TBD — drafting `process_execution_payload_bid` Gloas-new block-time bid-validation audit (predicate body, beyond item #19's dispatcher-level coverage) | — | Unknown |
+| [#59](items/059/) | TBD — drafting `verify_execution_payload_envelope` + `on_execution_payload_envelope` Gloas-new fork-choice-time envelope verification audit | — | Unknown |
+| [#60](items/060/) | TBD — drafting Payload Timeliness Committee (PTC) selection + `is_valid_indexed_payload_attestation` Gloas-new audit | — | Unknown |
+| [#61](items/061/) | TBD — drafting `compute_activation_exit_epoch` foundational primitive audit (used by every Pectra+ exit/activation/consolidation path) | — | Unknown |
+| [#62](items/062/) | TBD — drafting `requestsHash` cross-client byte-for-byte Merkleization equivalence audit (direct CL-EL boundary) | — | Unknown |
 
 ## Remediated findings
 
@@ -32,7 +38,7 @@ Every item in the audit (whether or not it produced a divergence): [ITEM_TOC.md]
 
 ## Cross-cutting observations
 
-**0 confirmed Pectra or Fulu mainnet divergences across 56 items.** All six clients have run Fulu mainnet for 5+ months without observed consensus divergence. The audit has driven all three identified Gloas-activation divergences upstream (items #22, #23 fixed in nimbus PR #8440; the prior lighthouse Pattern M ePBS cohort closed under `unstable` HEAD `1a6863118`); only the synthetic-state ENR `cgc` encoding divergence in item #41 remains.
+**0 confirmed Pectra or Fulu mainnet divergences across 56 finalized items.** All six clients have run Fulu mainnet for 5+ months without observed consensus divergence. The audit has driven all three identified Gloas-activation divergences upstream (items #22, #23 fixed in nimbus PR #8440; the prior lighthouse Pattern M ePBS cohort closed under `unstable` HEAD `1a6863118`); only the synthetic-state ENR `cgc` encoding divergence in item #41 remains. Items #57–#62 are open drafts (hypotheses formed; source review pending).
 
 **Nimbus PR #4513 → PR #4788 revert window** ([#22](items/022/), [#23](items/023/) — both remediated): both Gloas divergences shared the same root cause. PR #4513 added `Modified` Gloas sections to `has_compounding_withdrawal_credential` and `get_pending_balance_to_withdraw`; PR #4788 removed them when builders became a separate `state.builders` registry. Nimbus shipped the intermediate v1.6.0-beta.0 code and did not roll back; fixed upstream in nimbus PR [#8440](https://github.com/status-im/nimbus-eth2/pull/8440) (commit `550c7a3f0`, 2026-05-14).
 
@@ -43,7 +49,7 @@ Every item in the audit (whether or not it produced a divergence): [ITEM_TOC.md]
 ## Repository layout
 
 ```
-items/NNN/        per-item audit (56 items)
+items/NNN/        per-item audit (62 items; #57–#62 in drafting)
   README.md       Jekyll-style front matter + hypotheses, findings, cross-refs
 ITEM_TOC.md       auto-regenerated flat table of every item
 WORKLOG.md        sequential audit log
