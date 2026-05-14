@@ -16,26 +16,27 @@ Every item in the audit (whether or not it produced a divergence): [ITEM_TOC.md]
 
 ---
 
-## Active findings (as of 2026-05-13)
+## Active findings (as of 2026-05-14)
 
 | # | Finding | Split | Mainnet reach |
 |---|---|---|---|
 | [#41](items/041/) | nimbus encodes the ENR `cgc` field as SSZ uint8 (1 byte always); the spec and the other 5 clients use variable-length BE with leading-zero stripping (`cgc=0` → empty bytes) — wire-format divergence on cgc=0 and silent overflow at cgc≥256 | nimbus (1-vs-5) | D — synthetic state |
-| [#22](items/022/) | nimbus treats 0x03 (builder) credentials as compounding at Gloas+ via stale `has_compounding_withdrawal_credential` OR-fold — pre-Gloas 0x03 deposit forks effective_balance at Gloas activation | nimbus (1-vs-5) | mainnet-glamsterdam |
-| [#23](items/023/) | nimbus get_pending_balance_to_withdraw OR-folds builder_pending_withdrawals + builder_pending_payments at Gloas+ — rejects voluntary_exit / withdrawal_request / consolidation_request on validators whose index collides with an active builder index | nimbus (1-vs-5) | mainnet-glamsterdam |
-| [#28](items/028/) | meta-audit — two nimbus stale PR #4513 → #4788 revert-window OR-folds (items #22 + #23) cause mainnet-glamsterdam forks at Gloas; the prior lighthouse Pattern M cohort (items #14, #19, #22 H10, #23 H8, #24, #25, #26) has fully closed under the unstable HEAD pin | nimbus (1-vs-5) | mainnet-glamsterdam |
 
 ## Remediated findings
 
-_(none)_
+| # | Finding | Split | Mainnet reach |
+|---|---|---|---|
+| [#22](items/022/) | nimbus treated 0x03 (builder) credentials as compounding at Gloas+ via stale `has_compounding_withdrawal_credential` OR-fold (1-vs-5; fixed upstream in nimbus 550c7a3f0 / PR #8440 "align two Gloas state transition functions with alpha.7 spec") | nimbus (1-vs-5) | mainnet-glamsterdam |
+| [#23](items/023/) | nimbus `get_pending_balance_to_withdraw` OR-folded `builder_pending_withdrawals` + `builder_pending_payments` into the validator-side accessor at Gloas+ (1-vs-5; fixed upstream in nimbus 550c7a3f0 / PR #8440 "align two Gloas state transition functions with alpha.7 spec") | nimbus (1-vs-5) | mainnet-glamsterdam |
+| [#28](items/028/) | meta-audit — both nimbus PR #4513 → #4788 revert-window OR-folds (items #22 + #23) and the prior lighthouse Pattern M ePBS cohort (items #14, #19, #22 H10, #23 H8, #24, #25, #26) closed; the EIP-8061 churn family and the EIP-7732 ePBS lifecycle are uniform across all six clients (1-vs-5 nimbus Pattern N divergences fixed upstream in nimbus 550c7a3f0 / PR #8440) | nimbus (1-vs-5) | mainnet-glamsterdam |
 
 ## Cross-cutting observations
 
-**0 confirmed Pectra or Fulu mainnet divergences across 56 items.** All six clients have run Fulu mainnet for 5+ months without observed consensus divergence. The active findings above are dominated by `mainnet-glamsterdam` rows — code paths whose divergence materialises at Gloas activation (`GLOAS_FORK_EPOCH = FAR_FUTURE_EPOCH` today).
+**0 confirmed Pectra or Fulu mainnet divergences across 56 items.** All six clients have run Fulu mainnet for 5+ months without observed consensus divergence. The audit has driven all three identified Gloas-activation divergences upstream (items #22, #23 fixed in nimbus PR #8440; the prior lighthouse Pattern M ePBS cohort closed under `unstable` HEAD `1a6863118`); only the synthetic-state ENR `cgc` encoding divergence in item #41 remains.
 
-**Nimbus PR #4513 → PR #4788 revert window** ([#22](items/022/), [#23](items/023/)): both active Gloas divergences share the same root cause. PR #4513 added `Modified` Gloas sections to `has_compounding_withdrawal_credential` and `get_pending_balance_to_withdraw`; PR #4788 removed them when builders became a separate `state.builders` registry. Nimbus shipped the intermediate v1.6.0-beta.0 code and did not roll back. Two one-line fixes close both.
+**Nimbus PR #4513 → PR #4788 revert window** ([#22](items/022/), [#23](items/023/) — both remediated): both Gloas divergences shared the same root cause. PR #4513 added `Modified` Gloas sections to `has_compounding_withdrawal_credential` and `get_pending_balance_to_withdraw`; PR #4788 removed them when builders became a separate `state.builders` registry. Nimbus shipped the intermediate v1.6.0-beta.0 code and did not roll back; fixed upstream in nimbus PR [#8440](https://github.com/status-im/nimbus-eth2/pull/8440) (commit `550c7a3f0`, 2026-05-14).
 
-**Lighthouse EIP-7732 ePBS cohort closed under `unstable`.** The prior recheck flagged six lighthouse-only ePBS gaps (items #7, #9, #12, #13, #14, #19, plus #15 V5). All have vacated under the per-client Glamsterdam branches (lighthouse + nimbus `unstable`, prysm `EIP-8061`, teku `glamsterdam-devnet-2`, grandine `glamsterdam-devnet-3`). See [items/028/README.md](items/028/README.md) for the full pattern catalogue (A–II).
+**Lighthouse EIP-7732 ePBS cohort closed under `unstable`.** The prior recheck flagged six lighthouse-only ePBS gaps (items #7, #9, #12, #13, #14, #19, plus #15 V5). All vacated under the per-client Glamsterdam branches (lighthouse + nimbus `unstable`, prysm `EIP-8061`, teku `glamsterdam-devnet-2`, grandine `glamsterdam-devnet-3`). See [items/028/README.md](items/028/README.md) for the full pattern catalogue (A–II).
 
 ---
 

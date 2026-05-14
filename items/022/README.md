@@ -1,20 +1,23 @@
 ---
-status: source-code-reviewed
+status: final
 impact: mainnet-glamsterdam
-last_update: 2026-05-12
+last_update: 2026-05-14
 builds_on: [1, 2, 11, 12, 18, 21]
 eips: [EIP-7251, EIP-7732]
 splits: [nimbus]
-# main_md_summary: nimbus treats 0x03 (builder) credentials as compounding at Gloas+ via stale `has_compounding_withdrawal_credential` OR-fold — pre-Gloas 0x03 deposit forks effective_balance at Gloas activation
+# main_md_summary: nimbus treated 0x03 (builder) credentials as compounding at Gloas+ via stale `has_compounding_withdrawal_credential` OR-fold (1-vs-5; fixed upstream in nimbus 550c7a3f0 / PR #8440 "align two Gloas state transition functions with alpha.7 spec")
+remediated: true
 prysm_version: v7.1.3-rc.3-209-g0f25a41868
 lighthouse_version: v8.1.2-185-g1a6863118
 teku_version: 26.4.0-127-g70ad00cbaf
-nimbus_version: v26.5.0-8-g3802d9629
+nimbus_version: v26.5.0-10-g550c7a3f0
 lodestar_version: v1.42.0-69-g35940ffd61
 grandine_version: 2.0.4-97-g15dd0225
 ---
 
 # 22: Compounding/credential subsystem helpers (predicates + `switch_to_compounding_validator`)
+
+> **REMEDIATED 2026-05-14.** Nimbus PR [#8440](https://github.com/status-im/nimbus-eth2/pull/8440) (commit `550c7a3f0`, "align two Gloas state transition functions with alpha.7 spec") removed the stale `when consensusFork >= ConsensusFork.Gloas` OR-fold from `has_compounding_withdrawal_credential` at `beacon_chain/spec/beaconstate.nim:58-62`. The function now returns `is_compounding_withdrawal_credential(validator.withdrawal_credentials)` unconditionally — spec-aligned. Doc-comment URL updated from `v1.6.0-beta.0` (which referenced the removed `#modified-has_compounding_withdrawal_credential` section) to `v1.7.0-alpha.7`. The audit body below is preserved as a historical record of the divergence at nimbus HEAD `3802d96291` (unstable, 2026-05-13).
 
 ## Summary
 

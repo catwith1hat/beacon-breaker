@@ -25,13 +25,13 @@ All items in this audit, sorted by number. For only the items that produced a co
 | [#19](items/019/) | `process_execution_payload` Pectra-modified (EIP-7691 blob limit + EIP-7685 requests pass-through) | source-code-reviewed |
 | [#20](items/020/) | `apply_pending_deposit` + `is_valid_deposit_signature` (Pectra-NEW per-deposit application + EIP-7044-style signature pinning) | source-code-reviewed |
 | [#21](items/021/) | `queue_excess_active_balance` (Pectra-NEW placeholder-PendingDeposit producer) | source-code-reviewed |
-| [#22](items/022/) | Compounding/credential subsystem helpers (predicates + `switch_to_compounding_validator`) | source-code-reviewed |
-| [#23](items/023/) | `get_pending_balance_to_withdraw` (Pectra-NEW exit-gating accessor) | source-code-reviewed |
+| [#22](items/022/) | Compounding/credential subsystem helpers (predicates + `switch_to_compounding_validator`) | final |
+| [#23](items/023/) | `get_pending_balance_to_withdraw` (Pectra-NEW exit-gating accessor) | final |
 | [#24](items/024/) | `is_valid_switch_to_compounding_request` (Pectra-NEW 6-check security gate for the switch path) | source-code-reviewed |
 | [#25](items/025/) | `is_valid_indexed_attestation` (Pectra-MODIFIED via SSZ-type capacity expansion) | source-code-reviewed |
 | [#26](items/026/) | `get_attesting_indices` + `get_committee_indices` (Pectra-MODIFIED + Pectra-NEW for EIP-7549 multi-committee aggregation) | source-code-reviewed |
 | [#27](items/027/) | `get_next_sync_committee_indices` (Pectra-MODIFIED + Gloas-MODIFIED for balance-weighted sync committee selection) | source-code-reviewed |
-| [#28](items/028/) | Cross-corpus pre-emptive Gloas-fork divergence consolidated tracking audit | source-code-reviewed |
+| [#28](items/028/) | Cross-corpus pre-emptive Gloas-fork divergence consolidated tracking audit | final |
 | [#29](items/029/) | `compute_signing_root` / `compute_domain` / `compute_fork_data_root` / `get_domain` cross-client byte-for-byte equivalence audit | source-code-reviewed |
 | [#30](items/030/) | `get_beacon_proposer_index` + `process_proposer_lookahead` + `initialize_proposer_lookahead` + `compute_proposer_indices` + `get_beacon_proposer_indices` (Fulu-NEW EIP-7917 deterministic proposer lookahead) | source-code-reviewed |
 | [#31](items/031/) | `get_blob_parameters(epoch)` + `blob_schedule` schema + Fulu-modified `compute_fork_digest` (EIP-7892 BPO hardforks) | source-code-reviewed |

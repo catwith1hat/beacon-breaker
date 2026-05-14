@@ -7,7 +7,7 @@ eips: [EIP-7594, EIP-7251]
 prysm_version: v7.1.3-rc.3-209-g0f25a41868
 lighthouse_version: v8.1.2-185-g1a6863118
 teku_version: 26.4.0-127-g70ad00cbaf
-nimbus_version: v26.5.0-8-g3802d9629
+nimbus_version: v26.5.0-10-g550c7a3f0
 lodestar_version: v1.42.0-69-g35940ffd61
 grandine_version: 2.0.4-97-g15dd0225
 ---

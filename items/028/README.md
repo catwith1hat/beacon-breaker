@@ -1,20 +1,23 @@
 ---
-status: source-code-reviewed
+status: final
 impact: mainnet-glamsterdam
-last_update: 2026-05-13
+last_update: 2026-05-14
 builds_on: [1, 3, 4, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]
 eips: [EIP-7251, EIP-7549, EIP-7732, EIP-7044, EIP-8061]
 splits: [nimbus]
-# main_md_summary: meta-audit — two nimbus stale PR #4513 → #4788 revert-window OR-folds (items #22 + #23) cause mainnet-glamsterdam forks at Gloas; the prior lighthouse Pattern M cohort (items #14, #19, #22 H10, #23 H8, #24, #25, #26) has fully closed under the unstable HEAD pin
-prysm_version: v3.2.2-rc.1-2535-g0f25a41868
+# main_md_summary: meta-audit — both nimbus PR #4513 → #4788 revert-window OR-folds (items #22 + #23) and the prior lighthouse Pattern M ePBS cohort (items #14, #19, #22 H10, #23 H8, #24, #25, #26) closed; the EIP-8061 churn family and the EIP-7732 ePBS lifecycle are uniform across all six clients (1-vs-5 nimbus Pattern N divergences fixed upstream in nimbus 550c7a3f0 / PR #8440)
+remediated: true
+prysm_version: v7.1.3-rc.3-209-g0f25a41868
 lighthouse_version: v8.1.2-185-g1a6863118
 teku_version: 26.4.0-127-g70ad00cbaf
-nimbus_version: v26.5.0-8-g3802d9629
+nimbus_version: v26.5.0-10-g550c7a3f0
 lodestar_version: v1.42.0-69-g35940ffd61
 grandine_version: 2.0.4-97-g15dd0225
 ---
 
 # 28: Cross-corpus pre-emptive Gloas-fork divergence consolidated tracking audit
+
+> **REMEDIATED 2026-05-14.** The two active mainnet-glamsterdam divergences this meta-audit tracked (items #22 H12, #23 H10 — both Pattern N) have been fixed upstream in nimbus [PR #8440](https://github.com/status-im/nimbus-eth2/pull/8440) (commit `550c7a3f0`, "align two Gloas state transition functions with alpha.7 spec"). At the new pin all six clients are mainnet-glamsterdam-conformant on every surface this audit reviewed. The audit body below is preserved as the historical record of the divergences observed at nimbus HEAD `3802d96291` (unstable, 2026-05-13).
 
 ## Summary
 
