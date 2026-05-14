@@ -197,10 +197,10 @@ No specific empirical tests run for this surface scan. EF spec-test corpus at `v
 Suggested follow-up items (each warrants a standalone audit):
 
 - **T1: `is_payload_verified` + `on_execution_payload_envelope` round-trip per-client byte-equivalence.** Sibling to #67 but on the envelope-receipt side.
-- **T2: `is_payload_timely` PTC-vote-counting cross-client.** Verify all 6 implement the bitvector-popcount semantic equivalently with respect to None / False / True votes.
+- **T2: `is_payload_timely` PTC-vote-counting cross-client.** Verify all 6 implement the bitvector-popcount semantic equivalently with respect to None / False / True votes. **CLOSED 2026-05-14 via item #77 with divergence: confirmed.** The bitvector-popcount semantic itself is consistent across all 6 clients, but lodestar's `should_extend_payload` drops the `is_payload_data_available` conjunct entirely (no `payloadDataAvailabilityVote` storage, no `isPayloadDataAvailable` predicate; `notifyPtcMessages(.., payloadPresent: boolean)` discards `blob_data_available`). See item #77.
 - **T3: Modified `get_ancestor` callers.** Spec breaking change (returns ForkChoiceNode instead of Root). Audit all caller sites in each client for proper consumption of both fields.
 - **T4: `is_supporting_vote` semantic.** New vote-classification function for fork-choice scoring. High-leverage for fork-choice integrity.
-- **T5: `should_extend_payload` decision logic.** Per-client divergence here would cause builders/proposers to extend FULL vs EMPTY differently. Lodestar's `protoArray.ts:715` implementation looks correct on first read; verify others.
+- **T5: `should_extend_payload` decision logic.** Per-client divergence here would cause builders/proposers to extend FULL vs EMPTY differently. **CLOSED 2026-05-14 via item #77 with divergence: confirmed in lodestar.** First-read assessment that `protoArray.ts:715` "looks correct" was wrong; condition 1 drops the `is_payload_data_available` AND-conjunct that spec requires.
 - **T6: `get_attestation_score` Gloas modification.** Spec adds payload-status considerations to attestation weight. Bug-likely.
 - **T7: `get_weight` Gloas modification.** Same — payload-status now affects fork-choice weights.
 - **T8: `record_block_timeliness` Gloas modification.** New tracking dimensions for timely vs late blocks under ePBS.
