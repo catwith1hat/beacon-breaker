@@ -87,3 +87,4 @@ All items in this audit, sorted by number. For only the items that produced a co
 | [#81](items/081/) | `get_weight` Gloas modification — previous-slot FULL/EMPTY zeroing — prysm/grandine use raw weights instead of tiebreaker | source-code-reviewed |
 | [#82](items/082/) | `record_block_timeliness` 2-tuple + `should_apply_proposer_boost` equivocation suppression — only lighthouse fully implements | source-code-reviewed |
 | [#83](items/083/) | `is_head_weak` Gloas equivocating-committee monotonicity term missing in prysm and lodestar | source-code-reviewed |
+| [#84](items/084/) | Gloas reorg-helper trio — `is_parent_strong`, `update_proposer_boost_root`, `is_head_late` — divergences in prysm, lodestar, grandine | source-code-reviewed |
