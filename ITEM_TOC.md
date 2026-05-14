@@ -79,7 +79,7 @@ All items in this audit, sorted by number. For only the items that produced a co
 | [#73](items/073/) | `get_data_column_sidecars` construction at Gloas | source-code-reviewed |
 | [#74](items/074/) | `process_voluntary_exit` Gloas builder-exit branch + `process_attestation` builder-payment-weight accumulation | source-code-reviewed |
 | [#75](items/075/) | Gloas modifications survey — `process_slot`, `get_attestation_participation_flag_indices`, `compute_proposer_indices`, `get_next_sync_committee_indices` | source-code-reviewed |
-| [#76](items/076/) | Fork-choice Gloas modifications surface scan — `on_block`, `on_execution_payload_envelope`, `on_payload_attestation_message`, PTC voting, `should_extend_payload`, `get_attestation_score`, `get_weight` | hypotheses-formed |
+| [#76](items/076/) | Fork-choice Gloas modifications surface scan — `on_block`, `on_execution_payload_envelope`, `on_payload_attestation_message`, PTC voting, `should_extend_payload`, `get_attestation_score`, `get_weight` | source-code-reviewed |
 | [#77](items/077/) | Fork-choice `should_extend_payload` — lodestar drops the `is_payload_data_available` conjunct | fuzzed |
 | [#78](items/078/) | `verify_execution_payload_envelope` + `on_execution_payload_envelope` — prysm lags spec PR #5152, missing `parent_beacon_block_root` field | source-code-reviewed |
 | [#79](items/079/) | Modified `get_ancestor` callers — Gloas return-type breaking change + nimbus's Gloas fork-choice gap | source-code-reviewed |

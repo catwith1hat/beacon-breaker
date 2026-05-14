@@ -1,11 +1,9 @@
 ---
-status: hypotheses-formed
-impact: unknown
+status: source-code-reviewed
+impact: none
 last_update: 2026-05-14
 builds_on: [56, 60]
 eips: [EIP-7732]
-splits: []
-# main_md_summary: surface scan of the 28+ fork-choice Gloas modifications — high-risk area, dedicated multi-item audit recommended; identified is_payload_verified / is_payload_timely / get_ancestor → ForkChoiceNode / is_supporting_vote / should_extend_payload / get_payload_status_tiebreaker / get_attestation_score / record_block_timeliness as the highest-leverage follow-up targets
 prysm_version: v7.1.3-rc.3-209-g0f25a41868
 lighthouse_version: v8.1.2-185-g1a6863118
 teku_version: 26.4.0-127-g70ad00cbaf
@@ -26,15 +24,34 @@ Gloas substantially modifies fork choice for the ePBS bid/envelope/PTC lifecycle
 - **Modified core**: `on_block` (payload-verified gate), `get_ancestor` (returns `ForkChoiceNode` not `Root`), `get_checkpoint_block`, `update_latest_messages`, `record_block_timeliness`, `update_proposer_boost_root`, `validate_on_attestation`, `get_attestation_score`, `get_weight`, `get_head`.
 - **New helpers**: `get_parent_payload_status`, `get_payload_status_tiebreaker`, `get_node_children`.
 
-This item is a **surface scan**, not a per-function byte-equivalence audit. The fork-choice subsystem warrants a dedicated multi-item audit; each function is bug-likely (consensus-impacting, race-condition-prone, new code) and merits a standalone analysis. The scan identifies:
+This item is a **surface scan / index**, not a per-function byte-equivalence audit. The fork-choice subsystem was decomposed into 10 follow-up targets (T1-T10 in the deferred list below); each was investigated and either produced a derivative audit item with concrete findings or closed inline.
 
-- All 6 clients have implementations of the headline primitives (`is_payload_verified`, `is_payload_timely`, `is_parent_node_full`, `should_extend_payload`).
-- All 6 clients agree on the spec constants: `PAYLOAD_TIMELY_THRESHOLD = PTC_SIZE // 2 = 256`, `PAYLOAD_DATA_AVAILABILITY_THRESHOLD = PTC_SIZE // 2 = 256`.
-- The `is_payload_timely` count-True-votes semantic is uniformly implemented as bitvector-popcount in all 6 clients.
+**Outcome (2026-05-14): 8 derivative audit items, all mainnet-glamsterdam, covering 5 of 6 CL clients.**
 
-**No definitive divergences identified at the surface-scan level.** Deeper byte-equivalence audits per primitive are warranted. The lodestar caching-bug pattern from item #67 does not appear to recur in the fork-choice surface (no obvious cache-balance accumulation), but a thorough lodestar fork-choice audit would close that hypothesis.
+| Follow-up | Status | Derivative item |
+|---|---|---|
+| T1 — `is_payload_verified` / `on_execution_payload_envelope` round-trip | closed | #78 (prysm spec-PR-#5152 lag, missing `parent_beacon_block_root` field) |
+| T2 — `is_payload_timely` PTC-vote-counting | closed | #77 (lodestar missing `is_payload_data_available` predicate) |
+| T3 — modified `get_ancestor` callers | closed | #79 (nimbus complete fork-choice gap) |
+| T4 — `is_supporting_vote` semantic | closed | (no new item — covered by #80 + #81) |
+| T5 — `should_extend_payload` decision logic | closed | #77 (same as T2) |
+| T6 — `get_attestation_score` Gloas modification | closed | #80 (prysm + lodestar + grandine same-slot vote routing) |
+| T7 — `get_weight` Gloas modification | closed | #81 (prysm + grandine previous-slot weight zeroing) |
+| T8 — `record_block_timeliness` Gloas modification | closed | #82 (prysm + teku + lodestar + grandine `block_timeliness` 2-tuple + proposer-boost equivocation suppression) |
+| T9 — re-org timing | closed | #83 (prysm + lodestar `is_head_weak` equivocating-committee monotonicity term) |
+| T10 — threshold strictness (`>` vs `>=`) | closed | (no new item — all 5 active clients use strict `>`) |
+| (bonus cluster) | closed | #84 (prysm + lodestar + grandine: `is_parent_strong`, `update_proposer_boost_root` canonical-proposer check, `is_head_late`) |
 
-**Verdict: impact unknown** — explicitly so. The audit surface is too large to close at this level; promoting to `none` requires per-function deep audits. Splits empty until a specific divergence is identified.
+**Combined splits across derivatives**: prysm (7 findings), lodestar (6), grandine (6), teku (1 deferred TODO), nimbus (1 broad). **Lighthouse remains the only client with zero confirmed Gloas fork-choice divergences across this audit.**
+
+This item itself contributes **no independent divergence finding** — it is a navigation/index item. The divergences are documented in #77-#84 with their own impact classifications, splits, and resolution options. Hence **impact: none** for this item.
+
+Cross-client structural diversity is large (lodestar's intra-block PENDING-as-parent edge; prysm's dual-tree FULL/EMPTY; teku's BlockNodeVariants; grandine's segment-based scoring; lighthouse's IndexedForkChoiceNode), but each approach can be semantically conformant to spec. Findings cluster around three problem patterns:
+1. **Spec lag** (prysm #78, lodestar #67/#77).
+2. **Missing payload-status awareness** (#80/#81/#84-A).
+3. **Missing PTC-timeliness / equivocation suppression** (#82/#83/#84-B).
+
+A simulator harness covering scenarios S1-S10 across the 4 fork-choice items (#80/#81/#82/#83) would convert source-level claims to executable empirical evidence — recommended follow-up but out of scope for this surface scan.
 
 ## Question
 
@@ -211,19 +228,24 @@ Suggested follow-up items (each warrants a standalone audit):
 
 The fork-choice subsystem is the most heavily modified area of the Gloas changeset. 28+ new or modified functions; new Store containers; ePBS-aware tiebreakers; PTC-vote accumulation; payload-availability and timeliness predicates.
 
-This surface scan confirms:
-- All 6 clients have implementations of the headline primitives (`is_payload_verified`, `is_payload_timely`, `is_parent_node_full`, `should_extend_payload`).
-- `PAYLOAD_TIMELY_THRESHOLD = PTC_SIZE // 2 = 256` is uniform.
-- Spec's `sum(vote is True)` semantic is implemented as bitvector-popcount across at least lighthouse and lodestar.
+**Surface scan complete.** All 10 follow-up targets (T1-T10) plus a bonus reorg-helper cluster have been investigated. Outcome:
 
-This scan does NOT close per-function byte-equivalence — that work requires multiple dedicated follow-up items. **Verdict: impact unknown.** Audit promotes from drafting to hypotheses-formed (the surface is mapped; specific divergence hypotheses for follow-up are documented).
+- **8 derivative audit items** (#77-#84), all mainnet-glamsterdam impact.
+- **5 of 6 CL clients have at least one Gloas fork-choice divergence**: prysm (7), lodestar (6), grandine (4 items / 6 findings), teku (1 deferred TODO), nimbus (1 broad incomplete-implementation finding via #79).
+- **Lighthouse**: zero confirmed divergences across the full fork-choice surface.
+- **2 follow-ups (T4, T10) closed inline** without new items — T4 because Branch B semantics are structurally diverse but spec-conformant on source review; T10 because all 5 active clients use strict `>`.
 
-Highest-leverage follow-up targets (per item, in priority order):
-1. **`is_payload_timely` threshold semantics** — strict `>` vs `>=` could differ; vote-set representation (None/False/True) handling.
-2. **`get_attestation_score` + `get_weight` Gloas modifications** — payload-status fork-choice weighting; most likely place for fork-choice score divergence.
-3. **`on_execution_payload_envelope` cross-client** — sibling to #67; envelope-receipt path.
-4. **Modified `get_ancestor` callers** — spec API break; per-caller-site audit.
-5. **`should_extend_payload` decision logic** — proposer behavior at the FULL/EMPTY boundary.
+**Verdict for this item: impact none.** This is a navigation/index item; the divergence findings are documented in #77-#84 with their own classifications, splits, and resolution options. The surface scan itself produced no independent divergence.
+
+Findings cluster around three problem patterns visible across the derivatives:
+1. **Spec lag** — clients pinned to older Gloas spec revisions (#67 lodestar builder-sweep retention; #78 prysm `parent_beacon_block_root` field).
+2. **Missing payload-status awareness** — clients route votes or compute weights without distinguishing FULL/EMPTY/PENDING variants per spec (#80 same-slot routing; #81 previous-slot zeroing; #84-A `is_parent_strong`).
+3. **Missing PTC-timeliness / equivocation suppression** — clients haven't implemented the new monotonicity terms or proposer-equivocation guards (#82 `record_block_timeliness` 2-tuple; #83 `is_head_weak` equivocating-committee term; #84-B canonical-proposer check).
+
+Recommended next steps beyond this audit:
+- **Simulator harness** exercising scenarios S1-S10 from items #80/#81/#82/#83/#84 against each client's actual implementation. Would convert source-level claims to executable empirical evidence.
+- **Spec interpretation requests** to consensus-specs editors on ambiguous points raised by the audit (notably #80's same-slot vote semantic and #82's whether the PTC-equivocation suppression should consult fork-choice store or gossip-layer data structures).
+- **PR sketches** for each derivative item — the resolution options sections are concrete enough to drive PR work.
 
 ## Cross-cuts
 
