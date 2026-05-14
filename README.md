@@ -21,7 +21,6 @@ Every item in the audit (whether or not it produced a divergence): [ITEM_TOC.md]
 | # | Finding | Split | Mainnet reach |
 |---|---|---|---|
 | [#41](items/041/) | nimbus encodes the ENR `cgc` field as SSZ uint8 (1 byte always); the spec and the other 5 clients use variable-length BE with leading-zero stripping (`cgc=0` → empty bytes) — wire-format divergence on cgc=0 and silent overflow at cgc≥256 | nimbus (1-vs-5) | D — synthetic state |
-| [#60](items/060/) | TBD — drafting Payload Timeliness Committee (PTC) selection + `is_valid_indexed_payload_attestation` Gloas-new audit | — | Unknown |
 | [#61](items/061/) | TBD — drafting `compute_activation_exit_epoch` foundational primitive audit (used by every Pectra+ exit/activation/consolidation path) | — | Unknown |
 | [#62](items/062/) | TBD — drafting `requestsHash` cross-client byte-for-byte Merkleization equivalence audit (direct CL-EL boundary) | — | Unknown |
 
