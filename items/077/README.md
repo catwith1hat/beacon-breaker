@@ -341,6 +341,49 @@ Grandine uses `PayloadTimelyThreshold::<P>::U64` as the threshold constant for t
 
 ## Empirical tests
 
+### Verification against real lodestar code — CONFIRMED DIVERGENT
+
+`items/077/demo/lodestar_intree_test.ts` is a vitest test that exercises the
+real lodestar `protoArray.shouldExtendPayload` function (imports from
+`../../../src/index.js`). Copied into
+`vendor/lodestar/packages/fork-choice/test/unit/protoArray/shouldExtendPayloadDivergence.test.ts`
+and run via `pnpm vitest`:
+
+```
+✓ T2 (no proposer-boost): shouldExtendPayload must be true (condition 2 in spec)
+✗ T1 (adversarial proposer-boost, no data-availability tracking): shouldExtendPayload MUST be false per spec
+
+AssertionError: expected true to be false
+- Expected: false
++ Received: true
+  test/unit/protoArray/shouldExtendPayloadDivergence.test.ts:215
+
+Tests: 1 failed | 1 passed (2)
+```
+
+Real-lodestar verification 2026-05-14. The bug is confirmed in the actual
+lodestar codebase: when proposer-boost is set to a child of the candidate
+whose `parentBlockHash` matches the candidate's EMPTY variant (not FULL),
+and the candidate has PTC timeliness votes (`payloadPresent=True`),
+`shouldExtendPayload` returns `true` because lodestar's condition 1 short-
+circuits on `isPayloadTimely(blockRoot)` alone. Spec requires
+`isPayloadTimely(blockRoot) AND isPayloadDataAvailable(blockRoot)`; since
+lodestar has no `isPayloadDataAvailable` predicate and no
+`payloadDataAvailabilityVotes` storage, the conjunction can never evaluate
+to false in lodestar — it is effectively absent.
+
+The test setup uses lodestar's actual `ProtoArray` test helper conventions
+(per `vendor/lodestar/packages/fork-choice/test/unit/protoArray/gloas.test.ts`).
+The adversarial proposer-boost configuration is constructed by:
+1. Calling `onExecutionPayload` on the candidate with a `candidateFullHash`
+   different from the bid's `candidateBidHash`, so FULL and EMPTY variants
+   have different `executionPayloadBlockHash` values.
+2. Creating the adversarial child with `parentBlockHash = candidateBidHash`,
+   which matches candidate's EMPTY variant (since `getNodeIndexByRootAndBlockHash`
+   prefers FULL but falls back to EMPTY when FULL's hash doesn't match).
+
+The test is a drop-in for a lodestar upstream PR.
+
 ### Standalone Python harness — DIVERGENCE REPRODUCED
 
 `items/077/demo/spec_vs_lodestar.py` implements `should_extend_payload` in two ways inline (no spec deps):
