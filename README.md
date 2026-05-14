@@ -20,6 +20,7 @@ Every item in the audit (whether or not it produced a divergence): [ITEM_TOC.md]
 
 | # | Finding | Split | Mainnet reach |
 |---|---|---|---|
+| [#76](items/076/) | surface scan of the 28+ fork-choice Gloas modifications — high-risk area, dedicated multi-item audit recommended; identified is_payload_verified / is_payload_timely / get_ancestor → ForkChoiceNode / is_supporting_vote / should_extend_payload / get_payload_status_tiebreaker / get_attestation_score / record_block_timeliness as the highest-leverage follow-up targets | — | Unknown |
 | [#67](items/067/) | lodestar emits Gloas builder sweep withdrawal with queue-decremented cached balance instead of pre-block builder.balance — empirically confirmed via items/067/demo/spec_vs_lodestar.py; mainnet-reachable post-Glamsterdam by any builder that initiates exit while having pending payments | lodestar (1-vs-5) | mainnet-glamsterdam |
 
 ## Remediated findings
