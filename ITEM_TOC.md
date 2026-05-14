@@ -70,7 +70,7 @@ All items in this audit, sorted by number. For only the items that produced a co
 | [#64](items/064/) | `upgrade_to_gloas` fork-upgrade migration | source-code-reviewed |
 | [#65](items/065/) | `process_proposer_slashing` Gloas modification — `BuilderPendingPayment` voidance | source-code-reviewed |
 | [#66](items/066/) | `apply_pending_deposit` Gloas modifications — 0x03 credentials + builders-registry interaction | source-code-reviewed |
-| [#67](items/067/) | Builder withdrawal flow — `withdraw_balance_to_builder` + `builder_pending_withdrawals` lifecycle | drafting |
+| [#67](items/067/) | Builder withdrawal flow — `state.builder_pending_withdrawals` lifecycle + 0x03 sweep + apply_withdrawals dispatch | source-code-reviewed |
 | [#68](items/068/) | `compute_balance_weighted_selection` triple-call cross-cut audit | drafting |
 | [#69](items/069/) | `DOMAIN_*` constants byte-by-byte cross-client audit | drafting |
 | [#70](items/070/) | `engine_newPayloadV5` schema + V4↔V5 dispatch | drafting |
