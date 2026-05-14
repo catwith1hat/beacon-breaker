@@ -77,3 +77,4 @@ All items in this audit, sorted by number. For only the items that produced a co
 | [#71](items/071/) | `engine_getPayloadV5` builder-vs-self-build dispatch | source-code-reviewed |
 | [#72](items/072/) | PeerDAS custody column selection — runtime usage of the `cgc` field | source-code-reviewed |
 | [#73](items/073/) | `get_data_column_sidecars` construction at Gloas | source-code-reviewed |
+| [#74](items/074/) | `process_voluntary_exit` Gloas builder-exit branch + `process_attestation` builder-payment-weight accumulation | source-code-reviewed |
