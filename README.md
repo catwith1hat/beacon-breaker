@@ -21,7 +21,6 @@ Every item in the audit (whether or not it produced a divergence): [ITEM_TOC.md]
 | # | Finding | Split | Mainnet reach |
 |---|---|---|---|
 | [#41](items/041/) | nimbus encodes the ENR `cgc` field as SSZ uint8 (1 byte always); the spec and the other 5 clients use variable-length BE with leading-zero stripping (`cgc=0` → empty bytes) — wire-format divergence on cgc=0 and silent overflow at cgc≥256 | nimbus (1-vs-5) | D — synthetic state |
-| [#65](items/065/) | TBD — drafting `process_proposer_slashing` Gloas modification audit (Gloas-new side-effect: remove BuilderPendingPayment for the slashed proposal if in 2-epoch window) | — | Unknown |
 | [#66](items/066/) | TBD — drafting `apply_pending_deposit` Gloas modification audit (builders-registry interaction; 0x03 credentials → builder activation vs validator activation) | — | Unknown |
 | [#67](items/067/) | TBD — drafting builder-withdrawal flow audit (0x03 credentials + `withdraw_balance_to_builder` + builder_pending_withdrawals lifecycle; Gloas-new mutation lane separate from 0x01/0x02 withdrawals) | — | Unknown |
 | [#68](items/068/) | TBD — drafting `compute_balance_weighted_selection` triple-call cross-cut audit (used by `compute_proposer_indices`, `compute_ptc`, sync-committee selection; divergence cascades to all 3 consumers) | — | Unknown |
