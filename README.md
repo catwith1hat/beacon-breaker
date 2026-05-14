@@ -6,6 +6,12 @@ An autonomous audit of the Ethereum consensus layer across six production client
 
 ---
 
+## Summary (2026-05-14)
+
+This repository contains an LLM-driven audit of 85 items across the six consensus clients, with a focus on the Glamsterdam fork target. The recent Gloas fork-choice + state-transition cluster (items #67, #76–#85) surfaced nine candidate spec-vs-implementation gaps that may be worth a closer look by client maintainers; three earlier nimbus items (#22, #23, #28) have already been remediated upstream. Each item cites the relevant spec lines and per-client source lines so a reviewer can quickly check the underlying claims; a Python simulator harness at `items/076/demo/` and in-tree vitest demos in `items/067/demo/` and `items/077/demo/` reproduce several of the divergences against real client source. **These are LLM-generated observations against published spec text and have not been independently verified by client teams — please treat them as suggestions to investigate rather than authoritative findings, and reach out via the linked items if anything looks off.**
+
+---
+
 ## Methodology
 
 Each item picks a candidate divergence surface, audits six client source trees in parallel, records hypotheses + findings, and where source review surfaces a candidate divergence, runs the corresponding EF state-test fixtures across the wired clients (prysm, lighthouse, lodestar, grandine; teku and nimbus via internal CI).
@@ -40,19 +46,22 @@ Every item in the audit (whether or not it produced a divergence): [ITEM_TOC.md]
 
 ## Cross-cutting observations
 
-**0 confirmed Pectra or Fulu mainnet divergences across 56 finalized items.** All six clients have run Fulu mainnet for 5+ months without observed consensus divergence. The audit has driven all three identified Gloas-activation divergences upstream (items #22, #23 fixed in nimbus PR #8440; the prior lighthouse Pattern M ePBS cohort closed under `unstable` HEAD `1a6863118`); only the synthetic-state ENR `cgc` encoding divergence in item #41 remains. Items #57–#62 are open drafts (hypotheses formed; source review pending).
+**No confirmed Pectra or Fulu mainnet divergences identified.** All six clients have run Fulu mainnet for 5+ months without observed consensus divergence in the surfaces the audit examined. Forward-looking items targeting Glamsterdam are surfaced as suggestions for client teams to review.
 
-**Nimbus PR #4513 → PR #4788 revert window** ([#22](items/022/), [#23](items/023/) — both remediated): both Gloas divergences shared the same root cause. PR #4513 added `Modified` Gloas sections to `has_compounding_withdrawal_credential` and `get_pending_balance_to_withdraw`; PR #4788 removed them when builders became a separate `state.builders` registry. Nimbus shipped the intermediate v1.6.0-beta.0 code and did not roll back; fixed upstream in nimbus PR [#8440](https://github.com/status-im/nimbus-eth2/pull/8440) (commit `550c7a3f0`, 2026-05-14).
+**Gloas fork-choice cluster (items #67, #76–#85).** A focused review of the Gloas (Glamsterdam CL) fork-choice and state-transition surfaces produced nine candidate spec-vs-implementation gaps documented in items #67 and #77–#84. Item #76 indexes the surface scan; #85 documents `upgrade_to_gloas` as cross-client conformant. Findings cluster around three patterns: spec lag relative to recent consensus-specs revisions, missing payload-status awareness on the Gloas FULL/EMPTY/PENDING variant model, and partial implementation of the PTC-timeliness equivocation-suppression branch in `should_apply_proposer_boost`. Resolution options are spelled out per item.
 
-**Lighthouse EIP-7732 ePBS cohort closed under `unstable`.** The prior recheck flagged six lighthouse-only ePBS gaps (items #7, #9, #12, #13, #14, #19, plus #15 V5). All vacated under the per-client Glamsterdam branches (lighthouse + nimbus `unstable`, prysm `EIP-8061`, teku `glamsterdam-devnet-2`, grandine `glamsterdam-devnet-3`). See [items/028/README.md](items/028/README.md) for the full pattern catalogue (A–II).
+**Nimbus PR #4513 → PR #4788 revert window** ([#22](items/022/), [#23](items/023/) — both remediated): both Gloas divergences shared the same root cause. PR #4513 added `Modified` Gloas sections to `has_compounding_withdrawal_credential` and `get_pending_balance_to_withdraw`; PR #4788 removed them when builders became a separate `state.builders` registry. Nimbus shipped the intermediate v1.6.0-beta.0 code and did not roll back; the fix landed upstream in nimbus PR [#8440](https://github.com/status-im/nimbus-eth2/pull/8440) (commit `550c7a3f0`, 2026-05-14).
+
+**Lighthouse EIP-7732 ePBS cohort closed under `unstable`.** An earlier recheck flagged six lighthouse-only ePBS gaps (items #7, #9, #12, #13, #14, #19, plus #15 V5). All vacated under the per-client Glamsterdam branches (lighthouse + nimbus `unstable`, prysm `EIP-8061`, teku `glamsterdam-devnet-2`, grandine `glamsterdam-devnet-3`). See [items/028/README.md](items/028/README.md) for the full pattern catalogue (A–II).
 
 ---
 
 ## Repository layout
 
 ```
-items/NNN/        per-item audit (62 items; #57–#62 in drafting)
+items/NNN/        per-item audit (85 items as of 2026-05-14)
   README.md       Jekyll-style front matter + hypotheses, findings, cross-refs
+  demo/           optional empirical artefacts (Python harnesses, in-tree client tests)
 ITEM_TOC.md       auto-regenerated flat table of every item
 WORKLOG.md        sequential audit log
 METHODOLOGY.md    audit loop and prompt templates
