@@ -60,7 +60,7 @@ All items in this audit, sorted by number. For only the items that produced a co
 | [#54](items/054/) | `DataColumnSidecar` SSZ container — Fulu 6-field + Gloas 5-field reshape (EIP-7732); Pattern HH depth baking; Pattern M cohort extends | source-code-reviewed |
 | [#55](items/055/) | `MIN_EPOCHS_FOR_DATA_COLUMN_SIDECARS_REQUESTS` retention period — Fulu-NEW operator-tunable; Pattern AA + FF carry-forward; no Pattern HH baking | source-code-reviewed |
 | [#56](items/056/) | Fulu + Gloas fork choice modifications — `is_data_available` (PeerDAS-modified at Fulu, again modified at Gloas) + `on_block` (DA delayed to `on_execution_payload_envelope` at Gloas) — Pattern II fork-choice DA architecture divergence | source-code-reviewed |
-| [#57](items/057/) | `process_builder_pending_payments` (Gloas-new epoch helper, EIP-7732 ePBS settlement) | drafting |
+| [#57](items/057/) | `process_builder_pending_payments` (Gloas-new epoch helper, EIP-7732 ePBS settlement) | source-code-reviewed |
 | [#58](items/058/) | `process_execution_payload_bid` (Gloas-new block-time bid validation, EIP-7732 ePBS) | drafting |
 | [#59](items/059/) | `verify_execution_payload_envelope` + `on_execution_payload_envelope` (Gloas fork-choice envelope verification) | drafting |
 | [#60](items/060/) | Payload Timeliness Committee (PTC) selection + `is_valid_indexed_payload_attestation` | drafting |

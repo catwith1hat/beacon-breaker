@@ -21,7 +21,6 @@ Every item in the audit (whether or not it produced a divergence): [ITEM_TOC.md]
 | # | Finding | Split | Mainnet reach |
 |---|---|---|---|
 | [#41](items/041/) | nimbus encodes the ENR `cgc` field as SSZ uint8 (1 byte always); the spec and the other 5 clients use variable-length BE with leading-zero stripping (`cgc=0` → empty bytes) — wire-format divergence on cgc=0 and silent overflow at cgc≥256 | nimbus (1-vs-5) | D — synthetic state |
-| [#57](items/057/) | TBD — drafting `process_builder_pending_payments` Gloas-new epoch helper audit; closes the ePBS bid → attestation → settle → withdraw lifecycle on the settlement side | — | Unknown |
 | [#58](items/058/) | TBD — drafting `process_execution_payload_bid` Gloas-new block-time bid-validation audit (predicate body, beyond item #19's dispatcher-level coverage) | — | Unknown |
 | [#59](items/059/) | TBD — drafting `verify_execution_payload_envelope` + `on_execution_payload_envelope` Gloas-new fork-choice-time envelope verification audit | — | Unknown |
 | [#60](items/060/) | TBD — drafting Payload Timeliness Committee (PTC) selection + `is_valid_indexed_payload_attestation` Gloas-new audit | — | Unknown |
