@@ -1,11 +1,11 @@
 ---
 status: fuzzed
-impact: mainnet-glamsterdam
+impact: synthetic-state
 last_update: 2026-05-14
 builds_on: [22, 23, 28, 57]
 eips: [EIP-7732]
 splits: [lodestar]
-# main_md_summary: lodestar emits Gloas builder sweep withdrawal with queue-decremented cached balance instead of pre-block builder.balance — empirically confirmed via items/067/demo/spec_vs_lodestar.py; mainnet-reachable post-Glamsterdam by any builder that initiates exit while having pending payments
+# main_md_summary: lodestar emits Gloas builder sweep withdrawal with queue-decremented cached balance instead of pre-block builder.balance; only surfaces on a hand-built or fuzz-generated state since process_voluntary_exit precondition blocks the queue+sweep collision in honest block production
 prysm_version: v7.1.3-rc.3-209-g0f25a41868
 lighthouse_version: v8.1.2-185-g1a6863118
 teku_version: 26.4.0-127-g70ad00cbaf
@@ -26,7 +26,7 @@ Gloas introduces a separate withdrawal lane for builders (0x03 credentials). `st
 
 This produces a different `state.payload_expected_withdrawals` (and therefore different state root, different EL block-hash) for the same input state. Both spec semantics and lodestar's caching converge to `balance = 0` after `apply_withdrawals`, but the **emitted Withdrawal records (and consequently the EL-minted amounts) differ**.
 
-The spec note at `beacon-chain.md:1357-1369` acknowledges the broader supply-asymmetry concern (the immediate-deduct design choice that prevents queue-application drift) but does not address the queue+sweep collision case lodestar's caching arguably mitigates. Lodestar may have intentionally diverged to preserve a stronger supply invariant; alternatively the cache is a bug. **Empirical verification recommended**: construct a fixture where a single builder has both pending queue entries and sweep eligibility, run all 6 clients, byte-diff `state.payload_expected_withdrawals`. If lodestar diverges, this elevates to `mainnet-proposer` (a builder triggers the divergence by initiating exit while having queued payments).
+The spec note at `beacon-chain.md:1357-1369` acknowledges the broader supply-asymmetry concern (the immediate-deduct design choice that prevents queue-application drift) but does not address the queue+sweep collision case lodestar's caching arguably mitigates. Lodestar may have intentionally diverged to preserve a stronger supply invariant; alternatively the cache is a bug. The colliding state has been constructed empirically (see the demo runs below); however, honest block production cannot reach it (see the Reachability section), so this is impact `synthetic-state` rather than mainnet-reachable.
 
 All other aspects of the builder withdrawal flow are spec-conformant across all 6 clients:
 - `process_withdrawals` early-return on parent-EMPTY (`latest_block_hash != latest_execution_payload_bid.block_hash`).
@@ -464,14 +464,7 @@ So lodestar's caching **fixes the supply asymmetry** that the spec's literal sem
 
 The spec note at `beacon-chain.md:1357-1369` acknowledges supply asymmetry from immediate-deduct vs deferred-deduct semantics, but does not address this queue+sweep collision case. Whether the spec's literal semantics or lodestar's mitigation is "correct" is a spec-discussion question; cross-client consensus is what matters, and **5 of 6 clients follow spec literally**.
 
-**Reachability**: A builder with both queue entries and sweep eligibility requires:
-1. Builder X has won past bids → `settle_builder_payment` appended entries to `builder_pending_withdrawals` referencing X.
-2. Builder X initiated exit (`initiate_builder_exit`) → `withdrawable_epoch = current + MIN_BUILDER_WITHDRAWABILITY_DELAY`.
-3. After the delay, X is sweep-eligible while queue still has entries for X (queue drains ≤ 15 entries/slot via `MAX_WITHDRAWALS_PER_PAYLOAD - 1`).
-
-If the queue contains >15 entries at the moment X becomes sweep-eligible, OR if X has multiple queue entries that aren't all in the head 15-slot drain, the collision fires. Reachable on Gloas-active mainnet via normal builder lifecycle.
-
-**Empirical verification recommended** before promoting to `mainnet-proposer` impact.
+**Reachability**: see the dedicated "Reachability" section below. Short version: the colliding state cannot arise from honest block production because `process_voluntary_exit:1647` requires both `builder_pending_withdrawals` and `builder_pending_payments` to be empty for X at exit time, and no post-exit path can add entries for X.
 
 ### grandine
 
@@ -573,23 +566,50 @@ Same setup as T1.1 but `builder_pending_withdrawals = []`. Only sweep fires. Bot
 - **T2.1 (EL effect on devnet).** End-to-end devnet test: lodestar proposes a block triggering the divergence; observe whether EL accepts and what amount is minted. Cross-CL block import.
 - **T2.2 (EF fixture corpus).** Grep `vendor/consensus-specs/tests/.../gloas/.../withdrawals/...` for fixtures that exercise the collision case. The pyspec test file `vendor/consensus-specs/tests/core/pyspec/eth_consensus_specs/test/gloas/block_processing/test_process_withdrawals.py` (reviewed 2026-05-14) does **not** cover the queue+sweep collision — none of the 25+ test cases construct a single builder that simultaneously has pending queue entries AND is sweep-eligible.
 
-## Mainnet reachability
+## Reachability
 
-The divergence triggers when a single builder simultaneously has (a) entries in `state.builder_pending_withdrawals` AND (b) is sweep-eligible (`builder.withdrawable_epoch <= current_epoch AND builder.balance > 0`). Mainnet-reachable scenario:
+The divergence triggers when a single builder X simultaneously has (a) entries in `state.builder_pending_withdrawals` AND (b) is sweep-eligible (`builder.withdrawable_epoch <= current_epoch AND builder.balance > 0`).
 
-1. Builder X wins a sequence of past bids. `process_execution_payload_bid` (item #58) accepts each bid; `process_builder_pending_payments` (item #57) rotates them at epoch boundaries; payments that meet quorum get appended to `state.builder_pending_withdrawals` (referencing X). After several epochs of activity, the queue may contain multiple entries for X.
-2. Builder X calls `initiate_builder_exit`. This sets `state.builders[X].withdrawable_epoch = current_epoch + MIN_BUILDER_WITHDRAWABILITY_DELAY`.
-3. After the delay elapses (MIN_BUILDER_WITHDRAWABILITY_DELAY epochs), X is sweep-eligible.
-4. **Critical condition**: the queue has not fully drained before sweep eligibility kicks in. The queue drains at `MAX_WITHDRAWALS_PER_PAYLOAD - 1 = 15` per slot. If multiple builders had queue entries (which is normal during high block-building activity), X's entries may still be in the queue when X becomes sweep-eligible.
-5. The first `process_withdrawals` after sweep eligibility triggers the divergence: lodestar emits a sweep `Withdrawal.amount` smaller than spec by `sum(queue_drain_amounts_for_X)`.
+Condition (b) requires X to have called `initiate_builder_exit` at least `MIN_BUILDER_WITHDRAWABILITY_DELAY = 64` epochs ago. `initiate_builder_exit` (`beacon-chain.md:892`) is the only path that sets `withdrawable_epoch` to a non-`FAR_FUTURE_EPOCH` value, and it is called from exactly one site: `process_voluntary_exit` (`beacon-chain.md:1652`). There is no builder-slashing path.
 
-**Triggering actor**: builder X itself, by initiating exit while having pending payments. No special permissions required beyond being a builder.
+### `process_voluntary_exit` clears both lists for X at exit time
 
-**Frequency**: any time a builder exits with queue backlog. Realistic on a Gloas-active mainnet with active block-building competition.
+```python
+# beacon-chain.md:1641-1652
+if is_builder_index(voluntary_exit.validator_index):
+    builder_index = convert_validator_index_to_builder_index(voluntary_exit.validator_index)
+    assert is_active_builder(state, builder_index)
+    # Only exit builder if it has no pending withdrawals in the queue
+    assert get_pending_balance_to_withdraw_for_builder(state, builder_index) == 0
+    ...
+    initiate_builder_exit(state, builder_index)
+```
 
-**Consequence**: lodestar nodes diverge from the rest of the network on the first such builder exit. Block import fails (state-root mismatch); EL block hash differs; the divergent chain cannot heal without either lodestar reverting to spec-literal semantics or all other clients adopting lodestar's caching.
+`get_pending_balance_to_withdraw_for_builder` (`beacon-chain.md:578-586`) sums across **both** `state.builder_pending_withdrawals` **and** `state.builder_pending_payments` for X. So at the moment X exits, both lists are empty for X.
 
-**Pre-Glamsterdam mainnet impact**: zero. Gloas (the CL half of Glamsterdam) is currently `GLOAS_FORK_EPOCH = FAR_FUTURE_EPOCH` on mainnet. The divergence is only triggerable on Gloas-active testnets and on mainnet **after** Glamsterdam fork activation. Hence the impact classification `mainnet-glamsterdam`: matches the pattern used for items #22 + #23 + #28 (also Gloas-activation divergences, all remediated upstream).
+### No post-exit path can add entries for X
+
+All writes to `state.builder_pending_withdrawals` in the spec:
+
+1. **`settle_builder_payment`** (`beacon-chain.md:908`) — copies a `BuilderPendingPayment.withdrawal` from `state.builder_pending_payments`. Source: payment was added via `process_execution_payload_bid`, which asserts `is_active_builder(state, builder_index)` at line 1439. After exit, X is not active → no new payments for X enter the buffer → no settle deposits a withdrawal for X.
+2. **`process_builder_pending_payments`** (`beacon-chain.md:1062`) at epoch boundary — same source as (1).
+3. **`apply_parent_execution_payload`** late-append (`beacon-chain.md:1141-1144`) — fires when `parent_bid.value > 0 AND parent_epoch < get_previous_epoch(state)`. Appends `BuilderPendingWithdrawal(builder_index=parent_bid.builder_index)`. For this to fire with X, `state.latest_execution_payload_bid.builder_index` must still be X when block N+1's `apply_parent_execution_payload` runs, AND that bid must be more than one epoch old.
+
+`process_execution_payload_bid:1473` writes `state.latest_execution_payload_bid = bid` **unconditionally** every block (including for `BUILDER_INDEX_SELF_BUILD`). So any block after X's exit overwrites X's bid in `latest_execution_payload_bid`. After exit, no further `process_execution_payload_bid` can write X's bid (assert at line 1439). Therefore the only way (3) fires for X post-exit is if **zero blocks have been produced since X's last pre-exit bid**, i.e., a 32+-slot stall.
+
+The exit block itself cannot carry X's own bid: `process_execution_payload_bid` runs before `process_voluntary_exit` in `process_block` ordering. If X's bid is processed in the exit block, line 1459 writes a `BuilderPendingPayment` for X into `state.builder_pending_payments`, immediately making `get_pending_balance_to_withdraw_for_builder(state, X) > 0` and failing the exit assertion at line 1647.
+
+Likewise, if X's bid was in block E-1 (any slot in the current or previous epoch), the exit block's `process_parent_execution_payload` calls `settle_builder_payment` for X's entry, appending X's withdrawal to `state.builder_pending_withdrawals` *before* `process_voluntary_exit` runs — again failing the assertion.
+
+### The 32+-slot stall edge case is self-blocking
+
+The only remaining way for `state.latest_execution_payload_bid.builder_index == X` to persist into the post-exit window is if 32+ consecutive empty slots pass between X's last bid and the next block. In that case, the late-append at line 1144 **itself fires for X** in that next block (because parent_epoch < previous_epoch and parent_bid.value > 0), placing X's withdrawal in `state.builder_pending_withdrawals`. That entry must then drain before X can exit, by which time `state.latest_execution_payload_bid` has been overwritten in every block since. A 64-epoch stall (the full sweep-eligibility countdown) would lose finality long before sweep eligibility arrives.
+
+### Verdict: synthetic-state
+
+Honest block production cannot construct the queue+sweep collision for a single builder. The colliding state can be hand-built or fuzz-generated and a state-transition fixture against it would surface the lodestar divergence — that is the `synthetic-state` impact tier. The precondition at `process_voluntary_exit:1647` is the upstream guard that prevents the collision from arising during normal operation.
+
+The lodestar cache-read remains a real cross-client conformance issue against any constructed fixture exercising the collision, and a lodestar maintainer may still wish to revert it to spec-literal semantics to avoid future fuzz-corpus failures. But it does not represent a reachable mainnet consensus split.
 
 ## Conclusion
 
@@ -603,7 +623,7 @@ The post-`apply_withdrawals` state converges to `builder.balance = 0` in both se
 
 Lodestar's caching arguably **fixes a supply-asymmetry bug** in the spec's literal semantics: spec mints `pre_balance + queue_drain_total` to the EL (via the queue + sweep withdrawal emissions) while only decrementing `pre_balance` on the CL — a net `+queue_drain_total` supply inflation. Lodestar's behavior preserves the supply invariant. However, lodestar diverges from 5 spec-conformant clients, which is a worse outcome for consensus stability.
 
-**Verdict: impact mainnet-glamsterdam.** Confirmed divergence; mainnet-reachable by any builder that initiates exit while having pending payments.
+**Verdict: impact synthetic-state.** Confirmed divergence on a constructed colliding state; honest block production cannot reach the collision because `process_voluntary_exit:1647` requires `get_pending_balance_to_withdraw_for_builder == 0` (sums both queue + payments) at exit time and no post-exit path can add entries for the exiting builder. See the **Reachability** section for the full trace-through.
 
 Resolution options:
 1. **Lodestar reverts** to spec-literal semantics: change `getBuildersSweepWithdrawals` to read `builder.balance` directly from state (not from the cache). This re-introduces the supply-asymmetry but preserves cross-client consensus. Recommended as the immediate fix.
