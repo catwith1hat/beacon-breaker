@@ -76,4 +76,4 @@ All items in this audit, sorted by number. For only the items that produced a co
 | [#70](items/070/) | `engine_newPayloadV5` schema + V4↔V5 dispatch | source-code-reviewed |
 | [#71](items/071/) | `engine_getPayloadV5` builder-vs-self-build dispatch | source-code-reviewed |
 | [#72](items/072/) | PeerDAS custody column selection — runtime usage of the `cgc` field | source-code-reviewed |
-| [#73](items/073/) | `get_data_column_sidecars` construction — column-from-block + KZG inclusion proofs | drafting |
+| [#73](items/073/) | `get_data_column_sidecars` construction at Gloas | source-code-reviewed |
