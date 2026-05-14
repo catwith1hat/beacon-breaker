@@ -78,3 +78,4 @@ All items in this audit, sorted by number. For only the items that produced a co
 | [#72](items/072/) | PeerDAS custody column selection — runtime usage of the `cgc` field | source-code-reviewed |
 | [#73](items/073/) | `get_data_column_sidecars` construction at Gloas | source-code-reviewed |
 | [#74](items/074/) | `process_voluntary_exit` Gloas builder-exit branch + `process_attestation` builder-payment-weight accumulation | source-code-reviewed |
+| [#75](items/075/) | Gloas modifications survey — `process_slot`, `get_attestation_participation_flag_indices`, `compute_proposer_indices`, `get_next_sync_committee_indices` | source-code-reviewed |
