@@ -65,4 +65,4 @@ All items in this audit, sorted by number. For only the items that produced a co
 | [#59](items/059/) | `verify_execution_payload_envelope` + `on_execution_payload_envelope` (Gloas fork-choice envelope verification, EIP-7732 ePBS) | source-code-reviewed |
 | [#60](items/060/) | Payload Timeliness Committee (PTC) selection + `process_payload_attestation` + `is_valid_indexed_payload_attestation` | source-code-reviewed |
 | [#61](items/061/) | `compute_activation_exit_epoch` foundational primitive | source-code-reviewed |
-| [#62](items/062/) | `requestsHash` cross-client byte-for-byte Merkleization equivalence (EIP-7685, CL-EL boundary) | drafting |
+| [#62](items/062/) | `requestsHash` cross-client byte-for-byte Merkleization equivalence (EIP-7685, CL-EL boundary) | source-code-reviewed |
