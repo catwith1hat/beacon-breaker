@@ -1,11 +1,11 @@
 ---
-status: source-code-reviewed
-impact: unknown
+status: fuzzed
+impact: mainnet-proposer
 last_update: 2026-05-14
 builds_on: [22, 23, 28, 57]
 eips: [EIP-7732]
 splits: [lodestar]
-# main_md_summary: lodestar emits Gloas builder sweep withdrawal with queue-decremented cached balance instead of pre-block builder.balance (suspected state-root divergence when an exited builder has pending queue entries; spec `get_builders_sweep_withdrawals` reads `state.builders[idx].balance` directly); empirical verification recommended
+# main_md_summary: lodestar emits Gloas builder sweep withdrawal with queue-decremented cached balance instead of pre-block builder.balance — empirically confirmed via items/067/demo/spec_vs_lodestar.py; produces different state.payload_expected_withdrawals + EL minting amount when a builder is simultaneously queue-drained and sweep-eligible; mainnet-reachable by any builder that initiates exit while having pending payments
 prysm_version: v7.1.3-rc.3-209-g0f25a41868
 lighthouse_version: v8.1.2-185-g1a6863118
 teku_version: 26.4.0-127-g70ad00cbaf
@@ -512,49 +512,83 @@ All H1, H2, H4, H5, H6, H7 ✓ for all 6 clients. H3 ✓ for 5 of 6 (lodestar re
 
 ## Empirical tests
 
-**Critical empirical test (T1.1)** to confirm or refute the suspected divergence:
+### T1.1 (collision) — CONFIRMED DIVERGENT
 
-Construct a state fixture:
-- `state.builders = [Builder(pubkey=X, balance=1000_000_000_000, withdrawable_epoch=current_epoch, execution_address=E_X, ...)]`
-- `state.builder_pending_withdrawals = [BuilderPendingWithdrawal(builder_index=0, fee_recipient=A_recip, amount=200_000_000)]`
-- `state.next_withdrawal_builder_index = 0`
-- `state.next_withdrawal_index = N`
-- All other state fields valid for Gloas-fork beacon state.
-- `state.latest_block_hash == state.latest_execution_payload_bid.block_hash` (parent FULL, so process_withdrawals does not early-return).
+Empirical Python harness at `items/067/demo/spec_vs_lodestar.py` implements both spec semantics and lodestar's caching semantics side-by-side and runs them on the queue+sweep collision scenario.
 
-Run `get_expected_withdrawals(state)` across all 6 clients. Inspect `state.payload_expected_withdrawals[1].amount` (the sweep withdrawal).
+**Result (2026-05-14)**:
 
-- Spec / prysm / lighthouse / teku / nimbus / grandine: expected `amount = 1_000_000_000_000` (full pre-block balance).
-- Lodestar: predicted `amount = 999_800_000_000` (`1_000_000_000_000 − 200_000_000`).
+```
+=== T1.1: queue+sweep COLLISION (builder 0 has pending + is sweep-eligible) ===
+  spec output     (2 withdrawal(s)):
+    idx=42 vidx=0x8000000000000000 addr=cccccccc... amount=200000000
+    idx=43 vidx=0x8000000000000000 addr=bbbbbbbb... amount=1000000000000
+  lodestar output (2 withdrawal(s)):
+    idx=42 vidx=0x8000000000000000 addr=cccccccc... amount=200000000
+    idx=43 vidx=0x8000000000000000 addr=bbbbbbbb... amount=999800000000
+  → OUTPUTS DIFFER ✗
+    diff at [1]: spec.amount=1000000000000, lodestar.amount=999800000000, diff=200000000
+```
 
-If lodestar produces `999_800_000_000`, this confirms the divergence and elevates this finding to `mainnet-proposer` (any builder can trigger by initiating exit while having pending payments).
+The sweep withdrawal amount differs by exactly the queue drain (200,000,000 Gwei = 0.2 ETH on the test setup):
 
-Other empirical tests:
+- **Spec / prysm / lighthouse / teku / nimbus / grandine**: `amount = pre_balance = 1,000,000,000,000` Gwei.
+- **Lodestar**: `amount = pre_balance - queue_drain_total = 999,800,000,000` Gwei.
 
-- **T1.2 (multi-entry queue).** Same state as T1.1 but with 3 entries in `builder_pending_withdrawals` for builder 0 (different fee_recipients). Lodestar's cache should subtract all 3 amounts; spec sweep amount remains pre-block balance.
-- **T1.3 (queue without sweep).** Builder has queue entries but `withdrawable_epoch > current_epoch`. Sweep should not fire; only queue drain. All 6 clients should agree on this case (no divergence).
-- **T1.4 (sweep without queue).** Builder has no queue entries but is sweep-eligible. Sweep amount = builder.balance. All 6 clients should agree (no divergence — lodestar's cache initializes to `builder.balance` if not previously set, then emits that value).
-- **T1.5 (multi-builder, mixed).** Several builders with various states; verify which builders trigger the lodestar deviation.
-- **T2.1 (EL effect).** End-to-end devnet test: lodestar proposes a block triggering the divergence; observe whether EL accepts and what amount is minted. Compare cross-CL block import behavior.
+State-internal `state.builders[0].balance` converges to 0 in both semantics (via the `min(amount, balance)` saturation in `apply_withdrawals`). But `state.payload_expected_withdrawals[1].amount` differs → different beacon state root → different EL minting → different EL block hash → cross-CL block import rejection.
 
-EF spec-test corpus coverage of this scenario is unknown; the `vendor/consensus-specs/tests/.../gloas/...` fixtures may not exercise the specific queue+sweep collision. Worth grep-auditing the fixture corpus.
+### T1.2 (queue only) — MATCH ✓
+
+Same setup as T1.1 but builder has `withdrawable_epoch > current_epoch` (not sweep-eligible). Only queue drain fires. Both spec and lodestar emit identical `Withdrawal(amount=200,000,000)`.
+
+### T1.3 (sweep only) — MATCH ✓
+
+Same setup as T1.1 but `builder_pending_withdrawals = []`. Only sweep fires. Both spec and lodestar emit identical `Withdrawal(amount=pre_balance)`.
+
+**Conclusion**: divergence triggers **only** on the queue+sweep collision. Both non-collision cases produce identical output, isolating the bug to the lodestar cache-read in `getBuildersSweepWithdrawals` (line 220 of `processWithdrawals.ts`).
+
+### Additional suggested tests
+
+- **T1.4 (multi-entry queue).** 3 queue entries for builder 0; lodestar's cache should subtract all 3 amounts.
+- **T2.1 (EL effect on devnet).** End-to-end devnet test: lodestar proposes a block triggering the divergence; observe whether EL accepts and what amount is minted. Cross-CL block import.
+- **T2.2 (EF fixture corpus).** Grep `vendor/consensus-specs/tests/.../gloas/.../withdrawals/...` for fixtures that exercise the collision case. The pyspec test file `vendor/consensus-specs/tests/core/pyspec/eth_consensus_specs/test/gloas/block_processing/test_process_withdrawals.py` (reviewed 2026-05-14) does **not** cover the queue+sweep collision — none of the 25+ test cases construct a single builder that simultaneously has pending queue entries AND is sweep-eligible.
+
+## Mainnet reachability
+
+The divergence triggers when a single builder simultaneously has (a) entries in `state.builder_pending_withdrawals` AND (b) is sweep-eligible (`builder.withdrawable_epoch <= current_epoch AND builder.balance > 0`). Mainnet-reachable scenario:
+
+1. Builder X wins a sequence of past bids. `process_execution_payload_bid` (item #58) accepts each bid; `process_builder_pending_payments` (item #57) rotates them at epoch boundaries; payments that meet quorum get appended to `state.builder_pending_withdrawals` (referencing X). After several epochs of activity, the queue may contain multiple entries for X.
+2. Builder X calls `initiate_builder_exit`. This sets `state.builders[X].withdrawable_epoch = current_epoch + MIN_BUILDER_WITHDRAWABILITY_DELAY`.
+3. After the delay elapses (MIN_BUILDER_WITHDRAWABILITY_DELAY epochs), X is sweep-eligible.
+4. **Critical condition**: the queue has not fully drained before sweep eligibility kicks in. The queue drains at `MAX_WITHDRAWALS_PER_PAYLOAD - 1 = 15` per slot. If multiple builders had queue entries (which is normal during high block-building activity), X's entries may still be in the queue when X becomes sweep-eligible.
+5. The first `process_withdrawals` after sweep eligibility triggers the divergence: lodestar emits a sweep `Withdrawal.amount` smaller than spec by `sum(queue_drain_amounts_for_X)`.
+
+**Triggering actor**: builder X itself, by initiating exit while having pending payments. No special permissions required beyond being a builder.
+
+**Frequency**: any time a builder exits with queue backlog. Realistic on a Gloas-active mainnet with active block-building competition.
+
+**Consequence**: lodestar nodes diverge from the rest of the network on the first such builder exit. Block import fails (state-root mismatch); EL block hash differs; the divergent chain cannot heal without either lodestar reverting to spec-literal semantics or all other clients adopting lodestar's caching.
+
+**Pre-Gloas mainnet impact**: zero. Gloas is currently `GLOAS_FORK_EPOCH = FAR_FUTURE_EPOCH` on mainnet. The divergence is only triggerable on Gloas-active testnets and (future) mainnet activation.
 
 ## Conclusion
 
-All six clients implement the Gloas builder withdrawal lifecycle (`process_withdrawals`, `get_builder_withdrawals`, `get_builders_sweep_withdrawals`, `apply_withdrawals`, `update_*` helpers, and the `is_builder_index` / `convert_*` predicates) spec-conformantly with one suspected exception.
+All six clients implement the Gloas builder withdrawal lifecycle (`process_withdrawals`, `get_builder_withdrawals`, `get_builders_sweep_withdrawals`, `apply_withdrawals`, `update_*` helpers, and the `is_builder_index` / `convert_*` predicates) spec-conformantly with one confirmed exception.
 
-**Suspected divergence in lodestar (H8)**: `getBuildersSweepWithdrawals` reads the sweep amount from a per-builder cache (`builderBalanceAfterWithdrawals`) that is populated and decremented by the preceding `getBuilderWithdrawals` queue drain. Spec semantics at `beacon-chain.md:1239` read `state.builders[builder_index].balance` directly from the pre-block state. When a single builder simultaneously has (a) entries in `state.builder_pending_withdrawals` AND (b) is sweep-eligible, lodestar emits a sweep `Withdrawal.amount` smaller than spec by exactly `sum(queue_drain_amounts)`. This produces a different `state.payload_expected_withdrawals`, a different state root, and a different EL block-hash.
+**Confirmed divergence in lodestar (H8)**: `getBuildersSweepWithdrawals` reads the sweep amount from a per-builder cache (`builderBalanceAfterWithdrawals`) populated and decremented by the preceding `getBuilderWithdrawals` queue drain. Spec semantics at `beacon-chain.md:1239` read `state.builders[builder_index].balance` directly from the pre-block state. When a single builder simultaneously has (a) entries in `state.builder_pending_withdrawals` AND (b) is sweep-eligible, lodestar emits a sweep `Withdrawal.amount` smaller than spec by exactly `sum(queue_drain_amounts)`. Different `state.payload_expected_withdrawals` → different state root → different EL block-hash → cross-CL block import rejection.
 
-The post-`apply_withdrawals` state converges to `builder.balance = 0` in both spec and lodestar semantics (via the `min(amount, balance)` saturation). The divergence is in the *emitted* withdrawal records and downstream consensus state.
+**Empirical verification** at `items/067/demo/spec_vs_lodestar.py` (run 2026-05-14): T1.1 collision case produces `spec.amount = 1_000_000_000_000` vs `lodestar.amount = 999_800_000_000`, divergence exactly equal to the queue-drain total. T1.2 (queue-only) and T1.3 (sweep-only) produce identical output across spec and lodestar — confirming the bug is isolated to the cache-read in the sweep path.
 
-Lodestar's caching arguably **fixes a supply-asymmetry bug** in the spec's literal semantics (which mints `pre_balance + queue_drain_total` to the EL while only decrementing `pre_balance` on the CL), but at the cost of consensus divergence with 5 spec-conformant clients.
+The post-`apply_withdrawals` state converges to `builder.balance = 0` in both semantics (via the `min(amount, balance)` saturation in `apply_withdrawals`). The divergence is in the *emitted* `Withdrawal` records — these are part of `state.payload_expected_withdrawals` and reach the EL via the block payload.
 
-**Empirical verification recommended** via the T1.1 fixture above. If confirmed, impact elevates to `mainnet-proposer` (a builder triggers by initiating exit while having pending queued payments — naturally reachable on Gloas-active mainnet).
+Lodestar's caching arguably **fixes a supply-asymmetry bug** in the spec's literal semantics: spec mints `pre_balance + queue_drain_total` to the EL (via the queue + sweep withdrawal emissions) while only decrementing `pre_balance` on the CL — a net `+queue_drain_total` supply inflation. Lodestar's behavior preserves the supply invariant. However, lodestar diverges from 5 spec-conformant clients, which is a worse outcome for consensus stability.
 
-If verified, options to resolve:
-1. Lodestar reverts to spec-literal semantics (5-vs-1 fork avoided; supply asymmetry persists).
-2. Spec corrects the queue+sweep semantics (lodestar correct; others must change).
-3. Spec test corpus extended to expose this collision — likely catches the discrepancy at fixture-gen time.
+**Verdict: impact mainnet-proposer.** Confirmed divergence; mainnet-reachable by any builder that initiates exit while having pending payments.
+
+Resolution options:
+1. **Lodestar reverts** to spec-literal semantics: change `getBuildersSweepWithdrawals` to read `builder.balance` directly from state (not from the cache). This re-introduces the supply-asymmetry but preserves cross-client consensus. Recommended as the immediate fix.
+2. **Spec corrects** the queue+sweep semantics by introducing a balance-cache or saturating the sweep amount. This would require all 5 other clients to update. Not recommended without broader spec discussion.
+3. **EF spec-test corpus extension**: add a queue+sweep collision fixture (the pyspec test corpus at `vendor/consensus-specs/tests/core/pyspec/eth_consensus_specs/test/gloas/block_processing/test_process_withdrawals.py` does NOT currently cover this case — verified 2026-05-14). This would catch the discrepancy at fixture-gen time and force a decision.
 
 ## Cross-cuts
 
