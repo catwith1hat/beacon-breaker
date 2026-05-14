@@ -21,7 +21,6 @@ Every item in the audit (whether or not it produced a divergence): [ITEM_TOC.md]
 | # | Finding | Split | Mainnet reach |
 |---|---|---|---|
 | [#41](items/041/) | nimbus encodes the ENR `cgc` field as SSZ uint8 (1 byte always); the spec and the other 5 clients use variable-length BE with leading-zero stripping (`cgc=0` → empty bytes) — wire-format divergence on cgc=0 and silent overflow at cgc≥256 | nimbus (1-vs-5) | D — synthetic state |
-| [#63](items/063/) | TBD — drafting `process_ptc_window` epoch-helper audit (sibling to item #57's `process_builder_pending_payments`; rotates `state.ptc_window` at epoch boundary) | — | Unknown |
 | [#64](items/064/) | TBD — drafting `upgrade_to_gloas` fork-upgrade migration audit (Electra → Gloas state migration; big-bang field initialization including builders registry, ptc_window, builder_pending_*; nimbus PR #4513 → #4788 revert window history suggests highest-risk area) | — | Unknown |
 | [#65](items/065/) | TBD — drafting `process_proposer_slashing` Gloas modification audit (Gloas-new side-effect: remove BuilderPendingPayment for the slashed proposal if in 2-epoch window) | — | Unknown |
 | [#66](items/066/) | TBD — drafting `apply_pending_deposit` Gloas modification audit (builders-registry interaction; 0x03 credentials → builder activation vs validator activation) | — | Unknown |
