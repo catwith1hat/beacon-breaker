@@ -512,9 +512,29 @@ All H1, H2, H4, H5, H6, H7 ✓ for all 6 clients. H3 ✓ for 5 of 6 (lodestar re
 
 ## Empirical tests
 
-### T1.1 (collision) — CONFIRMED DIVERGENT
+### Verification against real lodestar code — CONFIRMED DIVERGENT
 
-Empirical Python harness at `items/067/demo/spec_vs_lodestar.py` implements both spec semantics and lodestar's caching semantics side-by-side and runs them on the queue+sweep collision scenario.
+`items/067/demo/lodestar_intree_test.ts` is a vitest test that exercises the real lodestar `getExpectedWithdrawals` function (imports from `state-transition/src/block/processWithdrawals.js`). Copied into `vendor/lodestar/packages/state-transition/test/unit/block/buildersWeepDivergence.test.ts` and run with `pnpm vitest`:
+
+```
+✓ T1.2 (queue only — no sweep) — no divergence; lodestar matches spec
+✓ T1.3 (sweep only — no queue) — no divergence; lodestar matches spec
+✗ T1.1 (collision) — sweep amount MUST equal pre-block builder.balance
+
+AssertionError: expected 999800000000n to be 1000000000000n
+  test/unit/block/buildersWeepDivergence.test.ts:113
+  expect(expectedWithdrawals[1].amount).toBe(BigInt(builderBalance));
+
+Tests: 1 failed | 2 passed (3)
+```
+
+Real-lodestar verification 2026-05-14. The bug is confirmed in the actual lodestar codebase (not just in a faithful re-implementation): when a builder simultaneously has a queue entry AND is sweep-eligible, the sweep `Withdrawal.amount` emitted by lodestar's `getExpectedWithdrawals` is `pre_balance − queue_drain_total = 999,800,000,000` Gwei instead of spec's `pre_balance = 1,000,000,000,000` Gwei. The diff equals exactly the queue drain. T1.2 (queue-only) and T1.3 (sweep-only) pass — confirming the bug is isolated to the cache-read path in `getBuildersSweepWithdrawals` at `processWithdrawals.ts:220`.
+
+The test is a drop-in for a lodestar upstream PR.
+
+### Standalone Python harness — same result
+
+Earlier (independent of lodestar's TypeScript runtime), `items/067/demo/spec_vs_lodestar.py` reproduced both spec and lodestar semantics inline and produced the same divergence:
 
 **Result (2026-05-14)**:
 
