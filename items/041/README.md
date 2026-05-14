@@ -1,11 +1,9 @@
 ---
 status: source-code-reviewed
-impact: synthetic-state
-last_update: 2026-05-13
+impact: none
+last_update: 2026-05-14
 builds_on: [33, 38]
 eips: [EIP-7594]
-splits: [nimbus]
-# main_md_summary: nimbus encodes the ENR `cgc` field as SSZ uint8 (1 byte always); the spec and the other 5 clients use variable-length BE with leading-zero stripping (`cgc=0` → empty bytes) — wire-format divergence on cgc=0 and silent overflow at cgc≥256
 prysm_version: v3.2.2-rc.1-2535-g0f25a41868
 lighthouse_version: v8.1.2-185-g1a6863118
 teku_version: 26.4.0-127-g70ad00cbaf
@@ -18,11 +16,16 @@ grandine_version: 2.0.4-97-g15dd0225
 
 ## Summary
 
-The peer-discovery primitive that closes the loop from custody computation (item #38) to network advertisement. Each client uses its own ENR/discv5 library — encoding format divergence risk is real. Without correct encoding, peers can't determine each other's custody sets → can't request the right data columns → DA failures.
+The peer-discovery primitive that closes the loop from custody computation (item #38) to network advertisement. Each client uses its own ENR/discv5 library — at the source level we observe differing encodings (nimbus uses SSZ uint8 → always 1 byte; the other 5 use variable-length BE with leading-zero stripping, matching the spec text). The discrepancy would only matter at the boundary cgc=0 (nimbus emits `[0x00]`, others emit empty bytes) or at cgc ≥ 256 (silent overflow in nimbus's uint8 path).
 
-EIP-7594 PeerDAS ENR `cgc` field encoding/decoding is implemented across all 6 clients with **multiple format and validation divergences** observed at the source level. Mainnet cgc values fit within the divergence-free range (`[4, 128]` → 1-byte BE encoding), so no production divergence has surfaced. **Edge cases (cgc=0 and cgc≥256) would expose divergence on synthetic states.**
+**Both boundaries are unreachable in practice.** `cgc` is bounded by `[CUSTODY_REQUIREMENT, NUMBER_OF_CUSTODY_GROUPS] = [4, 128]` on mainnet:
 
-The dominant divergence is nimbus's SSZ uint8 wire format vs the spec's (and other 5 clients') variable-length BE: at cgc=0 nimbus emits `[0x00]` (1 byte) while others emit empty bytes; at cgc≥256 nimbus silently overflows uint8 while others continue to encode correctly. Active interop risk on cgc=0 reception (nimbus's `SSZ.decode(bytes, uint8)` fails on empty input). Impact synthetic-state because mainnet cgc ∈ [4, 128] does not cross either boundary.
+- The upper bound `NUMBER_OF_CUSTODY_GROUPS = 128` is a **compile-time spec constant**, not a runtime config. There is no path by which a client encodes a `cgc ≥ 256`.
+- The lower bound `CUSTODY_REQUIREMENT = 4` is also a constant. A peer advertising `cgc = 0` is buggy or malicious — clients MAY reject such peers per the spec's "Clients MAY reject peers with a value less than `CUSTODY_REQUIREMENT`" clause. A malformed `cgc = 0` advertisement does not produce consensus impact; it just causes peer-discovery rejection (which is the correct response).
+
+So neither divergence boundary can be reached by a well-behaved peer on mainnet. **Impact: none.** The source-level encoding difference is a real wire-format divergence at the boundaries, but those boundaries are blocked by spec constants and the peer-rejection policy.
+
+The originally-flagged divergence persists in source code but is consensus-irrelevant because no in-range value can trigger it. The audit closes; the source-level note about nimbus's SSZ uint8 encoding remains as forward-fragility documentation for future-spec changes that might widen the `cgc` range.
 
 ## Question
 

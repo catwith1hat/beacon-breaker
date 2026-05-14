@@ -1,11 +1,11 @@
 ---
 status: fuzzed
-impact: mainnet-proposer
+impact: mainnet-glamsterdam
 last_update: 2026-05-14
 builds_on: [22, 23, 28, 57]
 eips: [EIP-7732]
 splits: [lodestar]
-# main_md_summary: lodestar emits Gloas builder sweep withdrawal with queue-decremented cached balance instead of pre-block builder.balance — empirically confirmed via items/067/demo/spec_vs_lodestar.py; produces different state.payload_expected_withdrawals + EL minting amount when a builder is simultaneously queue-drained and sweep-eligible; mainnet-reachable by any builder that initiates exit while having pending payments
+# main_md_summary: lodestar emits Gloas builder sweep withdrawal with queue-decremented cached balance instead of pre-block builder.balance — empirically confirmed via items/067/demo/spec_vs_lodestar.py; mainnet-reachable post-Glamsterdam by any builder that initiates exit while having pending payments
 prysm_version: v7.1.3-rc.3-209-g0f25a41868
 lighthouse_version: v8.1.2-185-g1a6863118
 teku_version: 26.4.0-127-g70ad00cbaf
@@ -569,7 +569,7 @@ The divergence triggers when a single builder simultaneously has (a) entries in 
 
 **Consequence**: lodestar nodes diverge from the rest of the network on the first such builder exit. Block import fails (state-root mismatch); EL block hash differs; the divergent chain cannot heal without either lodestar reverting to spec-literal semantics or all other clients adopting lodestar's caching.
 
-**Pre-Gloas mainnet impact**: zero. Gloas is currently `GLOAS_FORK_EPOCH = FAR_FUTURE_EPOCH` on mainnet. The divergence is only triggerable on Gloas-active testnets and (future) mainnet activation.
+**Pre-Glamsterdam mainnet impact**: zero. Gloas (the CL half of Glamsterdam) is currently `GLOAS_FORK_EPOCH = FAR_FUTURE_EPOCH` on mainnet. The divergence is only triggerable on Gloas-active testnets and on mainnet **after** Glamsterdam fork activation. Hence the impact classification `mainnet-glamsterdam`: matches the pattern used for items #22 + #23 + #28 (also Gloas-activation divergences, all remediated upstream).
 
 ## Conclusion
 
@@ -583,7 +583,7 @@ The post-`apply_withdrawals` state converges to `builder.balance = 0` in both se
 
 Lodestar's caching arguably **fixes a supply-asymmetry bug** in the spec's literal semantics: spec mints `pre_balance + queue_drain_total` to the EL (via the queue + sweep withdrawal emissions) while only decrementing `pre_balance` on the CL — a net `+queue_drain_total` supply inflation. Lodestar's behavior preserves the supply invariant. However, lodestar diverges from 5 spec-conformant clients, which is a worse outcome for consensus stability.
 
-**Verdict: impact mainnet-proposer.** Confirmed divergence; mainnet-reachable by any builder that initiates exit while having pending payments.
+**Verdict: impact mainnet-glamsterdam.** Confirmed divergence; mainnet-reachable by any builder that initiates exit while having pending payments.
 
 Resolution options:
 1. **Lodestar reverts** to spec-literal semantics: change `getBuildersSweepWithdrawals` to read `builder.balance` directly from state (not from the cache). This re-introduces the supply-asymmetry but preserves cross-client consensus. Recommended as the immediate fix.

@@ -20,8 +20,7 @@ Every item in the audit (whether or not it produced a divergence): [ITEM_TOC.md]
 
 | # | Finding | Split | Mainnet reach |
 |---|---|---|---|
-| [#67](items/067/) | lodestar emits Gloas builder sweep withdrawal with queue-decremented cached balance instead of pre-block builder.balance — empirically confirmed via items/067/demo/spec_vs_lodestar.py; produces different state.payload_expected_withdrawals + EL minting amount when a builder is simultaneously queue-drained and sweep-eligible; mainnet-reachable by any builder that initiates exit while having pending payments | lodestar (1-vs-5) | Active — proposer |
-| [#41](items/041/) | nimbus encodes the ENR `cgc` field as SSZ uint8 (1 byte always); the spec and the other 5 clients use variable-length BE with leading-zero stripping (`cgc=0` → empty bytes) — wire-format divergence on cgc=0 and silent overflow at cgc≥256 | nimbus (1-vs-5) | D — synthetic state |
+| [#67](items/067/) | lodestar emits Gloas builder sweep withdrawal with queue-decremented cached balance instead of pre-block builder.balance — empirically confirmed via items/067/demo/spec_vs_lodestar.py; mainnet-reachable post-Glamsterdam by any builder that initiates exit while having pending payments | lodestar (1-vs-5) | mainnet-glamsterdam |
 
 ## Remediated findings
 
