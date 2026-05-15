@@ -1,15 +1,15 @@
 ---
 status: source-code-reviewed
 impact: mainnet-glamsterdam
-last_update: 2026-05-14
+last_update: 2026-05-15
 builds_on: [76, 77]
 eips: [EIP-7732]
 splits: [nimbus]
-# main_md_summary: nimbus's main fork-choice subsystem (`proto_array.nim`, `fork_choice.nim`) has NO Gloas payload-status tracking — `findHead` is pure phase-0 style; no FULL/EMPTY/PENDING variants per consensus block; no `is_supporting_vote`-equivalent; no `should_extend_payload`; no `is_payload_data_available`; no `is_payload_timely`; once Glamsterdam activates, nimbus cannot participate in Gloas fork-choice
+# main_md_summary: nimbus's main fork-choice subsystem (`proto_array.nim`, `fork_choice.nim`) has NO Gloas payload-status tracking — `findHead` is pure phase-0 style; no FULL/EMPTY/PENDING variants per consensus block; no `is_supporting_vote`-equivalent; no `should_extend_payload`; no `is_payload_data_available`; no `is_payload_timely`; PR #8421 (in pin `09c932872`) adds a proposal-side `shouldExtendPayload` stub explicitly marked `debugGloasComment("refactor when we have a proper should_extend_payload")` but does not close the fork-choice gap
 prysm_version: v7.1.3-rc.3-209-g0f25a41868
 lighthouse_version: v8.1.2-185-g1a6863118
 teku_version: 26.4.0-127-g70ad00cbaf
-nimbus_version: v26.5.0-10-g550c7a3f0
+nimbus_version: v26.5.0-21-g09c932872
 lodestar_version: v1.42.0-69-g35940ffd61
 grandine_version: 2.0.4-97-g15dd0225
 ---
@@ -249,9 +249,11 @@ These fields would allow computing `get_parent_payload_status(block)` on-demand 
 
 The Gloas SSZ types are defined (`spec/datatypes/gloas.nim:43-53` defines `PayloadStatus` + constants), but the fork-choice algorithm does not invoke them. The `payload_attestation_pool.nim` aggregates `PayloadAttestation`s and tracks `payload_present` + `blob_data_available` from the wire (`payload_attestation_pool.nim:59,77`), but no consumer in fork-choice exists — confirming item #77's note that nimbus's `is_payload_data_available` is unimplemented.
 
-The comment-only reference at `validators/block_payloads.nim:380` (`# - If 'should_extend_payload(store, parent_root)':`) suggests the function is planned but not yet implemented.
+The comment-only reference at `validators/block_payloads.nim:373` (`# - If 'should_extend_payload(store, parent_root)':`) suggests the function is planned but not yet implemented.
 
-**Verdict for nimbus**: when Gloas activates, nimbus's main fork-choice will operate per phase-0/altair semantics — no FULL/EMPTY tiebreaking, no PTC vote integration, no `should_extend_payload` decisions. Nimbus will not be able to participate in Gloas fork-choice as specified.
+**PR #8421 update (re-audit 2026-05-15, pin bumped `550c7a3f0` → `09c932872`)**: PR #8421 ("fix: apply parent execution requests before proposal", merged 2026-05-15) adds a proposal-side `shouldExtendPayload` variable to `beacon_chain/validators/beacon_validators.nim:409-442` and a corresponding parameter `should_extend_payload: bool` to `getExecutionPayload` at `block_payloads.nim:344`. The computation is explicitly marked as a stub: `debugGloasComment("refactor when we have a proper should_extend_payload")` (`beacon_validators.nim:410`). The placeholder logic derives `shouldExtendPayload` from `envelope.isSome()` (i.e., whether `node.dag.db.getExecutionPayloadEnvelope(parentId.root)` returns a known envelope) — **not** from a fork-choice query of `should_extend_payload(store, parent_root)` per spec. The fork-choice directory itself (`beacon_chain/fork_choice/`) is unchanged: same 5 files, still zero references to `PayloadStatus`, `payload_status`, `is_supporting_vote`, `should_extend_payload`, `is_payload_data_available`, `is_payload_timely`, `notify_ptc_messages`, or `ForkChoiceNode`. PR #8421 keeps the proposal pipeline forward-progressing on Gloas-active testnets but does not constitute the Gloas fork-choice implementation the spec requires.
+
+**Verdict for nimbus**: when Gloas activates, nimbus's main fork-choice will operate per phase-0/altair semantics — no FULL/EMPTY tiebreaking, no PTC vote integration, no `should_extend_payload` decisions. Nimbus will not be able to participate in Gloas fork-choice as specified. The PR #8421 stub keeps the validator-side proposal path callable but defers the proper fork-choice integration.
 
 ### lodestar
 
@@ -360,12 +362,14 @@ No explicit `is_supporting_vote` function. Find-head logic at `store.rs:1075-130
 grep -rn "payload_status\|PayloadStatus\|payload_presence\|PAYLOAD_STATUS\|ForkChoiceNode\|is_payload_timely\|is_payload_verified\|is_payload_data_available\|should_extend_payload\|is_supporting_vote\|notify_ptc_messages" vendor/nimbus/beacon_chain/fork_choice/
 ```
 
-Returns: empty. (Verified 2026-05-14.)
+Returns: empty. (Re-verified at pin `09c932872`, 2026-05-15.)
 
 The same grep on `vendor/nimbus/beacon_chain` (broader) returns:
 - Type definitions in `spec/datatypes/gloas.nim` (SSZ types, constants).
 - Comments in `consensus_object_pools/block_dag.nim` (per-block fields added for Gloas but not yet consumed).
-- Comments in `validators/block_payloads.nim:380` (TBD reference to `should_extend_payload`).
+- Comments in `validators/block_payloads.nim:373` (TBD reference to `should_extend_payload`).
+- `validators/beacon_validators.nim:409-442` and `validators/block_payloads.nim:344,633` (proposal-side `shouldExtendPayload` stub introduced by PR #8421, explicitly marked `debugGloasComment("refactor when we have a proper should_extend_payload")`).
+- `rpc/rest_validator_api.nim:462` (REST validator API forwards the stub flag to the proposal pipeline).
 - `payload_attestation_pool.nim` (gossip pool aggregation; not consumed by fork-choice).
 
 No consumer in fork-choice. ✗
